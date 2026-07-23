@@ -285,13 +285,16 @@ def ask_bank_new(lang: str = "en") -> str:
     )
 
 
-def proof_post(order_id: int, usd: float, inr: float, service_label: str,
-               minutes: int) -> str:
-    """Anonymized completion proof for the public channel — no names, no banks."""
+def proof_post(order_id: int, usd: float, rate: float, inr: float,
+               service_label: str, minutes: int) -> str:
+    """Anonymized completion proof for the public channel. ONLY: order tag,
+    USDT amount, rate, INR paid, service, speed. Never names, usernames, IDs,
+    bank details, deposit addresses or tx hashes."""
     return (
         f"✅ <b>Order {tag(order_id)} completed</b>\n"
-        f"💵 {usd:g}$ USDT → ₹{inr:,.0f} via {service_label}\n"
-        f"⚡ Paid out in <b>{minutes} min</b> 🟢"
+        f"💵 Sold: <b>{usd:g}$ USDT</b> @ 1$/₹{rate:g}\n"
+        f"🏦 Paid: <b>₹{inr:,.0f}</b> via {service_label}\n"
+        f"⚡ Done in <b>{minutes} min</b> 🟢"
     )
 
 

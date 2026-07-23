@@ -162,7 +162,7 @@ async def _post_proof(bot, order: Order) -> None:
     minutes = max(1, int((utcnow() - order.created_at).total_seconds() // 60))
     try:
         await bot.send_message(target, texts.proof_post(
-            order.id, order.usd_amount, order.inr_amount,
+            order.id, order.usd_amount, order.rate_inr, order.inr_amount,
             SERVICES.get(order.service, order.service), minutes))
     except Exception:
         await notify_admins(bot, "⚠️ Couldn't post to the proof channel — "
