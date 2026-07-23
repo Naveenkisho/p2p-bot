@@ -1,4 +1,5 @@
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .config import SERVICES, settings
@@ -19,9 +20,15 @@ async def get_or_create_user(session: AsyncSession, tg_id: int,
     if user is None:
         user = User(id=tg_id, username=username, first_name=first_name)
         session.add(user)
-    else:
-        user.username = username
-        user.first_name = first_name
+        try:
+            await session.commit()
+        except IntegrityError:
+            # two first-contact updates raced the insert — the other one won
+            await session.rollback()
+            user = await session.get(User, tg_id)
+        return user
+    user.username = username
+    user.first_name = first_name
     await session.commit()
     return user
 

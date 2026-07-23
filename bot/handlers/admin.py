@@ -1,3 +1,5 @@
+import math
+
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.types import CallbackQuery, Message
@@ -6,7 +8,17 @@ from sqlalchemy import select
 from .. import texts
 from ..config import SERVICES, settings
 from ..db import Session, get_deposit_address, get_rates, set_setting
-from ..helpers import IsAdmin, esc, is_trc20, notify_admins, notify_user, order_card
+from ..helpers import (
+    IsAdmin,
+    esc,
+    is_trc20,
+    notify_admins,
+    notify_user,
+    order_card,
+    status_str,
+    strip_kb,
+    try_transition,
+)
 from ..keyboards import AdminCb, admin_order_kb
 from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, User
 
@@ -24,6 +36,7 @@ async def admin_help(message: Message) -> None:
         "/setaddress T… — set the TRC20 deposit address\n"
         "/orders — list open orders\n"
         "/order 12 — reshow an order card with its buttons\n"
+        "/setstatus 12 completed — force an order's status (repair tool)\n"
         "/ban 123456789 · /unban 123456789\n\n"
         "💬 Reply to any order card to DM that user through the bot "
         "(text or screenshot)."
@@ -40,9 +53,10 @@ async def cmd_setrate(message: Message, command: CommandObject) -> None:
         return
     try:
         rate = float(parts[1])
-        assert rate >= 0
-    except (ValueError, AssertionError):
-        await message.answer("The rate must be a number, e.g. <code>91</code> "
+    except ValueError:
+        rate = -1.0
+    if not math.isfinite(rate) or rate < 0 or rate > 100_000:
+        await message.answer("The rate must be a normal number, e.g. <code>91</code> "
                              "(<code>0</code> hides the service).")
         return
     async with Session() as session:
@@ -117,6 +131,26 @@ async def cmd_order(message: Message, command: CommandObject) -> None:
         await session.commit()
 
 
+@router.message(Command("setstatus"))
+async def cmd_setstatus(message: Message, command: CommandObject) -> None:
+    """Escape hatch for stuck orders — force a status, no guards."""
+    parts = (command.args or "").split()
+    valid = [s.value for s in OrderStatus]
+    if len(parts) != 2 or not parts[0].isdigit() or parts[1].lower() not in valid:
+        await message.answer("Usage: <code>/setstatus 12 completed</code>\n"
+                             f"Statuses: {', '.join(valid)}")
+        return
+    async with Session() as session:
+        order = await session.get(Order, int(parts[0]))
+        if order is None:
+            await message.answer("No such order.")
+            return
+        order.status = parts[1].lower()
+        await session.commit()
+    await message.answer(f"✅ Order #{order.id} forced to <b>{parts[1].lower()}</b>. "
+                         f"Use /order {order.id} for its buttons.")
+
+
 @router.message(Command("ban"))
 @router.message(Command("unban"))
 async def cmd_ban(message: Message, command: CommandObject) -> None:
@@ -146,39 +180,43 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
         card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
 
         if callback_data.action == "done":
-            if order.status not in (OrderStatus.SUBMITTED, OrderStatus.USDT_SENT):
+            updated = await try_transition(
+                session, order.id,
+                (OrderStatus.SUBMITTED, OrderStatus.USDT_SENT), OrderStatus.COMPLETED)
+            if updated is None:
                 await callback.answer("Already handled.", show_alert=True)
                 return
-            order.status = OrderStatus.COMPLETED
-            await session.commit()
-            await notify_user(callback.bot, order.user_id,
-                              texts.order_completed(order.id, order.inr_amount,
-                                                    SERVICES.get(order.service, order.service),
-                                                    card.details if card else ""))
-            await callback.answer("Done — user notified ✅")
-            await notify_admins(callback.bot, f"✅ Order #{order.id} completed.")
+            delivered = await notify_user(
+                callback.bot, order.user_id,
+                texts.order_completed(order.id, order.inr_amount,
+                                      SERVICES.get(order.service, order.service),
+                                      card.details if card else ""))
+            await callback.answer("Done — user notified ✅" if delivered
+                                  else "Done, but couldn't DM the user ⚠️", show_alert=not delivered)
+            await notify_admins(callback.bot, f"✅ Order #{order.id} completed."
+                                + ("" if delivered else " ⚠️ User DM failed (blocked bot?)."))
 
         elif callback_data.action == "refunded":
-            if order.status != OrderStatus.REFUND_REQUESTED:
-                if order.status == OrderStatus.CANCELLED:
-                    await callback.answer("No refund address from the user yet.", show_alert=True)
-                else:
-                    await callback.answer("Already handled.", show_alert=True)
+            if order.status == OrderStatus.CANCELLED:
+                await callback.answer("No refund address from the user yet.", show_alert=True)
                 return
-            order.status = OrderStatus.REFUNDED
-            await session.commit()
-            await notify_user(callback.bot, order.user_id,
-                              texts.refund_sent(order.id, order.usd_amount, order.refund_address))
-            await callback.answer("Refund marked sent ✅")
+            updated = await try_transition(
+                session, order.id, (OrderStatus.REFUND_REQUESTED,), OrderStatus.REFUNDED)
+            if updated is None:
+                await callback.answer("Already handled.", show_alert=True)
+                return
+            delivered = await notify_user(
+                callback.bot, order.user_id,
+                texts.refund_sent(order.id, order.usd_amount, order.refund_address))
+            await callback.answer("Refund marked sent ✅" if delivered
+                                  else "Refund marked, but couldn't DM the user ⚠️",
+                                  show_alert=not delivered)
             await notify_admins(callback.bot, f"💸 Order #{order.id} refunded.")
 
         else:
             await callback.answer()
 
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    await strip_kb(callback.message)
 
 
 @router.message(StateFilter(None), F.reply_to_message)

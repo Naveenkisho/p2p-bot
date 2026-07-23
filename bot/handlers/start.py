@@ -11,7 +11,7 @@ from ..config import SERVICES
 from ..db import Session, get_or_create_user, get_rates
 from ..helpers import esc
 from ..keyboards import BankRmCb, banks_menu_kb, main_menu
-from ..models import BankCard
+from ..models import OPEN_STATUSES, BankCard, Order
 from ..states import AddBank
 
 router = Router(name="start")
@@ -35,7 +35,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if user.banned:
         await message.answer(texts.BANNED)
         return
-    await message.answer(texts.welcome(esc(message.from_user.first_name), message.from_user.id),
+    await message.answer(texts.welcome(message.from_user.first_name, message.from_user.id),
                          reply_markup=main_menu())
 
 
@@ -48,9 +48,13 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "menu:home")
 async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.edit_text(
-        texts.welcome(esc(callback.from_user.first_name), callback.from_user.id),
-        reply_markup=main_menu())
+    text = texts.welcome(callback.from_user.first_name, callback.from_user.id)
+    try:
+        await callback.message.edit_text(text, reply_markup=main_menu())
+    except Exception:
+        # old/inaccessible message — send a fresh menu instead
+        await callback.bot.send_message(callback.from_user.id, text,
+                                        reply_markup=main_menu())
     await callback.answer()
 
 
@@ -124,8 +128,20 @@ async def banks_remove(callback: CallbackQuery, callback_data: BankRmCb) -> None
         if card is None or card.user_id != callback.from_user.id:
             await callback.answer("Not found.", show_alert=True)
             return
+        open_order = await session.scalar(
+            select(Order).where(Order.bank_card_id == card.id,
+                                Order.status.in_([s.value for s in OPEN_STATUSES]))
+            .limit(1))
+        if open_order is not None:
+            await callback.answer(
+                f"This bank is used by open order #{open_order.id} — "
+                "you can remove it once that order finishes.", show_alert=True)
+            return
         await session.delete(card)
         await session.commit()
     text, kb = await _banks_view(callback.from_user.id)
-    await callback.message.edit_text(text, reply_markup=kb)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.bot.send_message(callback.from_user.id, text, reply_markup=kb)
     await callback.answer("Removed")

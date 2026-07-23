@@ -5,10 +5,11 @@ import re
 from aiogram import Bot
 from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import SERVICES, settings
-from .models import BankCard, Order, OrderMsg, User
+from .models import BankCard, Order, OrderMsg, OrderStatus, User
 
 log = logging.getLogger(__name__)
 
@@ -28,13 +29,43 @@ def is_trc20(address: str) -> bool:
     return bool(TRC20_RE.fullmatch(address.strip()))
 
 
-def user_line(user: User) -> str:
-    handle = f"@{user.username}" if user.username else "no username"
-    return f"{esc(user.first_name)} ({esc(handle)}) · id <code>{user.id}</code>"
+async def strip_kb(message) -> None:
+    """Remove an inline keyboard, tolerating >48h-old (inaccessible) messages."""
+    try:
+        await message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+async def try_transition(session: AsyncSession, order_id: int,
+                         from_statuses: tuple[OrderStatus, ...],
+                         to_status: OrderStatus, **extra) -> Order | None:
+    """Atomic compare-and-swap on Order.status so two concurrent taps (two
+    admins, or a user racing an admin) can never both fire the same
+    transition. Returns the updated Order, or None if the guard lost."""
+    result = await session.execute(
+        update(Order)
+        .where(Order.id == order_id,
+               Order.status.in_([s.value for s in from_statuses]))
+        .values(status=to_status.value, **extra)
+    )
+    await session.commit()
+    if result.rowcount == 0:
+        return None
+    order = await session.get(Order, order_id)
+    if order is not None:
+        # the Core UPDATE bypassed the identity map — reload the instance
+        await session.refresh(order)
+    return order
 
 
 def status_str(order: Order) -> str:
     return order.status.value if hasattr(order.status, "value") else str(order.status)
+
+
+def user_line(user: User) -> str:
+    handle = f"@{user.username}" if user.username else "no username"
+    return f"{esc(user.first_name)} ({esc(handle)}) · id <code>{user.id}</code>"
 
 
 def order_card(order: Order, user: User, bank: BankCard | None) -> str:
@@ -44,10 +75,14 @@ def order_card(order: Order, user: User, bank: BankCard | None) -> str:
     lines = [
         f"🆕 <b>Order #{order.id}</b> — SELL <b>{order.usd_amount:g}$</b> via {service}",
         f"👤 {user_line(user)}",
-        f"💱 1$/₹{order.rate_inr:g} → pay <b>₹{order.inr_amount:,.2f}</b>",
     ]
+    if user.banned:
+        lines.append("🚫 <b>BANNED USER — do not pay without checking!</b>")
+    lines.append(f"💱 1$/₹{order.rate_inr:g} → pay <b>₹{order.inr_amount:,.2f}</b>")
     if bank is not None:
         lines.append(f"🏦 Payout bank:\n<code>{esc(bank.details)}</code>")
+    else:
+        lines.append("🏦 Payout bank: ⚠️ deleted by the user")
     lines.append(f"📥 Deposit: <code>{esc(order.deposit_address)}</code>")
     if order.refund_address:
         lines.append(f"↩️ Refund <b>{order.usd_amount:g} USDT</b> to:\n"
@@ -83,8 +118,12 @@ async def notify_admins(bot: Bot, text: str) -> None:
 
 
 async def notify_user(bot: Bot, user_id: int, text: str,
-                      reply_markup: InlineKeyboardMarkup | None = None) -> None:
+                      reply_markup: InlineKeyboardMarkup | None = None) -> bool:
+    """Returns False when the message could not be delivered (e.g. the user
+    blocked the bot) so callers can surface that instead of claiming success."""
     try:
         await bot.send_message(user_id, text, reply_markup=reply_markup)
+        return True
     except Exception:
         log.exception("failed to notify user %s", user_id)
+        return False

@@ -1,11 +1,17 @@
-"""Every user-facing message in one place, so wording is easy to tune."""
+"""Every user-facing message in one place, so wording is easy to tune.
+
+User-controlled values (names, bank details, labels) are HTML-escaped HERE,
+so callers pass them raw.
+"""
+
+import html
 
 from .config import SERVICES, settings
 
 
 def welcome(name: str, user_id: int) -> str:
     return (
-        f"👋 Welcome, <b>{name}</b>!\n"
+        f"👋 Welcome, <b>{html.escape(name or '')}</b>!\n"
         f"🆔 Your ID: <code>{user_id}</code>\n\n"
         "🇮🇳 <b>The safest P2P trading in entire India.</b>\n\n"
         "We settle through <b>UPI · IMPS instant · CDM · Cheque transfer</b> — "
@@ -50,11 +56,12 @@ CHOOSE_BANK = "🏦 Final step — <b>choose your bank</b> for the payout:"
 
 
 def order_placed(order_id: int, usd: float, inr: float, service_label: str,
-                 bank_label: str, address: str) -> str:
+                 bank_label: str, address: str, rate_note: str = "") -> str:
     return (
         f"📝 <b>Order #{order_id} placed!</b>\n\n"
+        f"{rate_note}"
         f"Sell: <b>{usd:g}$</b> via {service_label}\n"
-        f"You receive: <b>₹{inr:,.2f}</b> → {bank_label}\n\n"
+        f"You receive: <b>₹{inr:,.2f}</b> → {html.escape(bank_label)}\n\n"
         f"Send <b>{usd:g} USDT (TRC20)</b> to:\n"
         f"<code>{address}</code>\n\n"
         "⚠️ TRC20 network only. Tap the button once you've sent it.\n"
@@ -65,7 +72,7 @@ def order_placed(order_id: int, usd: float, inr: float, service_label: str,
 def order_submitted(bank_details: str) -> str:
     return (
         "✅✅ <b>Successfully submitted!</b>\n\n"
-        f"We will send your funds to:\n<code>{bank_details}</code>\n"
+        f"We will send your funds to:\n<code>{html.escape(bank_details)}</code>\n"
         f"within <b>{settings.eta_text}</b> — you can also receive it faster, "
         "it depends on the queue. 🟢\n\n"
         "Just relax, your funds will be credited. If we ever cross the timeline, "
@@ -77,7 +84,7 @@ def order_completed(order_id: int, inr: float, service_label: str, bank_details:
     return (
         f"✅✅ <b>Order #{order_id} completed — funds credited!</b> 🟢\n\n"
         f"Sent: <b>₹{inr:,.2f}</b> via {service_label}\n"
-        f"To:\n<code>{bank_details}</code>\n\n"
+        f"To:\n<code>{html.escape(bank_details)}</code>\n\n"
         "Thanks for trading with the safest P2P desk in India. 🇮🇳"
     )
 
