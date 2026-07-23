@@ -1,6 +1,7 @@
 import html
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
 from aiogram.filters import BaseFilter
@@ -8,6 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from . import texts
 from .config import SERVICES, settings
 from .models import BankCard, Order, OrderMsg, OrderStatus, User
 
@@ -63,9 +65,16 @@ def status_str(order: Order) -> str:
     return order.status.value if hasattr(order.status, "value") else str(order.status)
 
 
+def ist_now_str() -> str:
+    ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist.strftime("%d %b %Y, %I:%M %p") + " IST"
+
+
 def user_line(user: User) -> str:
-    handle = f"@{user.username}" if user.username else "no username"
-    return f"{esc(user.first_name)} ({esc(handle)}) · id <code>{user.id}</code>"
+    name_link = f'<a href="tg://user?id={user.id}">{esc(user.first_name) or "user"}</a>'
+    handle = f' · <a href="https://t.me/{esc(user.username)}">@{esc(user.username)}</a>' \
+        if user.username else " · no username"
+    return f"{name_link}{handle}"
 
 
 def order_card(order: Order, user: User, bank: BankCard | None) -> str:
@@ -73,8 +82,9 @@ def order_card(order: Order, user: User, bank: BankCard | None) -> str:
     to paste into a banking app sits in its own tap-to-copy block."""
     service = SERVICES.get(order.service, order.service)
     lines = [
-        f"🆕 <b>Order #{order.id}</b> — SELL <b>{order.usd_amount:g}$</b> via {service}",
+        f"🆕 <b>Order {texts.tag(order.id)}</b> — SELL <b>{order.usd_amount:g}$</b> via {service}",
         f"👤 {user_line(user)}",
+        f'🆔 Chat ID: <code>{user.id}</code> · 💬 <a href="tg://user?id={user.id}">Open DM</a>',
     ]
     if user.banned:
         lines.append("🚫 <b>BANNED USER — do not pay without checking!</b>")

@@ -64,3 +64,8 @@ async def get_rates(session: AsyncSession) -> dict[str, float]:
 
 async def get_deposit_address(session: AsyncSession) -> str | None:
     return await get_setting(session, "addr_trc20")
+
+
+async def get_support(session: AsyncSession) -> str:
+    """Support contact(s) — chat-managed via /setsupport, env fallback."""
+    return (await get_setting(session, "support")) or settings.support_handle

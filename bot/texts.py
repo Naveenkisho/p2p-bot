@@ -9,13 +9,30 @@ import html
 from .config import SERVICES, settings
 
 
-def welcome(name: str, user_id: int) -> str:
+def tag(order_id: int) -> str:
+    """Search-friendly order tag — same on the user and admin side, so one
+    Telegram search for #ORD12 finds the whole trail."""
+    return f"#ORD{order_id}"
+
+
+def trust_footer(name: str | None, user_id: int, support: str) -> str:
+    """Appended to every flow step: who this chat belongs to + live support."""
     return (
-        f"👋 Welcome, <b>{html.escape(name or '')}</b>!\n"
+        "\n\n———\n"
+        f"👤 <b>{html.escape(name or 'friend')}</b> · 🆔 <code>{user_id}</code>\n"
+        f"🆘 Support: {html.escape(support)}\n"
+        "🛡 Every order is handled personally by our admins."
+    )
+
+
+def welcome(name: str | None, user_id: int, support: str) -> str:
+    return (
+        f"👋 Welcome, <b>{html.escape(name or 'friend')}</b>!\n"
         f"🆔 Your ID: <code>{user_id}</code>\n\n"
         "🇮🇳 <b>The safest P2P trading in entire India.</b>\n\n"
         "We settle through <b>UPI · IMPS instant · CDM · Cheque transfer</b> — "
         "each service has its own rate, always live below.\n\n"
+        f"🆘 Support: {html.escape(support)}\n\n"
         "What would you like to do?"
     )
 
@@ -38,6 +55,14 @@ def ask_amount(service_label: str, rate: float) -> str:
     )
 
 
+def quote_block(usd: float, inr: float, service_label: str, rate: float) -> str:
+    return (
+        f"💰 You send: <b>{usd:g}$ USDT (TRC20)</b>\n"
+        f"💵 You receive: <b>₹{inr:,.2f}</b> via {service_label}\n"
+        f"💱 Rate locked: <b>1$ / ₹{rate:g}</b>"
+    )
+
+
 ASK_BANK_FIRST = (
     "🏦 First time here — send your <b>bank details in one message</b>, one item per line:\n\n"
     "<code>Bank name\n"
@@ -56,11 +81,13 @@ CHOOSE_BANK = "🏦 Final step — <b>choose your bank</b> for the payout:"
 
 
 def order_placed(order_id: int, usd: float, inr: float, service_label: str,
-                 bank_label: str, address: str, rate_note: str = "") -> str:
+                 bank_label: str, address: str, rate: float,
+                 rate_note: str = "") -> str:
     return (
-        f"📝 <b>Order #{order_id} placed!</b>\n\n"
+        f"📝 <b>Order {tag(order_id)} placed!</b>\n"
+        f"🧾 Order ID: <code>{tag(order_id)}</code> — quote it to support anytime.\n\n"
         f"{rate_note}"
-        f"Sell: <b>{usd:g}$</b> via {service_label}\n"
+        f"Sell: <b>{usd:g}$</b> via {service_label} at 1$/₹{rate:g}\n"
         f"You receive: <b>₹{inr:,.2f}</b> → {html.escape(bank_label)}\n\n"
         f"Send <b>{usd:g} USDT (TRC20)</b> to:\n"
         f"<code>{address}</code>\n\n"
@@ -69,9 +96,9 @@ def order_placed(order_id: int, usd: float, inr: float, service_label: str,
     )
 
 
-def order_submitted(bank_details: str) -> str:
+def order_submitted(order_id: int, bank_details: str) -> str:
     return (
-        "✅✅ <b>Successfully submitted!</b>\n\n"
+        f"✅✅ <b>Order {tag(order_id)} successfully submitted!</b>\n\n"
         f"We will send your funds to:\n<code>{html.escape(bank_details)}</code>\n"
         f"within <b>{settings.eta_text}</b> — you can also receive it faster, "
         "it depends on the queue. 🟢\n\n"
@@ -80,51 +107,57 @@ def order_submitted(bank_details: str) -> str:
     )
 
 
-def order_completed(order_id: int, inr: float, service_label: str, bank_details: str) -> str:
+def order_completed(order_id: int, usd: float, rate: float, inr: float,
+                    service_label: str, bank_details: str, when: str) -> str:
     return (
-        f"✅✅ <b>Order #{order_id} completed — funds credited!</b> 🟢\n\n"
-        f"Sent: <b>₹{inr:,.2f}</b> via {service_label}\n"
-        f"To:\n<code>{html.escape(bank_details)}</code>\n\n"
+        f"✅✅ <b>Order {tag(order_id)} completed — funds credited!</b> 🟢\n\n"
+        "🧾 <b>Receipt</b>\n"
+        f"• Order ID: <code>{tag(order_id)}</code>\n"
+        f"• Sold: <b>{usd:g}$ USDT</b> at 1$/₹{rate:g}\n"
+        f"• Credited: <b>₹{inr:,.2f}</b> via {service_label}\n"
+        f"• To:\n<code>{html.escape(bank_details)}</code>\n"
+        f"• Completed: {when}\n\n"
+        "Save this message as your receipt. "
         "Thanks for trading with the safest P2P desk in India. 🇮🇳"
     )
 
 
 def order_cancelled(order_id: int) -> str:
     return (
-        f"❌ <b>Order #{order_id} cancelled.</b>\n\n"
+        f"❌ <b>Order {tag(order_id)} cancelled.</b>\n\n"
         "If you already sent the USDT, send your <b>TRC20 address</b> here now "
         "and we'll refund it. (Address starts with <code>T</code>.)"
     )
 
 
-def refund_noted(usd: float, address: str) -> str:
+def refund_noted(order_id: int, usd: float, address: str) -> str:
     return (
-        f"👌 Noted — <b>{usd:g} USDT</b> will be returned to:\n"
+        f"👌 Noted for order {tag(order_id)} — <b>{usd:g} USDT</b> will be returned to:\n"
         f"<code>{address}</code>"
     )
 
 
 def refund_sent(order_id: int, usd: float, address: str) -> str:
     return (
-        f"💸 <b>Refund sent for order #{order_id}</b> — {usd:g} USDT to:\n"
+        f"💸 <b>Refund sent for order {tag(order_id)}</b> — {usd:g} USDT to:\n"
         f"<code>{address}</code> ✅"
     )
 
 
-CANCEL_WINDOW_OVER = (
-    "The cancel window has passed and your order is already in processing. "
-    f"Message {settings.support_handle} if you need help."
-)
+def cancel_window_over(support: str) -> str:
+    return ("The cancel window has passed and your order is already in processing. "
+            f"Message {html.escape(support)} if you need help.")
 
-BUY_SOON = (
-    "🛒 <b>USDT Buy is opening soon!</b>\n\n"
-    f"Want to buy right now? Message {settings.support_handle} and we'll sort you out."
-)
 
-SUPPORT = (
-    f"🆘 Any issue with an order? Message {settings.support_handle} "
-    "and mention your order number."
-)
+def buy_soon(support: str) -> str:
+    return ("🛒 <b>USDT Buy is opening soon!</b>\n\n"
+            f"Want to buy right now? Message {html.escape(support)} and we'll sort you out.")
+
+
+def support_text(support: str) -> str:
+    return (f"🆘 Any issue with an order? Message {html.escape(support)} "
+            "and mention your order ID (like <code>#ORD12</code>).")
+
 
 DESK_CLOSED = "The desk is closed right now — please check back soon."
 BANNED = "Your account is blocked. Contact support."

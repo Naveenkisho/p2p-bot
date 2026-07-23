@@ -28,6 +28,17 @@ the order card.
 A TRON auto-scan (instant deposit confirmation) is a planned next step — the
 "I've sent" checkpoint is where it will plug in.
 
+### Built for trust
+
+- Every step carries a footer with the user's own Telegram name + ID and the
+  live support contact(s).
+- Orders get a searchable tag (`#ORD12`) shown identically to the user and on
+  the admin card, so one Telegram search finds the whole trail.
+- Admin cards include the user's name as a direct `tg://user` link, their
+  @username link and chat ID — one tap to DM them outside the bot.
+- Completion sends the user a full receipt: amount sold, locked rate, INR
+  credited, bank, and timestamp (IST).
+
 ## Admin commands
 
 | Command | What it does |
@@ -36,8 +47,10 @@ A TRON auto-scan (instant deposit confirmation) is a planned next step — the
 | `/setrate CDM 91` | set a service's ₹/$ rate live (`0` hides the service) |
 | `/rates` | show all rates + deposit address |
 | `/setaddress T…` | set the TRC20 deposit address |
+| `/setsupport @a @b` | set the support contact(s) shown to users everywhere |
 | `/orders` | list open orders |
-| `/order 12` | reshow an order card with its buttons |
+| `/order 12` (or `#ORD12`) | reshow an order card with its buttons |
+| `/setstatus 12 completed` | force an order's status (repair tool) |
 | `/ban` / `/unban <user_id>` | block/unblock a user |
 | *reply to an order card* | DM that order's user through the bot (text/photo) |
 

@@ -7,11 +7,12 @@ from sqlalchemy import select
 
 from .. import texts
 from ..config import SERVICES, settings
-from ..db import Session, get_deposit_address, get_rates, set_setting
+from ..db import Session, get_deposit_address, get_rates, get_support, set_setting
 from ..helpers import (
     IsAdmin,
     esc,
     is_trc20,
+    ist_now_str,
     notify_admins,
     notify_user,
     order_card,
@@ -34,6 +35,7 @@ async def admin_help(message: Message) -> None:
         "/setrate CDM 91 — set a service's ₹/$ rate live (0 hides the service)\n"
         "/rates — show all live rates\n"
         "/setaddress T… — set the TRC20 deposit address\n"
+        "/setsupport @help1 @help2 — set the support contact(s) users see\n"
         "/orders — list open orders\n"
         "/order 12 — reshow an order card with its buttons\n"
         "/setstatus 12 completed — force an order's status (repair tool)\n"
@@ -92,6 +94,23 @@ async def cmd_setaddress(message: Message, command: CommandObject) -> None:
     await message.answer(f"✅ Deposit address set:\n<code>{esc(address)}</code>")
 
 
+@router.message(Command("setsupport"))
+async def cmd_setsupport(message: Message, command: CommandObject) -> None:
+    handles = (command.args or "").split()
+    async with Session() as session:
+        if not handles:
+            current = await get_support(session)
+            await message.answer("Usage: <code>/setsupport @help1 @help2</code>\n"
+                                 f"Current: {esc(current)}")
+            return
+        if not all(h.startswith("@") and len(h) >= 5 for h in handles):
+            await message.answer("Each contact must be a @username, e.g. "
+                                 "<code>/setsupport @desk_help @desk_help2</code>")
+            return
+        await set_setting(session, "support", " ".join(handles))
+    await message.answer(f"✅ Support contact(s) now shown to users: {esc(' '.join(handles))}")
+
+
 @router.message(Command("orders"))
 async def cmd_orders(message: Message) -> None:
     async with Session() as session:
@@ -104,7 +123,7 @@ async def cmd_orders(message: Message) -> None:
     lines = ["<b>Open orders</b>"]
     for o in orders:
         status = o.status.value if hasattr(o.status, "value") else str(o.status)
-        lines.append(f"#{o.id} — {o.usd_amount:g}$ via {SERVICES.get(o.service, o.service)} "
+        lines.append(f"{texts.tag(o.id)} — {o.usd_amount:g}$ via {SERVICES.get(o.service, o.service)} "
                      f"→ ₹{o.inr_amount:,.2f} — <i>{status}</i>")
     lines.append("\nUse /order &lt;id&gt; for the card + buttons.")
     await message.answer("\n".join(lines))
@@ -112,11 +131,11 @@ async def cmd_orders(message: Message) -> None:
 
 @router.message(Command("order"))
 async def cmd_order(message: Message, command: CommandObject) -> None:
-    try:
-        order_id = int((command.args or "").strip())
-    except ValueError:
-        await message.answer("Usage: <code>/order 12</code>")
+    raw = (command.args or "").strip().lstrip("#").upper().removeprefix("ORD")
+    if not raw.isdigit():
+        await message.answer("Usage: <code>/order 12</code> or <code>/order #ORD12</code>")
         return
+    order_id = int(raw)
     async with Session() as session:
         order = await session.get(Order, order_id)
         if order is None:
@@ -147,7 +166,7 @@ async def cmd_setstatus(message: Message, command: CommandObject) -> None:
             return
         order.status = parts[1].lower()
         await session.commit()
-    await message.answer(f"✅ Order #{order.id} forced to <b>{parts[1].lower()}</b>. "
+    await message.answer(f"✅ Order {texts.tag(order.id)} forced to <b>{parts[1].lower()}</b>. "
                          f"Use /order {order.id} for its buttons.")
 
 
@@ -186,14 +205,18 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
             if updated is None:
                 await callback.answer("Already handled.", show_alert=True)
                 return
-            delivered = await notify_user(
-                callback.bot, order.user_id,
-                texts.order_completed(order.id, order.inr_amount,
-                                      SERVICES.get(order.service, order.service),
-                                      card.details if card else ""))
+            user = await session.get(User, order.user_id)
+            support = await get_support(session)
+            receipt = texts.order_completed(
+                order.id, order.usd_amount, order.rate_inr, order.inr_amount,
+                SERVICES.get(order.service, order.service),
+                card.details if card else "", ist_now_str())
+            if user is not None:
+                receipt += texts.trust_footer(user.first_name, user.id, support)
+            delivered = await notify_user(callback.bot, order.user_id, receipt)
             await callback.answer("Done — user notified ✅" if delivered
                                   else "Done, but couldn't DM the user ⚠️", show_alert=not delivered)
-            await notify_admins(callback.bot, f"✅ Order #{order.id} completed."
+            await notify_admins(callback.bot, f"✅ Order {texts.tag(order.id)} completed."
                                 + ("" if delivered else " ⚠️ User DM failed (blocked bot?)."))
 
         elif callback_data.action == "refunded":
@@ -211,7 +234,7 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
             await callback.answer("Refund marked sent ✅" if delivered
                                   else "Refund marked, but couldn't DM the user ⚠️",
                                   show_alert=not delivered)
-            await notify_admins(callback.bot, f"💸 Order #{order.id} refunded.")
+            await notify_admins(callback.bot, f"💸 Order {texts.tag(order.id)} refunded.")
 
         else:
             await callback.answer()
@@ -236,6 +259,6 @@ async def relay_to_user(message: Message) -> None:
         await message.bot.copy_message(chat_id=order.user_id,
                                        from_chat_id=message.chat.id,
                                        message_id=message.message_id)
-        await message.reply(f"📨 Delivered to the user of order #{order.id}.")
+        await message.reply(f"📨 Delivered to the user of order {texts.tag(order.id)}.")
     except Exception:
         await message.reply("⚠️ Couldn't deliver — the user may have blocked the bot.")

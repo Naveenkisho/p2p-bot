@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from .. import texts
 from ..config import SERVICES, settings
-from ..db import Session, get_deposit_address, get_or_create_user, get_rates
+from ..db import Session, get_deposit_address, get_or_create_user, get_rates, get_support
 from ..helpers import is_trc20, notify_admins, post_order_card, strip_kb, try_transition
 from ..keyboards import (
     BankCb,
@@ -39,6 +39,12 @@ async def _warn_no_address_once(bot) -> None:
                                  "is set — run /setaddress T…")
 
 
+async def _footer(session, tg_user) -> str:
+    """Trust footer (name + ID + support) appended to every flow step."""
+    support = await get_support(session)
+    return texts.trust_footer(tg_user.first_name, tg_user.id, support)
+
+
 @router.callback_query(F.data == "menu:sell")
 async def sell_menu(callback: CallbackQuery, state: FSMContext) -> None:
     async with Session() as session:
@@ -54,8 +60,11 @@ async def sell_menu(callback: CallbackQuery, state: FSMContext) -> None:
             await _warn_no_address_once(callback.bot)
         await callback.answer(texts.DESK_CLOSED, show_alert=True)
         return
+    async with Session() as session:
+        footer = await _footer(session, callback.from_user)
     await state.clear()
-    await callback.message.answer(texts.services_header(rates), reply_markup=services_kb(rates))
+    await callback.message.answer(texts.services_header(rates) + footer,
+                                  reply_markup=services_kb(rates))
     await callback.answer()
 
 
@@ -64,13 +73,14 @@ async def sell_service(callback: CallbackQuery, state: FSMContext) -> None:
     key = callback.data.split(":", 1)[1]
     async with Session() as session:
         rates = await get_rates(session)
+        footer = await _footer(session, callback.from_user)
     if key not in rates:
         await callback.answer("That service is unavailable right now.", show_alert=True)
         return
     await state.clear()
     await state.update_data(service=key, rate=rates[key])
     await state.set_state(SellFlow.amount)
-    await callback.message.answer(texts.ask_amount(SERVICES[key], rates[key]))
+    await callback.message.answer(texts.ask_amount(SERVICES[key], rates[key]) + footer)
     await callback.answer()
 
 
@@ -86,18 +96,22 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
                              f"and {settings.max_usd:g}$.")
         return
     data = await state.get_data()
-    await state.update_data(usd=usd, inr=usd * data["rate"])
+    inr = usd * data["rate"]
+    await state.update_data(usd=usd, inr=inr)
     async with Session() as session:
         cards = (await session.scalars(
             select(BankCard).where(BankCard.user_id == message.from_user.id)
             .order_by(BankCard.id)
         )).all()
+        footer = await _footer(session, message.from_user)
+    quote = texts.quote_block(usd, inr, SERVICES[data["service"]], data["rate"])
     if not cards:
         await state.set_state(SellFlow.bank_details)
-        await message.answer(texts.ASK_BANK_FIRST)
+        await message.answer(quote + "\n\n" + texts.ASK_BANK_FIRST + footer)
     else:
         await state.set_state(SellFlow.choose_bank)
-        await message.answer(texts.CHOOSE_BANK, reply_markup=choose_bank_kb(cards))
+        await message.answer(quote + "\n\n" + texts.CHOOSE_BANK + footer,
+                             reply_markup=choose_bank_kb(cards))
 
 
 @router.message(SellFlow.bank_details, F.text)
@@ -184,9 +198,11 @@ async def _place_order(message: Message, state: FSMContext,
         )
         session.add(order)
         await session.commit()
+        footer = await _footer(session, user)
         await message.answer(
             texts.order_placed(order.id, order.usd_amount, order.inr_amount,
-                               SERVICES[order.service], card.label, address, rate_note),
+                               SERVICES[order.service], card.label, address,
+                               rate, rate_note) + footer,
             reply_markup=order_placed_kb(order.id),
         )
         await post_order_card(message.bot, session, order, user, card,
@@ -209,22 +225,25 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                 await callback.answer("This order is already in processing.", show_alert=True)
                 return
             card = await session.get(BankCard, order.bank_card_id)
+            footer = await _footer(session, callback.from_user)
             try:
                 await callback.message.edit_reply_markup(
                     reply_markup=order_sent_kb(order.id))
             except Exception:
                 pass
             await callback.message.answer(
-                texts.order_submitted(card.details if card else "your saved bank"))
+                texts.order_submitted(order.id,
+                                      card.details if card else "your saved bank") + footer)
             await notify_admins(callback.bot,
-                                f"📤 Order #{order.id}: user says the USDT is sent "
+                                f"📤 Order {texts.tag(order.id)}: user says the USDT is sent "
                                 f"({order.usd_amount:g}$).")
             await callback.answer()
 
         elif callback_data.action == "cancel":
             age = (utcnow() - order.created_at).total_seconds()
             if age > settings.cancel_window_sec:
-                await callback.answer(texts.CANCEL_WINDOW_OVER, show_alert=True)
+                support = await get_support(session)
+                await callback.answer(texts.cancel_window_over(support), show_alert=True)
                 return
             updated = await try_transition(
                 session, order.id,
@@ -232,13 +251,14 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             if updated is None:
                 await callback.answer("This order can no longer be cancelled.", show_alert=True)
                 return
+            footer = await _footer(session, callback.from_user)
             await strip_kb(callback.message)
             await state.clear()
             await state.set_state(RefundFlow.address)
             await state.update_data(order_id=order.id)
-            await callback.message.answer(texts.order_cancelled(order.id))
+            await callback.message.answer(texts.order_cancelled(order.id) + footer)
             await notify_admins(callback.bot,
-                                f"🚫 Order #{order.id} CANCELLED by the user — "
+                                f"🚫 Order {texts.tag(order.id)} CANCELLED by the user — "
                                 f"awaiting their refund address.")
             await callback.answer("Cancelled")
 
@@ -269,7 +289,8 @@ async def refund_address(message: Message, state: FSMContext) -> None:
             return
         user = await session.get(User, order.user_id)
         card = await session.get(BankCard, order.bank_card_id)
-        await message.answer(texts.refund_noted(order.usd_amount, address))
+        footer = await _footer(session, message.from_user)
+        await message.answer(texts.refund_noted(order.id, order.usd_amount, address) + footer)
         await post_order_card(message.bot, session, order, user, card,
                               admin_order_kb(order.id, "refund_requested"))
 

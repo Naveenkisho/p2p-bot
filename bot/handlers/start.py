@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from .. import texts
 from ..config import SERVICES
-from ..db import Session, get_or_create_user, get_rates
+from ..db import Session, get_or_create_user, get_rates, get_support
 from ..helpers import esc
 from ..keyboards import BankRmCb, banks_menu_kb, main_menu
 from ..models import OPEN_STATUSES, BankCard, Order
@@ -32,11 +32,13 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     async with Session() as session:
         user = await get_or_create_user(session, message.from_user.id,
                                         message.from_user.username, message.from_user.first_name)
+        support = await get_support(session)
     if user.banned:
         await message.answer(texts.BANNED)
         return
-    await message.answer(texts.welcome(message.from_user.first_name, message.from_user.id),
-                         reply_markup=main_menu())
+    await message.answer(
+        texts.welcome(message.from_user.first_name, message.from_user.id, support),
+        reply_markup=main_menu())
 
 
 @router.message(Command("cancel"))
@@ -48,7 +50,9 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "menu:home")
 async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    text = texts.welcome(callback.from_user.first_name, callback.from_user.id)
+    async with Session() as session:
+        support = await get_support(session)
+    text = texts.welcome(callback.from_user.first_name, callback.from_user.id, support)
     try:
         await callback.message.edit_text(text, reply_markup=main_menu())
     except Exception:
@@ -74,7 +78,11 @@ async def menu_rates(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "menu:support")
 async def menu_support(callback: CallbackQuery) -> None:
-    await callback.message.answer(texts.SUPPORT)
+    async with Session() as session:
+        support = await get_support(session)
+    await callback.message.answer(
+        texts.support_text(support)
+        + texts.trust_footer(callback.from_user.first_name, callback.from_user.id, support))
     await callback.answer()
 
 
