@@ -8,7 +8,7 @@ from .models import BankCard
 class OrderCb(CallbackData, prefix="o"):
     """User actions on their own order."""
 
-    action: str  # sent | cancel
+    action: str  # check | cancel
     order_id: int
 
 
@@ -19,9 +19,10 @@ class AdminCb(CallbackData, prefix="a"):
     order_id: int
 
 
-class BankCb(CallbackData, prefix="b"):
-    """Bank pick during checkout (id=0 → add new)."""
+class PickBankCb(CallbackData, prefix="pb"):
+    """Bank pick after the deposit is confirmed (card_id=0 → add new)."""
 
+    order_id: int
     card_id: int
 
 
@@ -76,12 +77,14 @@ def services_kb(rates: dict[str, float]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def choose_bank_kb(cards: list[BankCard]) -> InlineKeyboardMarkup:
+def bank_chooser_kb(order_id: int, cards: list[BankCard]) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=f"🏦 {c.label}", callback_data=BankCb(card_id=c.id).pack())]
+        [InlineKeyboardButton(text=f"🏦 {c.label}",
+                              callback_data=PickBankCb(order_id=order_id, card_id=c.id).pack())]
         for c in cards
     ]
-    rows.append([InlineKeyboardButton(text="➕ Add new bank", callback_data=BankCb(card_id=0).pack())])
+    rows.append([InlineKeyboardButton(
+        text="➕ Add new bank", callback_data=PickBankCb(order_id=order_id, card_id=0).pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -95,17 +98,10 @@ def banks_menu_kb(cards: list[BankCard]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def order_placed_kb(order_id: int) -> InlineKeyboardMarkup:
+def deposit_kb(order_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ I've sent the USDT",
-                              callback_data=OrderCb(action="sent", order_id=order_id).pack())],
-        [InlineKeyboardButton(text="❌ Cancel order",
-                              callback_data=OrderCb(action="cancel", order_id=order_id).pack())],
-    ])
-
-
-def order_sent_kb(order_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 I've sent — check status",
+                              callback_data=OrderCb(action="check", order_id=order_id).pack())],
         [InlineKeyboardButton(text="❌ Cancel order",
                               callback_data=OrderCb(action="cancel", order_id=order_id).pack())],
     ])
@@ -113,7 +109,7 @@ def order_sent_kb(order_id: int) -> InlineKeyboardMarkup:
 
 def admin_order_kb(order_id: int, status: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    if status in ("submitted", "usdt_sent"):
+    if status == "pending_payout":
         rows.append([InlineKeyboardButton(
             text="✅ Done — INR sent",
             callback_data=AdminCb(action="done", order_id=order_id).pack())])

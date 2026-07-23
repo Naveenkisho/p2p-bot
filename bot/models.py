@@ -16,17 +16,20 @@ class Base(DeclarativeBase):
 
 
 class OrderStatus(str, enum.Enum):
-    SUBMITTED = "submitted"                # order placed, deposit address shown
-    USDT_SENT = "usdt_sent"                # user tapped "I've sent the USDT"
+    AWAITING_DEPOSIT = "awaiting_deposit"  # address shown, watching the chain
+    DEPOSIT_RECEIVED = "deposit_received"  # USDT auto-detected, user picking bank
+    PENDING_PAYOUT = "pending_payout"      # bank chosen, admin must pay INR
     COMPLETED = "completed"                # admin hit Done — INR credited
-    CANCELLED = "cancelled"                # user cancelled inside the window
+    CANCELLED = "cancelled"                # cancelled (refund path if funds came in)
+    EXPIRED = "expired"                    # no deposit arrived in time
     REFUND_REQUESTED = "refund_requested"  # user sent their TRC20 refund address
     REFUNDED = "refunded"                  # admin sent the USDT back
 
 
 OPEN_STATUSES = (
-    OrderStatus.SUBMITTED,
-    OrderStatus.USDT_SENT,
+    OrderStatus.AWAITING_DEPOSIT,
+    OrderStatus.DEPOSIT_RECEIVED,
+    OrderStatus.PENDING_PAYOUT,
     OrderStatus.CANCELLED,
     OrderStatus.REFUND_REQUESTED,
 )
@@ -65,9 +68,25 @@ class Order(Base):
     bank_card_id: Mapped[int | None] = mapped_column(ForeignKey("bank_cards.id"))
     deposit_address: Mapped[str] = mapped_column(String(64))
     refund_address: Mapped[str | None] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(20), default=OrderStatus.SUBMITTED, index=True)
+    txid: Mapped[str | None] = mapped_column(String(80))
+    deposit_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
+    admin_note: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), default=OrderStatus.AWAITING_DEPOSIT,
+                                        index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class SeenTx(Base):
+    """Every TRC20 deposit the scanner has already processed, so a transfer
+    is only ever credited (or alerted on) once."""
+
+    __tablename__ = "seen_txs"
+
+    txid: Mapped[str] = mapped_column(String(80), primary_key=True)
+    amount: Mapped[float] = mapped_column(Float)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class OrderMsg(Base):

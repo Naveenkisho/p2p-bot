@@ -6,27 +6,26 @@ rate that admins set from chat. Admins work orders from copy-paste-ready cards w
 one-tap **Done** — and can DM any user (text or screenshots) by simply replying to
 the order card.
 
-## User flow
+## User flow (deposit-first, auto-detected)
 
 1. `/start` → welcome with the user's name + Telegram ID → **USDT Sell / USDT Buy**
    buttons (Buy is a placeholder for now).
-2. **Sell** → service buttons with live prices (e.g. `CDM — 1$/₹91`) → send amount
-   in `$` → bank step:
-   - first order: submit bank details once, saved to **My Bank Cards**
-     (multiple banks supported, add/remove from the menu);
-   - later orders: just **choose your bank**.
-3. Order placed → bot shows the desk's TRC20 deposit address → user sends USDT and
-   taps **I've sent the USDT** → "✅✅ Successfully submitted — funds to your bank
-   within 15–30 minutes, often faster depending on the queue."
-4. Admin taps **Done** on the order card → user gets "funds credited ✅✅" with the
-   full details.
-5. **Cancel** is available for 30 seconds after placing the order (configurable).
-   On cancel the admin card updates instantly, the bot collects the user's TRC20
-   address, and the card shows exactly how much USDT to refund where, with a
-   **Refund sent** button.
-
-A TRON auto-scan (instant deposit confirmation) is a planned next step — the
-"I've sent" checkpoint is where it will plug in.
+2. **Sell** → service buttons with live prices (e.g. `CDM — 1$/₹91`) → amount in
+   `$` → the order is created instantly and the bot shows the desk's TRC20
+   deposit address: *"send exactly 100 USDT"*.
+3. **TRON auto-scan**: the bot polls TronGrid (every 10 s by default) for USDT
+   transfers into the deposit address. The moment the user's transfer confirms,
+   it is matched to the oldest awaiting order with that amount and the user gets
+   *"✅✅ We received your 100 USDT!"* with the tx hash — typically seconds after
+   confirmation. No screenshots, no "I've sent" honor system.
+4. Then the bank step: pick a saved bank from **My Bank Cards** or add one →
+   *"successfully submitted — funds within 15–30 min"* with a live queue position.
+5. The admin card (bank details, tx hash, copy-paste blocks) gets a **Done**
+   button → user receives a full receipt; the proof channel gets its card.
+6. Safety nets: **Cancel** while awaiting deposit; unmatched deposits alert the
+   admins with the tx hash; awaiting orders **expire** after 60 min (configurable);
+   `/received <id>` confirms a deposit manually if TronGrid is ever down; the
+   DB-driven refund path handles any cancelled-after-deposit case.
 
 ### Built for trust
 

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from .. import texts
 from ..config import SERVICES, settings
 from ..db import Session, get_deposit_address, get_rates, get_setting, get_support, set_setting
+from ..flow import notify_deposit_received
 from ..helpers import (
     IsAdmin,
     age_str,
@@ -43,6 +44,7 @@ async def admin_help(message: Message) -> None:
         "/panel (or /orders) — tabbed live order panel\n"
         "/orders — list open orders\n"
         "/order 12 — reshow an order card with its buttons\n"
+        "/received 12 — manually confirm a deposit (auto-scan fallback)\n"
         "/setstatus 12 completed — force an order's status (repair tool)\n"
         "/setrefund 12 T… — record a refund address for a cancelled order\n"
         "/ban 123456789 · /unban 123456789\n\n"
@@ -168,9 +170,11 @@ async def _post_proof(bot, order: Order) -> None:
 
 
 TAB_STATUSES = {
-    "active": (OrderStatus.SUBMITTED.value, OrderStatus.USDT_SENT.value),
+    "active": (OrderStatus.AWAITING_DEPOSIT.value, OrderStatus.DEPOSIT_RECEIVED.value,
+               OrderStatus.PENDING_PAYOUT.value),
     "refunds": (OrderStatus.CANCELLED.value, OrderStatus.REFUND_REQUESTED.value),
-    "done": (OrderStatus.COMPLETED.value, OrderStatus.REFUNDED.value),
+    "done": (OrderStatus.COMPLETED.value, OrderStatus.REFUNDED.value,
+             OrderStatus.EXPIRED.value),
 }
 
 
@@ -258,6 +262,27 @@ async def cmd_setstatus(message: Message, command: CommandObject) -> None:
                          f"Use /order {order.id} for its buttons.")
 
 
+@router.message(Command("received"))
+async def cmd_received(message: Message, command: CommandObject) -> None:
+    """Manual fallback when the auto-scan is down: confirm a deposit by hand."""
+    raw = (command.args or "").strip().lstrip("#").upper().removeprefix("ORD")
+    if not raw.isdigit():
+        await message.answer("Usage: <code>/received 12</code> — confirms the deposit "
+                             "for an awaiting order and asks the user for their bank.")
+        return
+    async with Session() as session:
+        order = await try_transition(session, int(raw),
+                                     (OrderStatus.AWAITING_DEPOSIT,),
+                                     OrderStatus.DEPOSIT_RECEIVED,
+                                     txid="manual", deposit_detected_at=utcnow())
+    if order is None:
+        await message.answer("That order isn't awaiting a deposit.")
+        return
+    await notify_deposit_received(message.bot, order.id)
+    await message.answer(f"✅ Deposit confirmed manually for {texts.tag(order.id)} — "
+                         "the user is choosing their bank.")
+
+
 @router.message(Command("setrefund"))
 async def cmd_setrefund(message: Message, command: CommandObject) -> None:
     """Record a refund address on the user's behalf (e.g. received via DM)."""
@@ -311,7 +336,7 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
         if callback_data.action == "done":
             updated = await try_transition(
                 session, order.id,
-                (OrderStatus.SUBMITTED, OrderStatus.USDT_SENT), OrderStatus.COMPLETED)
+                (OrderStatus.PENDING_PAYOUT,), OrderStatus.COMPLETED)
             if updated is None:
                 await callback.answer("Already handled.", show_alert=True)
                 return

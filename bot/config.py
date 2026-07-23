@@ -12,9 +12,15 @@ class Settings(BaseSettings):
     db_path: str = "p2p.sqlite3"
     min_usd: float = 10
     max_usd: float = 10_000
-    cancel_window_sec: int = 30
     eta_text: str = "15-30 minutes"
     support_handle: str = "@support"
+
+    # TRON auto-scan
+    scan_interval_sec: int = 10
+    deposit_ttl_min: int = 60          # awaiting_deposit orders expire after this
+    trongrid_url: str = "https://api.trongrid.io"
+    trongrid_key: str = ""             # optional TronGrid API key for higher limits
+    usdt_contract: str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # mainnet USDT
 
     @property
     def admin_id_list(self) -> list[int]:

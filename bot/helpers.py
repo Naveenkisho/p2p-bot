@@ -76,10 +76,10 @@ def ist_time_str() -> str:
 
 
 async def queue_position(session: AsyncSession, order_id: int) -> int:
-    """1-based position among orders still waiting for a payout."""
+    """1-based position in the payout queue (funds in, bank chosen)."""
     ahead = await session.scalar(
         select(func.count()).select_from(Order).where(
-            Order.status.in_([OrderStatus.SUBMITTED.value, OrderStatus.USDT_SENT.value]),
+            Order.status == OrderStatus.PENDING_PAYOUT.value,
             Order.id < order_id))
     return (ahead or 0) + 1
 
@@ -111,9 +111,13 @@ def order_card(order: Order, user: User, bank: BankCard | None) -> str:
     lines.append(f"💱 1$/₹{order.rate_inr:g} → pay <b>₹{order.inr_amount:,.2f}</b>")
     if bank is not None:
         lines.append(f"🏦 Payout bank:\n<code>{esc(bank.details)}</code>")
+    elif status_str(order) in ("awaiting_deposit", "deposit_received"):
+        lines.append("🏦 Payout bank: not chosen yet")
     else:
         lines.append("🏦 Payout bank: ⚠️ deleted by the user")
     lines.append(f"📥 Deposit: <code>{esc(order.deposit_address)}</code>")
+    if order.txid:
+        lines.append(f"🔗 TX: <code>{esc(order.txid)}</code>")
     if order.refund_address:
         lines.append(f"↩️ Refund <b>{order.usd_amount:g} USDT</b> to:\n"
                      f"<code>{esc(order.refund_address)}</code>")

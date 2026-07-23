@@ -55,36 +55,20 @@ def ask_amount(service_label: str, rate: float) -> str:
     )
 
 
-def quote_block(usd: float, inr: float, service_label: str, rate: float) -> str:
-    return (
-        f"💰 You send: <b>{usd:g}$ USDT (TRC20)</b>\n"
-        f"💵 You receive: <b>₹{inr:,.2f}</b> via {service_label}\n"
-        f"💱 Rate locked: <b>1$ / ₹{rate:g}</b>"
-    )
-
-
-ASK_BANK_FIRST = (
-    "🏦 First time here — send your <b>bank details in one message</b>, one item per line:\n\n"
-    "<code>Bank name\n"
-    "Account holder name\n"
-    "Account number\n"
-    "IFSC</code>\n\n"
+ASK_BANK_NEW = (
+    "🏦 Send the <b>bank details in one message</b>, one item per line:\n\n"
+    "<code>Bank name\nAccount holder name\nAccount number\nIFSC</code>\n\n"
     "It's saved to <b>My Bank Cards</b> so next time you just pick it."
 )
 
-ASK_BANK_NEW = (
-    "🏦 Send the <b>new bank's details in one message</b>, one item per line:\n\n"
-    "<code>Bank name\nAccount holder name\nAccount number\nIFSC</code>"
-)
-
-CHOOSE_BANK = "🏦 Final step — <b>choose your bank</b> for the payout:"
-
 
 STATUS_EMOJI = {
-    "submitted": "⏳",
-    "usdt_sent": "📤",
+    "awaiting_deposit": "⏳",
+    "deposit_received": "📥",
+    "pending_payout": "💰",
     "completed": "✅",
     "cancelled": "❌",
+    "expired": "⌛",
     "refund_requested": "↩️",
     "refunded": "💸",
 }
@@ -96,20 +80,40 @@ def queue_note(position: int) -> str:
     return f"📊 Queue position: <b>#{position}</b> — moves up on every payout.\n\n"
 
 
-def order_placed(order_id: int, usd: float, inr: float, service_label: str,
-                 bank_label: str, address: str, rate: float,
-                 rate_note: str = "", q_note: str = "") -> str:
+def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
+                    address: str, rate: float, rate_note: str = "") -> str:
     return (
-        f"📝 <b>Order {tag(order_id)} placed!</b>\n"
+        f"📝 <b>Order {tag(order_id)} created!</b>\n"
         f"🧾 Order ID: <code>{tag(order_id)}</code> — quote it to support anytime.\n\n"
-        f"{q_note}"
         f"{rate_note}"
         f"Sell: <b>{usd:g}$</b> via {service_label} at 1$/₹{rate:g}\n"
-        f"You receive: <b>₹{inr:,.2f}</b> → {html.escape(bank_label)}\n\n"
-        f"Send <b>{usd:g} USDT (TRC20)</b> to:\n"
+        f"You receive: <b>₹{inr:,.2f}</b>\n\n"
+        f"Send <b>exactly {usd:g} USDT (TRC20)</b> to:\n"
         f"<code>{address}</code>\n\n"
-        "⚠️ TRC20 network only. Tap the button once you've sent it.\n"
-        f"❌ You can cancel within {settings.cancel_window_sec} seconds of placing the order."
+        "⚡ Our system watches the blockchain — your deposit is auto-detected, "
+        "usually within seconds of confirmation. You'll get an instant message "
+        "here, then just choose your bank for the payout.\n\n"
+        "⚠️ TRC20 network only, exact amount only.\n"
+        f"⌛ This order stays open for {settings.deposit_ttl_min} minutes."
+    )
+
+
+def deposit_received(order_id: int, usd: float, inr: float, txid: str) -> str:
+    tx_note = f"🔗 TX: <code>{txid}</code>\n" if txid and txid != "manual" else ""
+    return (
+        f"✅✅ <b>We received your {usd:g} USDT!</b> — Order {tag(order_id)} 🟢\n"
+        f"{tx_note}\n"
+        f"Your payout: <b>₹{inr:,.2f}</b>\n\n"
+        "🏦 Final step — <b>choose your bank</b> below (or add one) and your "
+        "funds are on the way."
+    )
+
+
+def order_expired(order_id: int) -> str:
+    return (
+        f"⌛ <b>Order {tag(order_id)} expired</b> — we didn't see a deposit in time.\n\n"
+        "Nothing to worry about if you didn't send anything — just start a fresh "
+        "order. If you DID send USDT, message support with your order ID."
     )
 
 
@@ -143,8 +147,9 @@ def order_completed(order_id: int, usd: float, rate: float, inr: float,
 def order_cancelled(order_id: int) -> str:
     return (
         f"❌ <b>Order {tag(order_id)} cancelled.</b>\n\n"
-        "If you already sent the USDT, send your <b>TRC20 address</b> here now "
-        "and we'll refund it. (Address starts with <code>T</code>.)"
+        "Didn't send anything? You're done — start a fresh order anytime.\n"
+        "Already sent the USDT? Send your <b>TRC20 address</b> here now "
+        "(starts with <code>T</code>) and we'll sort the refund."
     )
 
 

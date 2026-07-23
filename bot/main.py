@@ -9,6 +9,7 @@ from aiogram.types import BotCommand, ErrorEvent
 from .config import settings
 from .db import init_db
 from .handlers import routers
+from .scanner import scan_loop
 
 
 async def main() -> None:
@@ -42,9 +43,13 @@ async def main() -> None:
         BotCommand(command="cancel", description="Cancel the current step"),
     ])
 
-    logging.getLogger(__name__).info("P2P desk bot starting (polling)…")
+    logging.getLogger(__name__).info("P2P desk bot starting (polling + tron scan)…")
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    scanner = asyncio.create_task(scan_loop(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scanner.cancel()
 
 
 if __name__ == "__main__":
