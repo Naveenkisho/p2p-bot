@@ -22,8 +22,9 @@ STATUS_EMOJI = {
 
 def tag(order_id: int) -> str:
     """Search-friendly order tag — same on the user and admin side, so one
-    Telegram search for #ORD12 finds the whole trail."""
-    return f"#ORD{order_id}"
+    Telegram search for #ORD0012 finds the whole trail. Zero-padded to 4
+    digits, then grows naturally (#ORD9999 → #ORD10000) forever."""
+    return f"#ORD{order_id:04d}"
 
 
 def trust_footer(name: str | None, user_id: int, support: str, lang: str = "en") -> str:
