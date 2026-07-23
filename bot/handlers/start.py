@@ -1,0 +1,131 @@
+import re
+
+from aiogram import F, Router
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
+
+from .. import texts
+from ..config import SERVICES
+from ..db import Session, get_or_create_user, get_rates
+from ..helpers import esc
+from ..keyboards import BankRmCb, banks_menu_kb, main_menu
+from ..models import BankCard
+from ..states import AddBank
+
+router = Router(name="start")
+
+
+def make_bank_label(details: str) -> str:
+    first_line = details.strip().splitlines()[0].strip()[:20]
+    digits = re.findall(r"\d{6,}", details)
+    if not digits:
+        return first_line
+    account = max(digits, key=len)  # longest run = the account number, not the IFSC
+    return f"{first_line} ••{account[-4:]}"
+
+
+@router.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    async with Session() as session:
+        user = await get_or_create_user(session, message.from_user.id,
+                                        message.from_user.username, message.from_user.first_name)
+    if user.banned:
+        await message.answer(texts.BANNED)
+        return
+    await message.answer(texts.welcome(esc(message.from_user.first_name), message.from_user.id),
+                         reply_markup=main_menu())
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Cancelled — back to the menu.", reply_markup=main_menu())
+
+
+@router.callback_query(F.data == "menu:home")
+async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.message.edit_text(
+        texts.welcome(esc(callback.from_user.first_name), callback.from_user.id),
+        reply_markup=main_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:rates")
+async def menu_rates(callback: CallbackQuery) -> None:
+    async with Session() as session:
+        rates = await get_rates(session)
+    if not rates:
+        await callback.answer(texts.DESK_CLOSED, show_alert=True)
+        return
+    lines = ["📈 <b>Live rates</b>", ""]
+    for key, rate in rates.items():
+        lines.append(f"• {SERVICES[key]} — <b>1$ / ₹{rate:g}</b>")
+    await callback.message.answer("\n".join(lines))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:support")
+async def menu_support(callback: CallbackQuery) -> None:
+    await callback.message.answer(texts.SUPPORT)
+    await callback.answer()
+
+
+async def _banks_view(user_id: int) -> tuple[str, object]:
+    async with Session() as session:
+        cards = (await session.scalars(
+            select(BankCard).where(BankCard.user_id == user_id).order_by(BankCard.id)
+        )).all()
+    if not cards:
+        text = "🏦 <b>My Bank Cards</b>\n\nNo banks saved yet — add one below."
+    else:
+        blocks = [f"🏦 <b>{esc(c.label)}</b>\n<code>{esc(c.details)}</code>" for c in cards]
+        text = "🏦 <b>My Bank Cards</b>\n\n" + "\n\n".join(blocks)
+    return text, banks_menu_kb(cards)
+
+
+@router.callback_query(F.data == "menu:banks")
+async def menu_banks(callback: CallbackQuery) -> None:
+    text, kb = await _banks_view(callback.from_user.id)
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "banks:add")
+async def banks_add(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddBank.details)
+    await callback.message.answer(texts.ASK_BANK_NEW)
+    await callback.answer()
+
+
+@router.message(AddBank.details, F.text)
+async def banks_add_details(message: Message, state: FSMContext) -> None:
+    details = message.text.strip()
+    if len(details.splitlines()) < 3:
+        await message.answer("Please send at least bank name, account holder, "
+                             "account number and IFSC — one per line.")
+        return
+    await state.clear()
+    async with Session() as session:
+        session.add(BankCard(user_id=message.from_user.id,
+                             label=make_bank_label(details), details=details))
+        await session.commit()
+    text, kb = await _banks_view(message.from_user.id)
+    await message.answer("✅ Bank saved!\n\n" + text, reply_markup=kb)
+
+
+@router.callback_query(BankRmCb.filter())
+async def banks_remove(callback: CallbackQuery, callback_data: BankRmCb) -> None:
+    async with Session() as session:
+        card = await session.get(BankCard, callback_data.card_id)
+        if card is None or card.user_id != callback.from_user.id:
+            await callback.answer("Not found.", show_alert=True)
+            return
+        await session.delete(card)
+        await session.commit()
+    text, kb = await _banks_view(callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer("Removed")
