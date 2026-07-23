@@ -1,0 +1,23 @@
+[Unit]
+Description=P2P USDT-INR desk bot (Telegram + web panel + TRON scan)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# adjust User and paths to your server
+User=p2pbot
+WorkingDirectory=/opt/p2p-bot
+EnvironmentFile=/opt/p2p-bot/.env
+ExecStart=/opt/p2p-bot/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=3
+# the panel's "change bot token" restarts the process — systemd brings it back
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

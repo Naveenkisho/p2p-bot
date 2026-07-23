@@ -20,7 +20,10 @@ TRC20_RE = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
 
 class IsAdmin(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
-        return event.from_user is not None and event.from_user.id in settings.admin_id_list
+        if event.from_user is None:
+            return False
+        from .db import is_admin
+        return await is_admin(event.from_user.id)
 
 
 def esc(text: str | None) -> str:
@@ -132,8 +135,9 @@ async def post_order_card(bot: Bot, session: AsyncSession, order: Order,
     """Send/refresh the order card to the admin group (or every admin DM) and
     remember the message ids so replies to any card reach the user.
     Returns False when NO admin target received the card."""
+    from .db import get_admin_targets
     text = order_card(order, user, bank)
-    targets = [settings.admin_chat_id] if settings.admin_chat_id else settings.admin_id_list
+    targets = await get_admin_targets(session)
     delivered = False
     for chat_id in targets:
         try:
@@ -164,7 +168,9 @@ async def update_order_cards(bot: Bot, session: AsyncSession, order: Order,
 
 
 async def notify_admins(bot: Bot, text: str) -> None:
-    targets = [settings.admin_chat_id] if settings.admin_chat_id else settings.admin_id_list
+    from .db import Session, get_admin_targets
+    async with Session() as session:
+        targets = await get_admin_targets(session)
     for chat_id in targets:
         try:
             await bot.send_message(chat_id, text)

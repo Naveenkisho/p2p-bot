@@ -61,6 +61,20 @@ the order card.
 | `/ban` / `/unban <user_id>` | block/unblock a user |
 | *reply to an order card* | DM that order's user through the bot (text/photo) |
 
+Admin identity, the deposit address, rates, support handles and the bot token
+are all editable at runtime (from Telegram commands or the web panel) — no
+restart needed except a bot-token change, which restarts automatically.
+
+## Web admin panel (optional)
+
+Set `P2P_PANEL_PASSWORD` and the bot serves a small web dashboard in the same
+process (default `127.0.0.1:8088`): tabbed order list (Active / Refunds / Done),
+per-order actions (confirm deposit, mark Done, refund), and a Settings page to
+change rates, deposit address, support handles, **admin IDs and the bot token**.
+It's disabled unless a password is set. Put nginx + HTTPS in front and restrict
+it to your IP — it can change the bot token and admin list, so treat it like a
+bank login. See [DEPLOY.md](DEPLOY.md).
+
 ## Setup
 
 ```bash

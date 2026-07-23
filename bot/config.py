@@ -27,9 +27,15 @@ class Settings(BaseSettings):
     # Max simultaneously-open orders per user (awaiting/received/pending)
     open_orders_max: int = 3
 
+    # Web admin panel (optional; disabled unless a password is set)
+    panel_password: str = ""           # required to enable the web panel
+    panel_secret: str = ""             # cookie-signing secret (auto-derived if blank)
+    panel_host: str = "127.0.0.1"      # bind localhost by default → front with nginx/TLS
+    panel_port: int = 8088
+
     @property
     def admin_id_list(self) -> list[int]:
-        return [int(x) for x in self.admin_ids.split(",") if x.strip()]
+        return [int(x) for x in self.admin_ids.replace(",", " ").split() if x.strip().isdigit()]
 
 
 @lru_cache

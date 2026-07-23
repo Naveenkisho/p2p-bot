@@ -6,26 +6,20 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
 from .. import texts
+from ..actions import complete_order, confirm_deposit, refund_order
 from ..config import SERVICES, settings
 from ..db import Session, get_deposit_address, get_rates, get_setting, get_support, set_setting
-from ..flow import notify_deposit_received
 from ..helpers import (
     IsAdmin,
     age_str,
     esc,
     is_trc20,
-    ist_now_str,
     ist_time_str,
-    notify_admins,
-    notify_user,
     order_card,
-    status_str,
     strip_kb,
-    try_transition,
-    update_order_cards,
 )
 from ..keyboards import PANEL_TABS, AdminCb, admin_order_kb, panel_kb
-from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, SeenTx, User, utcnow
+from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, User, utcnow
 
 router = Router(name="admin")
 router.message.filter(IsAdmin())
@@ -159,23 +153,6 @@ async def cmd_setchannel(message: Message, command: CommandObject) -> None:
                          "posts an anonymized proof card there.")
 
 
-async def _post_proof(bot, order: Order) -> None:
-    """Anonymized completion post to the public proof channel, if configured."""
-    async with Session() as session:
-        channel = await get_setting(session, "proof_channel")
-    if not channel:
-        return
-    target: int | str = int(channel) if channel.lstrip("-").isdigit() else channel
-    minutes = max(1, int((utcnow() - order.created_at).total_seconds() // 60))
-    try:
-        await bot.send_message(target, texts.proof_post(
-            order.id, order.usd_amount, order.rate_inr, order.inr_amount,
-            SERVICES.get(order.service, order.service), minutes))
-    except Exception:
-        await notify_admins(bot, "⚠️ Couldn't post to the proof channel — "
-                                 "is the bot still admin there?")
-
-
 TAB_STATUSES = {
     "active": (OrderStatus.AWAITING_DEPOSIT.value, OrderStatus.DEPOSIT_RECEIVED.value,
                OrderStatus.PENDING_PAYOUT.value),
@@ -282,23 +259,11 @@ async def cmd_received(message: Message, command: CommandObject) -> None:
                              "deposit and asks the user for their bank.")
         return
     txid = parts[1] if len(parts) > 1 else "manual"
-    async with Session() as session:
-        # if this txid was recorded as unmatched/ambiguous, tie it to this order
-        if txid != "manual":
-            seen = await session.get(SeenTx, txid)
-            if seen is not None and seen.order_id is None:
-                seen.order_id = int(raw)
-                await session.commit()
-        order = await try_transition(
-            session, int(raw),
-            (OrderStatus.AWAITING_DEPOSIT, OrderStatus.EXPIRED),
-            OrderStatus.DEPOSIT_RECEIVED, txid=txid, deposit_detected_at=utcnow())
-    if order is None:
-        await message.answer("That order isn't awaiting (or expired) — check /order "
-                             f"{raw} first.")
+    ok, msg = await confirm_deposit(message.bot, int(raw), txid)
+    if not ok:
+        await message.answer(f"{msg} Check /order {raw} first.")
         return
-    await notify_deposit_received(message.bot, order.id)
-    await message.answer(f"✅ Deposit confirmed manually for {texts.tag(order.id)} — "
+    await message.answer(f"✅ Deposit confirmed manually for {texts.tag(int(raw))} — "
                          "the user is choosing their bank.")
 
 
@@ -345,62 +310,14 @@ async def cmd_ban(message: Message, command: CommandObject) -> None:
 
 @router.callback_query(AdminCb.filter())
 async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) -> None:
-    async with Session() as session:
-        order = await session.get(Order, callback_data.order_id)
-        if order is None:
-            await callback.answer("Order not found.", show_alert=True)
-            return
-        card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
-
-        if callback_data.action == "done":
-            updated = await try_transition(
-                session, order.id,
-                (OrderStatus.PENDING_PAYOUT,), OrderStatus.COMPLETED)
-            if updated is None:
-                await callback.answer("Already handled.", show_alert=True)
-                return
-            user = await session.get(User, order.user_id)
-            support = await get_support(session)
-            lang = user.lang if user and user.lang else "en"
-            receipt = texts.order_completed(
-                order.id, order.usd_amount, order.rate_inr, order.inr_amount,
-                SERVICES.get(order.service, order.service),
-                card.details if card else "", ist_now_str(), lang)
-            if user is not None:
-                receipt += texts.trust_footer(user.first_name, user.id, support, lang)
-            delivered = await notify_user(callback.bot, order.user_id, receipt)
-            await callback.answer("Done — user notified ✅" if delivered
-                                  else "Done, but couldn't DM the user ⚠️", show_alert=not delivered)
-            await notify_admins(callback.bot, f"✅ Order {texts.tag(order.id)} completed."
-                                + ("" if delivered else " ⚠️ User DM failed (blocked bot?)."))
-            if user is not None:
-                await update_order_cards(callback.bot, session, updated, user, card, None)
-            await _post_proof(callback.bot, updated)
-
-        elif callback_data.action == "refunded":
-            if order.status == OrderStatus.CANCELLED:
-                await callback.answer("No refund address from the user yet.", show_alert=True)
-                return
-            updated = await try_transition(
-                session, order.id, (OrderStatus.REFUND_REQUESTED,), OrderStatus.REFUNDED)
-            if updated is None:
-                await callback.answer("Already handled.", show_alert=True)
-                return
-            user = await session.get(User, order.user_id)
-            lang = user.lang if user and user.lang else "en"
-            delivered = await notify_user(
-                callback.bot, order.user_id,
-                texts.refund_sent(order.id, order.usd_amount, order.refund_address, lang))
-            await callback.answer("Refund marked sent ✅" if delivered
-                                  else "Refund marked, but couldn't DM the user ⚠️",
-                                  show_alert=not delivered)
-            await notify_admins(callback.bot, f"💸 Order {texts.tag(order.id)} refunded.")
-            if user is not None:
-                await update_order_cards(callback.bot, session, updated, user, card, None)
-
-        else:
-            await callback.answer()
-
+    if callback_data.action == "done":
+        ok, msg = await complete_order(callback.bot, callback_data.order_id)
+    elif callback_data.action == "refunded":
+        ok, msg = await refund_order(callback.bot, callback_data.order_id)
+    else:
+        await callback.answer()
+        return
+    await callback.answer(msg, show_alert=not ok or "⚠️" in msg)
     await strip_kb(callback.message)
 
 

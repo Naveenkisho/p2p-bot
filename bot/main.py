@@ -7,8 +7,9 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, ErrorEvent
 
 from .config import settings
-from .db import init_db
+from .db import Session, get_bot_token, init_db
 from .handlers import routers
+from .panel import start_panel
 from .scanner import scan_loop
 
 
@@ -19,8 +20,9 @@ async def main() -> None:
     )
     await init_db()
 
-    bot = Bot(settings.bot_token,
-              default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    async with Session() as session:
+        token = await get_bot_token(session)   # DB (panel-set) wins over env
+    bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     for router in routers:
         dp.include_router(router)
@@ -53,10 +55,15 @@ async def main() -> None:
                                               exc_info=task.exception())
 
     scanner.add_done_callback(_scanner_done)
+
+    panel_runner = await start_panel(bot)  # web admin panel (if enabled)
+
     try:
         await dp.start_polling(bot)
     finally:
         scanner.cancel()
+        if panel_runner is not None:
+            await panel_runner.cleanup()
 
 
 if __name__ == "__main__":

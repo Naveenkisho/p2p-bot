@@ -95,3 +95,34 @@ async def get_support(session: AsyncSession) -> str:
 async def get_lang(session: AsyncSession, user_id: int) -> str:
     user = await session.get(User, user_id)
     return user.lang if user and user.lang else "en"
+
+
+# ── Runtime config: editable from the web panel, DB-backed with env bootstrap ──
+
+async def get_admin_ids(session: AsyncSession) -> set[int]:
+    raw = await get_setting(session, "admin_ids")
+    source = raw if raw is not None else settings.admin_ids
+    return {int(x) for x in source.replace(",", " ").split() if x.strip().isdigit()}
+
+
+async def get_admin_chat_id(session: AsyncSession) -> int | None:
+    raw = await get_setting(session, "admin_chat_id")
+    if raw is None:
+        return settings.admin_chat_id
+    raw = raw.strip()
+    return int(raw) if raw.lstrip("-").isdigit() else None
+
+
+async def get_admin_targets(session: AsyncSession) -> list[int]:
+    chat = await get_admin_chat_id(session)
+    return [chat] if chat else sorted(await get_admin_ids(session))
+
+
+async def get_bot_token(session: AsyncSession) -> str:
+    raw = await get_setting(session, "bot_token")
+    return (raw or "").strip() or settings.bot_token
+
+
+async def is_admin(user_id: int) -> bool:
+    async with Session() as session:
+        return user_id in await get_admin_ids(session)
