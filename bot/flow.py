@@ -26,10 +26,11 @@ async def notify_deposit_received(bot: Bot, order_id: int) -> None:
             .order_by(BankCard.id)
         )).all()
         support = await get_support(session)
+    lang = user.lang if user and user.lang else "en"
     text = texts.deposit_received(order.id, order.usd_amount, order.inr_amount,
-                                  order.txid or "")
+                                  order.txid or "", lang)
     if user is not None:
-        text += texts.trust_footer(user.first_name, user.id, support)
+        text += texts.trust_footer(user.first_name, user.id, support, lang)
     delivered = await notify_user(bot, order.user_id, text,
                                   reply_markup=bank_chooser_kb(order.id, cards))
     await notify_admins(

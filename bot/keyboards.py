@@ -44,6 +44,16 @@ def main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📈 Rates", callback_data="menu:rates"),
             InlineKeyboardButton(text="🆘 Support", callback_data="menu:support"),
         ],
+        [InlineKeyboardButton(text="🌐 Language / Bhasha", callback_data="menu:lang")],
+    ])
+
+
+def language_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
+            InlineKeyboardButton(text="🇮🇳 Hinglish", callback_data="lang:hi"),
+        ],
     ])
 
 

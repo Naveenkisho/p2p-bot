@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from .. import texts
 from ..config import SERVICES, settings
-from ..db import Session, get_deposit_address, get_or_create_user, get_rates, get_support
+from ..db import Session, get_deposit_address, get_lang, get_or_create_user, get_rates, get_support
 from ..flow import notify_deposit_received
 from ..helpers import (
     TRC20_RE,
@@ -39,9 +39,11 @@ async def _warn_no_address_once(bot) -> None:
                                  "is set — run /setaddress T…")
 
 
-async def _footer(session, tg_user) -> str:
+async def _ctx(session, tg_user) -> tuple[str, str]:
+    """(lang, trust footer) for the acting user."""
     support = await get_support(session)
-    return texts.trust_footer(tg_user.first_name, tg_user.id, support)
+    lang = await get_lang(session, tg_user.id)
+    return lang, texts.trust_footer(tg_user.first_name, tg_user.id, support, lang)
 
 
 @router.callback_query(F.data == "menu:sell")
@@ -51,7 +53,7 @@ async def sell_menu(callback: CallbackQuery, state: FSMContext) -> None:
                                         callback.from_user.username, callback.from_user.first_name)
         rates = await get_rates(session)
         address = await get_deposit_address(session)
-        footer = await _footer(session, callback.from_user)
+        lang, footer = await _ctx(session, callback.from_user)
     if user.banned:
         await callback.answer(texts.BANNED, show_alert=True)
         return
@@ -61,7 +63,7 @@ async def sell_menu(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer(texts.DESK_CLOSED, show_alert=True)
         return
     await state.clear()
-    await callback.message.answer(texts.services_header(rates) + footer,
+    await callback.message.answer(texts.services_header(rates, lang) + footer,
                                   reply_markup=services_kb(rates))
     await callback.answer()
 
@@ -71,14 +73,14 @@ async def sell_service(callback: CallbackQuery, state: FSMContext) -> None:
     key = callback.data.split(":", 1)[1]
     async with Session() as session:
         rates = await get_rates(session)
-        footer = await _footer(session, callback.from_user)
+        lang, footer = await _ctx(session, callback.from_user)
     if key not in rates:
         await callback.answer("That service is unavailable right now.", show_alert=True)
         return
     await state.clear()
     await state.update_data(service=key, rate=rates[key])
     await state.set_state(SellFlow.amount)
-    await callback.message.answer(texts.ask_amount(SERVICES[key], rates[key]) + footer)
+    await callback.message.answer(texts.ask_amount(SERVICES[key], rates[key], lang) + footer)
     await callback.answer()
 
 
@@ -113,10 +115,11 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
         if service is None or service not in rates:
             await message.answer("That session expired — tap 💵 USDT Sell to start over.")
             return
+        lang, footer = await _ctx(session, message.from_user)
         rate_note = ""
         if rates[service] != rate:
             rate = rates[service]
-            rate_note = f"📈 Rate updated since your quote: <b>1$ / ₹{rate:g}</b>\n\n"
+            rate_note = texts.rate_updated_note(rate, lang)
         order = Order(
             user_id=user.id,
             side="sell",
@@ -128,10 +131,10 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
         )
         session.add(order)
         await session.commit()
-        footer = await _footer(session, message.from_user)
         await message.answer(
             texts.deposit_request(order.id, order.usd_amount, order.inr_amount,
-                                  SERVICES[service], address, rate, rate_note) + footer,
+                                  SERVICES[service], address, rate, rate_note,
+                                  lang) + footer,
             reply_markup=deposit_kb(order.id),
         )
         posted = await post_order_card(message.bot, session, order, user, None,
@@ -186,11 +189,11 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                                       "your deposit is already in. Contact support.",
                                       show_alert=True)
                 return
-            footer = await _footer(session, callback.from_user)
+            lang, footer = await _ctx(session, callback.from_user)
             await strip_kb(callback.message)
             await state.clear()
             await state.set_state(RefundFlow.address)
-            await callback.message.answer(texts.order_cancelled(order.id) + footer)
+            await callback.message.answer(texts.order_cancelled(order.id, lang) + footer)
             await notify_admins(callback.bot,
                                 f"🚫 Order {texts.tag(order.id)} cancelled by the user "
                                 f"(no deposit detected).")
@@ -223,11 +226,11 @@ async def _attach_bank(bot, order_id: int, user_id: int, card_id: int):
 async def _finish_bank_step(message_target, bot, order: Order, card: BankCard,
                             tg_user) -> None:
     async with Session() as session:
-        footer = await _footer(session, tg_user)
-        q_note = texts.queue_note(await queue_position(session, order.id))
+        lang, footer = await _ctx(session, tg_user)
+        q_note = texts.queue_note(await queue_position(session, order.id), lang)
         user = await session.get(User, order.user_id)
         await message_target.answer(
-            texts.order_submitted(order.id, card.details, q_note) + footer)
+            texts.order_submitted(order.id, card.details, q_note, lang) + footer)
         posted = await post_order_card(bot, session, order, user, card,
                                        admin_order_kb(order.id, "pending_payout"))
         await update_order_cards(bot, session, order, user, card,
@@ -249,10 +252,12 @@ async def pick_bank(callback: CallbackQuery, callback_data: PickBankCb,
         if order.status != OrderStatus.DEPOSIT_RECEIVED:
             await callback.answer("This order is already in processing.", show_alert=True)
             return
+        async with Session() as session:
+            lang = await get_lang(session, callback.from_user.id)
         await state.clear()
         await state.set_state(BankForOrder.details)
         await state.update_data(order_id=order.id)
-        await callback.message.answer(texts.ASK_BANK_NEW)
+        await callback.message.answer(texts.ask_bank_new(lang))
         await callback.answer()
         return
     result = await _attach_bank(callback.bot, order.id, callback.from_user.id,
@@ -329,13 +334,17 @@ async def _record_refund_address(message: Message, address: str) -> None:
             return
         user = await session.get(User, order.user_id)
         card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
-        footer = await _footer(session, message.from_user)
+        lang, footer = await _ctx(session, message.from_user)
         note = ""
         if len(cancelled) > 1:
-            note = (f"\n\n⚠️ You have another cancelled order "
-                    f"{texts.tag(cancelled[1].id)} — send its refund address too.")
+            if lang == "hi":
+                note = (f"\n\n⚠️ Aapka ek aur cancelled order hai "
+                        f"{texts.tag(cancelled[1].id)} — uska refund address bhi bhejein.")
+            else:
+                note = (f"\n\n⚠️ You have another cancelled order "
+                        f"{texts.tag(cancelled[1].id)} — send its refund address too.")
         await message.answer(
-            texts.refund_noted(order.id, order.usd_amount, address) + note + footer)
+            texts.refund_noted(order.id, order.usd_amount, address, lang) + note + footer)
         await post_order_card(message.bot, session, order, user, card,
                               admin_order_kb(order.id, "refund_requested"))
         await update_order_cards(message.bot, session, order, user, card,

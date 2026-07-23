@@ -8,9 +8,9 @@ from sqlalchemy import select
 
 from .. import texts
 from ..config import SERVICES
-from ..db import Session, get_or_create_user, get_rates, get_support
-from ..helpers import esc
-from ..keyboards import BankRmCb, banks_menu_kb, main_menu
+from ..db import Session, get_lang, get_or_create_user, get_rates, get_support
+from ..helpers import esc, strip_kb
+from ..keyboards import BankRmCb, banks_menu_kb, language_kb, main_menu
 from ..models import OPEN_STATUSES, BankCard, Order
 from ..states import AddBank
 
@@ -47,7 +47,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         await message.answer(texts.BANNED)
         return
     await message.answer(
-        texts.welcome(message.from_user.first_name, message.from_user.id, support),
+        texts.welcome(message.from_user.first_name, message.from_user.id, support,
+                      user.lang),
         reply_markup=main_menu())
 
 
@@ -62,13 +63,43 @@ async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     async with Session() as session:
         support = await get_support(session)
-    text = texts.welcome(callback.from_user.first_name, callback.from_user.id, support)
+        lang = await get_lang(session, callback.from_user.id)
+    text = texts.welcome(callback.from_user.first_name, callback.from_user.id,
+                         support, lang)
     try:
         await callback.message.edit_text(text, reply_markup=main_menu())
     except Exception:
         # old/inaccessible message — send a fresh menu instead
         await callback.bot.send_message(callback.from_user.id, text,
                                         reply_markup=main_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:lang")
+async def menu_lang(callback: CallbackQuery) -> None:
+    await callback.message.answer(texts.CHOOSE_LANGUAGE, reply_markup=language_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("lang:"))
+async def set_language(callback: CallbackQuery) -> None:
+    lang = callback.data.split(":", 1)[1]
+    if lang not in ("en", "hi"):
+        await callback.answer()
+        return
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id,
+                                        callback.from_user.username,
+                                        callback.from_user.first_name)
+        user.lang = lang
+        await session.commit()
+        support = await get_support(session)
+    await strip_kb(callback.message)
+    await callback.message.answer(texts.language_saved(lang))
+    await callback.message.answer(
+        texts.welcome(callback.from_user.first_name, callback.from_user.id,
+                      support, lang),
+        reply_markup=main_menu())
     await callback.answer()
 
 
@@ -94,22 +125,24 @@ async def my_orders(callback: CallbackQuery) -> None:
             .order_by(Order.id.desc()).limit(10)
         )).all()
         support = await get_support(session)
+        lang = await get_lang(session, callback.from_user.id)
+    footer = texts.trust_footer(callback.from_user.first_name,
+                                callback.from_user.id, support, lang)
     if not orders:
-        await callback.message.answer(
-            "📋 You have no orders yet — tap 💵 USDT Sell to start!"
-            + texts.trust_footer(callback.from_user.first_name,
-                                 callback.from_user.id, support))
+        empty = ("📋 Abhi tak koi order nahi — 💵 USDT Sell dabakar shuru karein!"
+                 if lang == "hi" else
+                 "📋 You have no orders yet — tap 💵 USDT Sell to start!")
+        await callback.message.answer(empty + footer)
         await callback.answer()
         return
-    lines = ["📋 <b>Your last orders</b>", ""]
+    heading = "📋 <b>Aapke last orders</b>" if lang == "hi" else "📋 <b>Your last orders</b>"
+    lines = [heading, ""]
     for o in orders:
         status = o.status.value if hasattr(o.status, "value") else str(o.status)
         emoji = texts.STATUS_EMOJI.get(status, "•")
         lines.append(f"{emoji} <code>{texts.tag(o.id)}</code> — {o.usd_amount:g}$ "
                      f"→ ₹{o.inr_amount:,.2f} — <i>{status}</i>")
-    await callback.message.answer(
-        "\n".join(lines)
-        + texts.trust_footer(callback.from_user.first_name, callback.from_user.id, support))
+    await callback.message.answer("\n".join(lines) + footer)
     await callback.answer()
 
 
@@ -117,9 +150,11 @@ async def my_orders(callback: CallbackQuery) -> None:
 async def menu_support(callback: CallbackQuery) -> None:
     async with Session() as session:
         support = await get_support(session)
+        lang = await get_lang(session, callback.from_user.id)
     await callback.message.answer(
-        texts.support_text(support)
-        + texts.trust_footer(callback.from_user.first_name, callback.from_user.id, support))
+        texts.support_text(support, lang)
+        + texts.trust_footer(callback.from_user.first_name, callback.from_user.id,
+                             support, lang))
     await callback.answer()
 
 
@@ -145,8 +180,10 @@ async def menu_banks(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "banks:add")
 async def banks_add(callback: CallbackQuery, state: FSMContext) -> None:
+    async with Session() as session:
+        lang = await get_lang(session, callback.from_user.id)
     await state.set_state(AddBank.details)
-    await callback.message.answer(texts.ASK_BANK_NEW)
+    await callback.message.answer(texts.ask_bank_new(lang))
     await callback.answer()
 
 

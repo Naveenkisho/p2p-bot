@@ -16,7 +16,7 @@ from .config import settings
 from .db import Session, get_deposit_address
 from .flow import notify_deposit_received
 from .helpers import notify_admins, notify_user, try_transition
-from .models import Order, OrderStatus, SeenTx, utcnow
+from .models import Order, OrderStatus, SeenTx, User, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -89,19 +89,20 @@ async def process_transfer(bot: Bot, tx: dict, address: str, bootstrap: bool) ->
 
 async def expire_stale_orders(bot: Bot) -> None:
     cutoff = utcnow() - timedelta(minutes=settings.deposit_ttl_min)
+    expired: list[tuple[Order, str]] = []
     async with Session() as session:
         stale = (await session.scalars(
             select(Order).where(Order.status == OrderStatus.AWAITING_DEPOSIT.value,
                                 Order.created_at < cutoff))).all()
-        expired = []
         for order in stale:
             updated = await try_transition(session, order.id,
                                            (OrderStatus.AWAITING_DEPOSIT,),
                                            OrderStatus.EXPIRED)
             if updated is not None:
-                expired.append(updated)
-    for order in expired:
-        await notify_user(bot, order.user_id, texts.order_expired(order.id))
+                user = await session.get(User, order.user_id)
+                expired.append((updated, user.lang if user and user.lang else "en"))
+    for order, lang in expired:
+        await notify_user(bot, order.user_id, texts.order_expired(order.id, lang))
 
 
 async def scan_once(bot: Bot, http: aiohttp.ClientSession, bootstrap: bool) -> None:

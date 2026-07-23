@@ -342,12 +342,13 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
                 return
             user = await session.get(User, order.user_id)
             support = await get_support(session)
+            lang = user.lang if user and user.lang else "en"
             receipt = texts.order_completed(
                 order.id, order.usd_amount, order.rate_inr, order.inr_amount,
                 SERVICES.get(order.service, order.service),
-                card.details if card else "", ist_now_str())
+                card.details if card else "", ist_now_str(), lang)
             if user is not None:
-                receipt += texts.trust_footer(user.first_name, user.id, support)
+                receipt += texts.trust_footer(user.first_name, user.id, support, lang)
             delivered = await notify_user(callback.bot, order.user_id, receipt)
             await callback.answer("Done — user notified ✅" if delivered
                                   else "Done, but couldn't DM the user ⚠️", show_alert=not delivered)
@@ -366,14 +367,15 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
             if updated is None:
                 await callback.answer("Already handled.", show_alert=True)
                 return
+            user = await session.get(User, order.user_id)
+            lang = user.lang if user and user.lang else "en"
             delivered = await notify_user(
                 callback.bot, order.user_id,
-                texts.refund_sent(order.id, order.usd_amount, order.refund_address))
+                texts.refund_sent(order.id, order.usd_amount, order.refund_address, lang))
             await callback.answer("Refund marked sent ✅" if delivered
                                   else "Refund marked, but couldn't DM the user ⚠️",
                                   show_alert=not delivered)
             await notify_admins(callback.bot, f"💸 Order {texts.tag(order.id)} refunded.")
-            user = await session.get(User, order.user_id)
             if user is not None:
                 await update_order_cards(callback.bot, session, updated, user, card, None)
 

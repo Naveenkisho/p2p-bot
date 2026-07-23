@@ -69,3 +69,8 @@ async def get_deposit_address(session: AsyncSession) -> str | None:
 async def get_support(session: AsyncSession) -> str:
     """Support contact(s) — chat-managed via /setsupport, env fallback."""
     return (await get_setting(session, "support")) or settings.support_handle
+
+
+async def get_lang(session: AsyncSession, user_id: int) -> str:
+    user = await session.get(User, user_id)
+    return user.lang if user and user.lang else "en"
