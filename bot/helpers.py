@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from aiogram import Bot
 from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import texts
@@ -104,18 +104,39 @@ def order_card(order: Order, user: User, bank: BankCard | None) -> str:
 
 async def post_order_card(bot: Bot, session: AsyncSession, order: Order,
                           user: User, bank: BankCard | None,
-                          reply_markup: InlineKeyboardMarkup | None) -> None:
+                          reply_markup: InlineKeyboardMarkup | None) -> bool:
     """Send/refresh the order card to the admin group (or every admin DM) and
-    remember the message ids so replies to any card reach the user."""
+    remember the message ids so replies to any card reach the user.
+    Returns False when NO admin target received the card."""
     text = order_card(order, user, bank)
     targets = [settings.admin_chat_id] if settings.admin_chat_id else settings.admin_id_list
+    delivered = False
     for chat_id in targets:
         try:
             msg = await bot.send_message(chat_id, text, reply_markup=reply_markup)
             session.add(OrderMsg(order_id=order.id, chat_id=chat_id, message_id=msg.message_id))
+            delivered = True
         except Exception:
             log.exception("failed to post order card to %s", chat_id)
     await session.commit()
+    return delivered
+
+
+async def update_order_cards(bot: Bot, session: AsyncSession, order: Order,
+                             user: User, bank: BankCard | None,
+                             reply_markup: InlineKeyboardMarkup | None) -> None:
+    """Edit every previously posted admin card for this order so stale cards
+    never show an outdated status (e.g. a live Done button after a cancel)."""
+    text = order_card(order, user, bank)
+    rows = (await session.scalars(
+        select(OrderMsg).where(OrderMsg.order_id == order.id))).all()
+    for row in rows:
+        try:
+            await bot.edit_message_text(text, chat_id=row.chat_id,
+                                        message_id=row.message_id,
+                                        reply_markup=reply_markup)
+        except Exception:
+            pass  # message too old to edit, deleted, or unchanged — all fine
 
 
 async def notify_admins(bot: Bot, text: str) -> None:

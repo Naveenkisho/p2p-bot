@@ -17,6 +17,16 @@ from ..states import AddBank
 router = Router(name="start")
 
 
+def bank_details_error(details: str) -> str | None:
+    lines = details.splitlines()
+    if len(lines) < 3:
+        return ("Please send bank name, account holder, account number "
+                "and IFSC — one per line.")
+    if len(details) > 350 or len(lines) > 8:
+        return "That's too long — just the bank name, holder, account number and IFSC please."
+    return None
+
+
 def make_bank_label(details: str) -> str:
     first_line = details.strip().splitlines()[0].strip()[:20]
     digits = re.findall(r"\d{6,}", details)
@@ -116,9 +126,9 @@ async def banks_add(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(AddBank.details, F.text)
 async def banks_add_details(message: Message, state: FSMContext) -> None:
     details = message.text.strip()
-    if len(details.splitlines()) < 3:
-        await message.answer("Please send at least bank name, account holder, "
-                             "account number and IFSC — one per line.")
+    error = bank_details_error(details)
+    if error:
+        await message.answer(error)
         return
     await state.clear()
     async with Session() as session:
@@ -127,6 +137,12 @@ async def banks_add_details(message: Message, state: FSMContext) -> None:
         await session.commit()
     text, kb = await _banks_view(message.from_user.id)
     await message.answer("✅ Bank saved!\n\n" + text, reply_markup=kb)
+
+
+@router.message(AddBank.details)
+async def banks_add_not_text(message: Message) -> None:
+    await message.answer("Please <b>type</b> the bank details as text — "
+                         "not a photo or file.")
 
 
 @router.callback_query(BankRmCb.filter())

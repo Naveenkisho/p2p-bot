@@ -19,6 +19,7 @@ from ..helpers import (
     status_str,
     strip_kb,
     try_transition,
+    update_order_cards,
 )
 from ..keyboards import AdminCb, admin_order_kb
 from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, User
@@ -39,6 +40,7 @@ async def admin_help(message: Message) -> None:
         "/orders — list open orders\n"
         "/order 12 — reshow an order card with its buttons\n"
         "/setstatus 12 completed — force an order's status (repair tool)\n"
+        "/setrefund 12 T… — record a refund address for a cancelled order\n"
         "/ban 123456789 · /unban 123456789\n\n"
         "💬 Reply to any order card to DM that user through the bot "
         "(text or screenshot)."
@@ -170,6 +172,28 @@ async def cmd_setstatus(message: Message, command: CommandObject) -> None:
                          f"Use /order {order.id} for its buttons.")
 
 
+@router.message(Command("setrefund"))
+async def cmd_setrefund(message: Message, command: CommandObject) -> None:
+    """Record a refund address on the user's behalf (e.g. received via DM)."""
+    parts = (command.args or "").split()
+    order_raw = parts[0].lstrip("#").upper().removeprefix("ORD") if parts else ""
+    if len(parts) != 2 or not order_raw.isdigit() or not is_trc20(parts[1]):
+        await message.answer("Usage: <code>/setrefund 12 T…</code> "
+                             "(34-char TRC20 address)")
+        return
+    async with Session() as session:
+        order = await session.get(Order, int(order_raw))
+        if order is None:
+            await message.answer("No such order.")
+            return
+        order.refund_address = parts[1]
+        if order.status == OrderStatus.CANCELLED:
+            order.status = OrderStatus.REFUND_REQUESTED.value
+        await session.commit()
+    await message.answer(f"✅ Refund address recorded for {texts.tag(order.id)} — "
+                         f"use /order {order.id} for the Refund-sent button.")
+
+
 @router.message(Command("ban"))
 @router.message(Command("unban"))
 async def cmd_ban(message: Message, command: CommandObject) -> None:
@@ -218,6 +242,8 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
                                   else "Done, but couldn't DM the user ⚠️", show_alert=not delivered)
             await notify_admins(callback.bot, f"✅ Order {texts.tag(order.id)} completed."
                                 + ("" if delivered else " ⚠️ User DM failed (blocked bot?)."))
+            if user is not None:
+                await update_order_cards(callback.bot, session, updated, user, card, None)
 
         elif callback_data.action == "refunded":
             if order.status == OrderStatus.CANCELLED:
@@ -235,6 +261,9 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
                                   else "Refund marked, but couldn't DM the user ⚠️",
                                   show_alert=not delivered)
             await notify_admins(callback.bot, f"💸 Order {texts.tag(order.id)} refunded.")
+            user = await session.get(User, order.user_id)
+            if user is not None:
+                await update_order_cards(callback.bot, session, updated, user, card, None)
 
         else:
             await callback.answer()
@@ -242,23 +271,34 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
     await strip_kb(callback.message)
 
 
-@router.message(StateFilter(None), F.reply_to_message)
+@router.message(StateFilter(None), F.reply_to_message,
+                lambda m: not (m.text or "").startswith("/"))
 async def relay_to_user(message: Message) -> None:
     """Admin replies to an order card → the bot forwards that reply (text or
-    screenshot) straight to the order's user."""
+    screenshot) straight to the order's user. Commands pass through untouched;
+    replies to non-bot messages (admins talking to each other) are ignored."""
+    target = message.reply_to_message
+    if target.from_user is None or target.from_user.id != message.bot.id:
+        return
     async with Session() as session:
         link = await session.scalar(
             select(OrderMsg).where(OrderMsg.chat_id == message.chat.id,
-                                   OrderMsg.message_id == message.reply_to_message.message_id))
+                                   OrderMsg.message_id == target.message_id))
         if link is None:
+            await message.reply("⚠️ This message isn't linked to an order — reply "
+                                "directly to an order card, or run /order &lt;id&gt; "
+                                "to print one.")
             return
         order = await session.get(Order, link.order_id)
+        user = await session.get(User, order.user_id) if order else None
     if order is None:
         return
     try:
         await message.bot.copy_message(chat_id=order.user_id,
                                        from_chat_id=message.chat.id,
                                        message_id=message.message_id)
-        await message.reply(f"📨 Delivered to the user of order {texts.tag(order.id)}.")
+        who = f"{esc(user.first_name)} (@{esc(user.username)})" if user and user.username \
+            else (esc(user.first_name) if user else "the user")
+        await message.reply(f"📨 Delivered to {who} — order {texts.tag(order.id)}.")
     except Exception:
         await message.reply("⚠️ Couldn't deliver — the user may have blocked the bot.")

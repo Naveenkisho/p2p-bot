@@ -8,7 +8,15 @@ from sqlalchemy import select
 from .. import texts
 from ..config import SERVICES, settings
 from ..db import Session, get_deposit_address, get_or_create_user, get_rates, get_support
-from ..helpers import is_trc20, notify_admins, post_order_card, strip_kb, try_transition
+from ..helpers import (
+    TRC20_RE,
+    is_trc20,
+    notify_admins,
+    post_order_card,
+    strip_kb,
+    try_transition,
+    update_order_cards,
+)
 from ..keyboards import (
     BankCb,
     OrderCb,
@@ -20,11 +28,12 @@ from ..keyboards import (
 )
 from ..models import BankCard, Order, OrderStatus, User, utcnow
 from ..states import RefundFlow, SellFlow
-from .start import make_bank_label
+from .start import bank_details_error, make_bank_label
 
 router = Router(name="sell")
 
 AMOUNT_RE = re.compile(r"^\$?\s*(\d{1,7}(?:\.\d{1,2})?)\s*\$?$")
+TRC20_PATTERN = TRC20_RE.pattern
 
 # one admin ping per process for the "no deposit address" misconfig,
 # so users tapping Sell can't spam the admin chat
@@ -117,9 +126,9 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
 @router.message(SellFlow.bank_details, F.text)
 async def sell_bank_details(message: Message, state: FSMContext) -> None:
     details = message.text.strip()
-    if len(details.splitlines()) < 3:
-        await message.answer("Please send bank name, account holder, account number "
-                             "and IFSC — one per line.")
+    error = bank_details_error(details)
+    if error:
+        await message.answer(error)
         return
     async with Session() as session:
         card = BankCard(user_id=message.from_user.id,
@@ -128,6 +137,17 @@ async def sell_bank_details(message: Message, state: FSMContext) -> None:
         await session.commit()
         card_id = card.id
     await _place_order(message, state, card_id=card_id, user_id=message.from_user.id)
+
+
+@router.message(SellFlow.amount)
+async def sell_amount_not_text(message: Message) -> None:
+    await message.answer("Please type the amount as a number, e.g. <code>100</code>.")
+
+
+@router.message(SellFlow.bank_details)
+async def sell_bank_not_text(message: Message) -> None:
+    await message.answer("Please <b>type</b> your bank details as text — "
+                         "not a photo or file.")
 
 
 @router.callback_query(SellFlow.choose_bank, BankCb.filter())
@@ -205,8 +225,12 @@ async def _place_order(message: Message, state: FSMContext,
                                rate, rate_note) + footer,
             reply_markup=order_placed_kb(order.id),
         )
-        await post_order_card(message.bot, session, order, user, card,
-                              admin_order_kb(order.id, "submitted"))
+        posted = await post_order_card(message.bot, session, order, user, card,
+                                       admin_order_kb(order.id, "submitted"))
+        if not posted:
+            await notify_admins(message.bot,
+                                f"⚠️ Couldn't post the card for Order {texts.tag(order.id)} "
+                                f"— run /order {order.id}.")
 
 
 @router.callback_query(OrderCb.filter())
@@ -225,6 +249,7 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                 await callback.answer("This order is already in processing.", show_alert=True)
                 return
             card = await session.get(BankCard, order.bank_card_id)
+            db_user = await session.get(User, order.user_id)
             footer = await _footer(session, callback.from_user)
             try:
                 await callback.message.edit_reply_markup(
@@ -237,6 +262,8 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             await notify_admins(callback.bot,
                                 f"📤 Order {texts.tag(order.id)}: user says the USDT is sent "
                                 f"({order.usd_amount:g}$).")
+            await update_order_cards(callback.bot, session, updated, db_user, card,
+                                     admin_order_kb(order.id, "usdt_sent"))
             await callback.answer()
 
         elif callback_data.action == "cancel":
@@ -255,44 +282,82 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             await strip_kb(callback.message)
             await state.clear()
             await state.set_state(RefundFlow.address)
-            await state.update_data(order_id=order.id)
             await callback.message.answer(texts.order_cancelled(order.id) + footer)
             await notify_admins(callback.bot,
                                 f"🚫 Order {texts.tag(order.id)} CANCELLED by the user — "
                                 f"awaiting their refund address.")
+            card = await session.get(BankCard, order.bank_card_id)
+            db_user = await session.get(User, order.user_id)
+            await update_order_cards(callback.bot, session, updated, db_user, card,
+                                     admin_order_kb(order.id, "cancelled"))
             await callback.answer("Cancelled")
 
         else:
             await callback.answer()
 
 
+async def _record_refund_address(message: Message, address: str) -> None:
+    """Attach a refund address to the user's oldest cancelled order.
+
+    Driven by the DB, not FSM state, so it survives /start, restarts, and a
+    second cancel — as long as ANY cancelled order is waiting, a TRC20
+    address message from that user gets recorded.
+    """
+    async with Session() as session:
+        cancelled = (await session.scalars(
+            select(Order).where(Order.user_id == message.from_user.id,
+                                Order.status == OrderStatus.CANCELLED.value)
+            .order_by(Order.id)
+        )).all()
+        support = await get_support(session)
+        if not cancelled:
+            await message.answer("You have no refund pending right now. "
+                                 f"Message {support} if you think that's wrong.")
+            return
+        order = await try_transition(session, cancelled[0].id,
+                                     (OrderStatus.CANCELLED,), OrderStatus.REFUND_REQUESTED,
+                                     refund_address=address)
+        if order is None:
+            await message.answer(f"That refund is already being processed — "
+                                 f"message {support} if anything is off.")
+            return
+        user = await session.get(User, order.user_id)
+        card = await session.get(BankCard, order.bank_card_id)
+        footer = await _footer(session, message.from_user)
+        note = ""
+        if len(cancelled) > 1:
+            note = (f"\n\n⚠️ You have another cancelled order "
+                    f"{texts.tag(cancelled[1].id)} — send its refund address too.")
+        await message.answer(
+            texts.refund_noted(order.id, order.usd_amount, address) + note + footer)
+        await post_order_card(message.bot, session, order, user, card,
+                              admin_order_kb(order.id, "refund_requested"))
+        await update_order_cards(message.bot, session, order, user, card,
+                                 admin_order_kb(order.id, "refund_requested"))
+
+
 @router.message(RefundFlow.address, F.text)
-async def refund_address(message: Message, state: FSMContext) -> None:
+async def refund_address_prompted(message: Message, state: FSMContext) -> None:
     address = message.text.strip()
     if not is_trc20(address):
         await message.answer("That doesn't look like a TRC20 address — it starts with "
                              "<code>T</code> and is 34 characters. Try again, or /cancel.")
         return
-    data = await state.get_data()
     await state.clear()
-    async with Session() as session:
-        order = await session.get(Order, data["order_id"])
-        if order is None or order.user_id != message.from_user.id:
-            await message.answer("Order not found — contact support.")
-            return
-        order = await try_transition(session, order.id,
-                                     (OrderStatus.CANCELLED,), OrderStatus.REFUND_REQUESTED,
-                                     refund_address=address)
-        if order is None:
-            await message.answer("This order is already being refunded — "
-                                 f"contact {settings.support_handle} if anything is off.")
-            return
-        user = await session.get(User, order.user_id)
-        card = await session.get(BankCard, order.bank_card_id)
-        footer = await _footer(session, message.from_user)
-        await message.answer(texts.refund_noted(order.id, order.usd_amount, address) + footer)
-        await post_order_card(message.bot, session, order, user, card,
-                              admin_order_kb(order.id, "refund_requested"))
+    await _record_refund_address(message, address)
+
+
+@router.message(RefundFlow.address)
+async def refund_address_not_text(message: Message) -> None:
+    await message.answer("Please send your TRC20 address as <b>text</b> "
+                         "(it starts with <code>T</code>), not a photo.")
+
+
+@router.message(F.text.regexp(TRC20_PATTERN))
+async def refund_address_any_state(message: Message, state: FSMContext) -> None:
+    # A TRC20 address arriving outside the prompt (after /start, a restart,
+    # or a second cancel) still reaches the oldest waiting refund.
+    await _record_refund_address(message, message.text.strip())
 
 
 @router.callback_query(BankCb.filter())
