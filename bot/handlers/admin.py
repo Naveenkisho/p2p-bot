@@ -25,7 +25,7 @@ from ..helpers import (
     update_order_cards,
 )
 from ..keyboards import PANEL_TABS, AdminCb, admin_order_kb, panel_kb
-from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, User, utcnow
+from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, SeenTx, User, utcnow
 
 router = Router(name="admin")
 router.message.filter(IsAdmin())
@@ -99,7 +99,14 @@ async def cmd_setaddress(message: Message, command: CommandObject) -> None:
         return
     async with Session() as session:
         await set_setting(session, "addr_trc20", address)
-    await message.answer(f"✅ Deposit address set:\n<code>{esc(address)}</code>")
+        # activation watermark: only transfers AFTER this instant can credit an
+        # order, so pointing at an existing wallet never replays its history.
+        now_ms = int(utcnow().replace(microsecond=0).timestamp() * 1000)
+        await set_setting(session, f"addr_since:{address}", str(now_ms))
+        await set_setting(session, f"bootstrapped:{address}", "1")
+    await message.answer(f"✅ Deposit address set:\n<code>{esc(address)}</code>\n\n"
+                         "Only deposits from now on will be auto-detected on this "
+                         "address (its past history is ignored).")
 
 
 @router.message(Command("setsupport"))
@@ -264,19 +271,31 @@ async def cmd_setstatus(message: Message, command: CommandObject) -> None:
 
 @router.message(Command("received"))
 async def cmd_received(message: Message, command: CommandObject) -> None:
-    """Manual fallback when the auto-scan is down: confirm a deposit by hand."""
-    raw = (command.args or "").strip().lstrip("#").upper().removeprefix("ORD")
+    """Manually confirm a deposit — the fallback for the ambiguous-amount hold,
+    a late deposit on an already-expired order, or TronGrid being down.
+    Usage: /received <id> [txid]"""
+    parts = (command.args or "").split()
+    raw = parts[0].lstrip("#").upper().removeprefix("ORD") if parts else ""
     if not raw.isdigit():
-        await message.answer("Usage: <code>/received 12</code> — confirms the deposit "
-                             "for an awaiting order and asks the user for their bank.")
+        await message.answer("Usage: <code>/received 12</code> or "
+                             "<code>/received 12 &lt;txid&gt;</code> — confirms the "
+                             "deposit and asks the user for their bank.")
         return
+    txid = parts[1] if len(parts) > 1 else "manual"
     async with Session() as session:
-        order = await try_transition(session, int(raw),
-                                     (OrderStatus.AWAITING_DEPOSIT,),
-                                     OrderStatus.DEPOSIT_RECEIVED,
-                                     txid="manual", deposit_detected_at=utcnow())
+        # if this txid was recorded as unmatched/ambiguous, tie it to this order
+        if txid != "manual":
+            seen = await session.get(SeenTx, txid)
+            if seen is not None and seen.order_id is None:
+                seen.order_id = int(raw)
+                await session.commit()
+        order = await try_transition(
+            session, int(raw),
+            (OrderStatus.AWAITING_DEPOSIT, OrderStatus.EXPIRED),
+            OrderStatus.DEPOSIT_RECEIVED, txid=txid, deposit_detected_at=utcnow())
     if order is None:
-        await message.answer("That order isn't awaiting a deposit.")
+        await message.answer("That order isn't awaiting (or expired) — check /order "
+                             f"{raw} first.")
         return
     await notify_deposit_received(message.bot, order.id)
     await message.answer(f"✅ Deposit confirmed manually for {texts.tag(order.id)} — "

@@ -1,44 +1,86 @@
-"""TRON auto-scan: polls TronGrid for USDT (TRC20) transfers into the desk's
-deposit address, matches each new transfer to the oldest awaiting order with
-the same amount, and drives the deposit-confirmed step. Also expires orders
-whose deposit never arrived."""
+"""TRON auto-scan.
+
+Polls TronGrid for confirmed USDT (TRC20) *transfers* into the desk's deposit
+address(es) and credits the matching order. Design points that keep it safe
+for real money:
+
+- Only ``type == "Transfer"`` events count — approvals (zero-value allowance
+  grants) are ignored.
+- Each address carries an activation watermark (``addr_since:<addr>``, set by
+  /setaddress). Transfers with a block time at/なbefore the watermark are the
+  address's pre-existing history and are silently marked seen; only transfers
+  strictly after it can credit an order. This replaces any fragile first-run
+  flag and
+  makes address rotation safe.
+- A transfer is matched only to an AWAITING_DEPOSIT order that was quoted the
+  *same* address and the same amount. If exactly one such order exists it is
+  credited atomically (status flip + seen-tx row in one commit). If several
+  orders share that amount the deposit is held for manual assignment
+  (``/received <id> <txid>``) rather than auto-crediting the wrong user.
+- Deposits to a rotated-away address are still scanned as long as an order is
+  awaiting on it.
+- The loop can never exit: every error is caught and retried next tick.
+"""
 
 import asyncio
 import logging
-from datetime import timedelta
 
 import aiohttp
 from aiogram import Bot
-from sqlalchemy import func, select
+from sqlalchemy import select, update
 
 from . import texts
 from .config import settings
-from .db import Session, get_deposit_address
+from .db import Session, get_deposit_address, get_setting, set_setting
 from .flow import notify_deposit_received
-from .helpers import notify_admins, notify_user, try_transition
-from .models import Order, OrderStatus, SeenTx, User, utcnow
+from .helpers import notify_admins
+from .models import Order, OrderStatus, SeenTx, utcnow
 
 log = logging.getLogger(__name__)
 
 AMOUNT_TOLERANCE = 0.005  # USDT — exact match with float slack
 
 
-async def fetch_transfers(http: aiohttp.ClientSession, address: str) -> list[dict]:
-    url = f"{settings.trongrid_url}/v1/accounts/{address}/transactions/trc20"
-    params = {
-        "only_to": "true",
-        "only_confirmed": "true",
-        "limit": "50",
-        "contract_address": settings.usdt_contract,
-    }
-    headers = {"TRON-PRO-API-KEY": settings.trongrid_key} if settings.trongrid_key else {}
-    async with http.get(url, params=params, headers=headers) as resp:
-        resp.raise_for_status()
-        payload = await resp.json()
-    return payload.get("data") or []
+def _ms(dt) -> int:
+    # naive UTC datetime (see models.utcnow) → epoch ms
+    return int(dt.replace(microsecond=0).timestamp() * 1000)
+
+
+async def address_watermark(session, address: str) -> int:
+    """Epoch-ms cutoff for an address: transfers at/before it are history.
+
+    Uses the /setaddress activation time; falls back to the earliest awaiting
+    order on that address, else 'now' (treat all current history as old)."""
+    raw = await get_setting(session, f"addr_since:{address}")
+    if raw and raw.isdigit():
+        return int(raw)
+    earliest = await session.scalar(
+        select(Order.created_at).where(
+            Order.deposit_address == address,
+            Order.status == OrderStatus.AWAITING_DEPOSIT.value,
+        ).order_by(Order.id).limit(1))
+    return _ms(earliest) if earliest else _ms(utcnow())
+
+
+async def addresses_to_scan(session) -> list[str]:
+    """Current deposit address plus any address still carrying an awaiting
+    order (so deposits to a rotated-away address are still detected)."""
+    addrs: list[str] = []
+    current = await get_deposit_address(session)
+    if current:
+        addrs.append(current)
+    rows = (await session.scalars(
+        select(Order.deposit_address).where(
+            Order.status == OrderStatus.AWAITING_DEPOSIT.value).distinct())).all()
+    for a in rows:
+        if a and a not in addrs:
+            addrs.append(a)
+    return addrs
 
 
 def transfer_amount(tx: dict) -> float | None:
+    if (tx.get("type") or "Transfer") != "Transfer":
+        return None
     token = tx.get("token_info") or {}
     if token.get("address") and token["address"] != settings.usdt_contract:
         return None
@@ -49,47 +91,100 @@ def transfer_amount(tx: dict) -> float | None:
         return None
 
 
-async def process_transfer(bot: Bot, tx: dict, address: str, bootstrap: bool) -> None:
+async def fetch_transfers(http: aiohttp.ClientSession, address: str,
+                          min_ts: int) -> list[dict]:
+    """All confirmed inbound USDT transfers to `address` newer than min_ts,
+    oldest-first, following TronGrid pagination up to a page cap."""
+    url = f"{settings.trongrid_url}/v1/accounts/{address}/transactions/trc20"
+    params = {
+        "only_to": "true",
+        "only_confirmed": "true",
+        "limit": str(settings.scan_page_limit),
+        "contract_address": settings.usdt_contract,
+        "order_by": "block_timestamp,asc",
+        "min_timestamp": str(min_ts + 1),
+    }
+    headers = {"TRON-PRO-API-KEY": settings.trongrid_key} if settings.trongrid_key else {}
+    out: list[dict] = []
+    for _ in range(settings.scan_max_pages):
+        async with http.get(url, params=params, headers=headers) as resp:
+            resp.raise_for_status()
+            payload = await resp.json()
+        data = payload.get("data") or []
+        out.extend(data)
+        fingerprint = (payload.get("meta") or {}).get("fingerprint")
+        if not fingerprint or len(data) < settings.scan_page_limit:
+            break
+        params["fingerprint"] = fingerprint
+    return out
+
+
+async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
+    """Match one confirmed transfer to an awaiting order on this address."""
     txid = tx.get("transaction_id")
     amount = transfer_amount(tx)
     if not txid or amount is None or amount <= 0:
         return
     if (tx.get("to") or "") != address:
         return
-    matched_id: int | None = None
+
     async with Session() as session:
         if await session.get(SeenTx, txid) is not None:
             return
-        if not bootstrap:
-            candidate = await session.scalar(
-                select(Order).where(
-                    Order.status == OrderStatus.AWAITING_DEPOSIT.value,
-                    Order.usd_amount >= amount - AMOUNT_TOLERANCE,
-                    Order.usd_amount <= amount + AMOUNT_TOLERANCE,
-                ).order_by(Order.id).limit(1))
-            if candidate is not None:
-                updated = await try_transition(
-                    session, candidate.id,
-                    (OrderStatus.AWAITING_DEPOSIT,), OrderStatus.DEPOSIT_RECEIVED,
-                    txid=txid, deposit_detected_at=utcnow())
-                if updated is not None:
-                    matched_id = updated.id
-        session.add(SeenTx(txid=txid, amount=amount, order_id=matched_id))
+        candidates = (await session.scalars(
+            select(Order).where(
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value,
+                Order.deposit_address == address,
+                Order.usd_amount >= amount - AMOUNT_TOLERANCE,
+                Order.usd_amount <= amount + AMOUNT_TOLERANCE,
+            ).order_by(Order.id))).all()
+
+        if len(candidates) == 1:
+            order = candidates[0]
+            res = await session.execute(
+                update(Order)
+                .where(Order.id == order.id,
+                       Order.status == OrderStatus.AWAITING_DEPOSIT.value)
+                .values(status=OrderStatus.DEPOSIT_RECEIVED.value,
+                        txid=txid, deposit_detected_at=utcnow()))
+            if res.rowcount == 0:
+                # the order was cancelled/expired between SELECT and UPDATE —
+                # leave the tx unseen so the next tick re-evaluates it
+                await session.rollback()
+                return
+            session.add(SeenTx(txid=txid, amount=amount, order_id=order.id))
+            await session.commit()
+            await notify_deposit_received(bot, order.id)
+            return
+
+        # 0 or 2+ candidates: record the tx so we don't re-alert, then tell
+        # the admins. Ambiguous amounts are held for manual assignment.
+        session.add(SeenTx(txid=txid, amount=amount, order_id=None))
         await session.commit()
-    if bootstrap:
-        return
-    if matched_id is not None:
-        await notify_deposit_received(bot, matched_id)
-    else:
+
+    if not candidates:
         await notify_admins(bot,
                             f"⚠️ Unmatched deposit: <b>{amount:g} USDT</b> "
                             f"(tx <code>{txid}</code>) — no awaiting order for this "
-                            f"amount. Handle manually.")
+                            f"amount. Assign with /received &lt;id&gt; {txid}")
+    else:
+        ids = ", ".join(texts.tag(o.id) for o in candidates)
+        await notify_admins(bot,
+                            f"⚠️ <b>{amount:g} USDT</b> deposit (tx <code>{txid}</code>) "
+                            f"matches {len(candidates)} awaiting orders: {ids}.\n"
+                            f"Confirm the correct one manually: "
+                            f"/received &lt;id&gt; {txid}")
 
 
 async def expire_stale_orders(bot: Bot) -> None:
+    from datetime import timedelta
+
+    from .helpers import try_transition, update_order_cards
+    from .keyboards import admin_order_kb
+    from .models import BankCard, User
+
     cutoff = utcnow() - timedelta(minutes=settings.deposit_ttl_min)
-    expired: list[tuple[Order, str]] = []
+    expired: list[tuple[int, int, str]] = []
     async with Session() as session:
         stale = (await session.scalars(
             select(Order).where(Order.status == OrderStatus.AWAITING_DEPOSIT.value,
@@ -100,36 +195,68 @@ async def expire_stale_orders(bot: Bot) -> None:
                                            OrderStatus.EXPIRED)
             if updated is not None:
                 user = await session.get(User, order.user_id)
-                expired.append((updated, user.lang if user and user.lang else "en"))
-    for order, lang in expired:
-        await notify_user(bot, order.user_id, texts.order_expired(order.id, lang))
+                card = await session.get(BankCard, order.bank_card_id) \
+                    if order.bank_card_id else None
+                await update_order_cards(bot, session, updated, user, card, None)
+                expired.append((order.user_id,
+                                user.lang if user and user.lang else "en", order.id))
+    for user_id, lang, order_id in expired:
+        from .helpers import notify_user
+        await notify_user(bot, user_id, texts.order_expired(order_id, lang))
 
 
-async def scan_once(bot: Bot, http: aiohttp.ClientSession, bootstrap: bool) -> None:
+async def _bootstrap_addresses(session, http: aiohttp.ClientSession) -> None:
+    """One-time: mark an address's existing history seen so old transfers are
+    never credited. Idempotent — a 'bootstrapped:<addr>' flag is durable."""
+    for address in await addresses_to_scan(session):
+        if await get_setting(session, f"bootstrapped:{address}"):
+            continue
+        watermark = await address_watermark(session, address)
+        try:
+            history = await fetch_transfers(http, address, 0)
+        except Exception:
+            log.exception("bootstrap fetch failed for %s", address)
+            continue
+        for tx in history:
+            txid = tx.get("transaction_id")
+            ts = int(tx.get("block_timestamp", 0) or 0)
+            if txid and ts <= watermark and await session.get(SeenTx, txid) is None:
+                session.add(SeenTx(txid=txid,
+                                   amount=transfer_amount(tx) or 0.0, order_id=None))
+        await set_setting(session, f"bootstrapped:{address}", "1")
+    await session.commit()
+
+
+async def scan_once(bot: Bot, http: aiohttp.ClientSession) -> None:
     async with Session() as session:
-        address = await get_deposit_address(session)
-    if not address:
-        return
-    transfers = await fetch_transfers(http, address)
-    for tx in reversed(transfers):  # oldest first, so FIFO matching holds
-        await process_transfer(bot, tx, address, bootstrap)
+        await _bootstrap_addresses(session, http)
+        plan = {a: await address_watermark(session, a)
+                for a in await addresses_to_scan(session)}
+    for address, watermark in plan.items():
+        transfers = await fetch_transfers(http, address, watermark)
+        for tx in transfers:
+            if int(tx.get("block_timestamp", 0) or 0) <= watermark:
+                continue
+            await _credit_or_hold(bot, tx, address)
     await expire_stale_orders(bot)
 
 
 async def scan_loop(bot: Bot) -> None:
+    """Never exits: any error (network, DB, TronGrid) is logged and retried."""
     timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
-        async with Session() as session:
-            seen = await session.scalar(select(func.count()).select_from(SeenTx))
-        # first ever run: ingest the address's existing history silently so
-        # old transfers are never credited or alerted on
-        bootstrap = not seen
-        while True:
-            try:
-                await scan_once(bot, http, bootstrap)
-                bootstrap = False
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("tron scan failed; retrying next tick")
+    while True:
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
+                while True:
+                    try:
+                        await scan_once(bot, http)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.exception("tron scan tick failed; retrying")
+                    await asyncio.sleep(settings.scan_interval_sec)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("tron scan session died; recreating")
             await asyncio.sleep(settings.scan_interval_sec)

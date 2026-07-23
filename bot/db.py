@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -8,10 +8,31 @@ from .models import Base, Setting, User
 engine = create_async_engine(f"sqlite+aiosqlite:///{settings.db_path}")
 Session = async_sessionmaker(engine, expire_on_commit=False)
 
+# Columns added after the first release — ensured on an existing DB so an
+# in-place upgrade of a live SQLite file never hits "no such column".
+_ADDED_COLUMNS = [
+    ("users", "lang", "VARCHAR(4) DEFAULT 'en'"),
+    ("orders", "txid", "VARCHAR(80)"),
+    ("orders", "deposit_detected_at", "DATETIME"),
+    ("orders", "admin_note", "VARCHAR(64)"),
+]
+
+
+def _migrate(conn) -> None:
+    insp = inspect(conn)
+    tables = set(insp.get_table_names())
+    for table, col, ddl in _ADDED_COLUMNS:
+        if table not in tables:
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if col not in cols:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
 
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrate)
 
 
 async def get_or_create_user(session: AsyncSession, tg_id: int,

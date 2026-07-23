@@ -18,9 +18,14 @@ class Settings(BaseSettings):
     # TRON auto-scan
     scan_interval_sec: int = 10
     deposit_ttl_min: int = 60          # awaiting_deposit orders expire after this
+    scan_page_limit: int = 100         # transfers fetched per TronGrid page
+    scan_max_pages: int = 10           # page cap per address per tick
     trongrid_url: str = "https://api.trongrid.io"
     trongrid_key: str = ""             # optional TronGrid API key for higher limits
     usdt_contract: str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # mainnet USDT
+
+    # Max simultaneously-open orders per user (awaiting/received/pending)
+    open_orders_max: int = 3
 
     @property
     def admin_id_list(self) -> list[int]:

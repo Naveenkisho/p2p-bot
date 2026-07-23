@@ -3,7 +3,7 @@ import re
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .. import texts
 from ..config import SERVICES, settings
@@ -108,6 +108,17 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
             await message.answer(texts.DESK_CLOSED)
             await _warn_no_address_once(message.bot)
             return
+        open_count = await session.scalar(
+            select(func.count()).select_from(Order).where(
+                Order.user_id == user.id,
+                Order.status.in_([OrderStatus.AWAITING_DEPOSIT.value,
+                                  OrderStatus.DEPOSIT_RECEIVED.value,
+                                  OrderStatus.PENDING_PAYOUT.value])))
+        if (open_count or 0) >= settings.open_orders_max:
+            await message.answer(
+                f"⚠️ You already have {open_count} open order(s). Please finish or "
+                "cancel them before starting another.")
+            return
         # re-check the live rate at the money moment
         rates = await get_rates(session)
         rate = data.get("rate")
@@ -175,8 +186,9 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                     "a message the moment it lands. If nothing in ~5 minutes, "
                     "message support.", show_alert=True)
             elif status == OrderStatus.DEPOSIT_RECEIVED:
-                await callback.answer("Deposit received! Choose your bank above. ✅",
-                                      show_alert=True)
+                # re-send the bank chooser in case the original DM was lost
+                await callback.answer("Deposit received! Choose your bank 👇", show_alert=True)
+                await notify_deposit_received(callback.bot, order.id)
             else:
                 await callback.answer("This order is already in processing.", show_alert=True)
 
@@ -185,9 +197,19 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                                            (OrderStatus.AWAITING_DEPOSIT,),
                                            OrderStatus.CANCELLED)
             if updated is None:
-                await callback.answer("This order can no longer be cancelled — "
-                                      "your deposit is already in. Contact support.",
-                                      show_alert=True)
+                fresh = await session.get(Order, order.id)
+                st = fresh.status if fresh else None
+                if st in (OrderStatus.DEPOSIT_RECEIVED, OrderStatus.PENDING_PAYOUT):
+                    msg = ("Your deposit is already in — choose your bank / it's being "
+                           "paid. Contact support to change anything.")
+                elif st == OrderStatus.EXPIRED:
+                    msg = "This order already expired — start a fresh one anytime."
+                elif st in (OrderStatus.CANCELLED, OrderStatus.REFUND_REQUESTED,
+                            OrderStatus.REFUNDED):
+                    msg = "This order is already cancelled."
+                else:
+                    msg = "This order can no longer be cancelled."
+                await callback.answer(msg, show_alert=True)
                 return
             lang, footer = await _ctx(session, callback.from_user)
             await strip_kb(callback.message)

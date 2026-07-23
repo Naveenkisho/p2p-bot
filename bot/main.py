@@ -46,6 +46,13 @@ async def main() -> None:
     logging.getLogger(__name__).info("P2P desk bot starting (polling + tron scan)…")
     await bot.delete_webhook(drop_pending_updates=True)
     scanner = asyncio.create_task(scan_loop(bot))
+
+    def _scanner_done(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception():
+            logging.getLogger(__name__).error("scanner task exited unexpectedly",
+                                              exc_info=task.exception())
+
+    scanner.add_done_callback(_scanner_done)
     try:
         await dp.start_polling(bot)
     finally:
