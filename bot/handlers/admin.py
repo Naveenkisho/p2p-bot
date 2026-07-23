@@ -7,12 +7,14 @@ from sqlalchemy import select
 
 from .. import texts
 from ..config import SERVICES, settings
-from ..db import Session, get_deposit_address, get_rates, get_support, set_setting
+from ..db import Session, get_deposit_address, get_rates, get_setting, get_support, set_setting
 from ..helpers import (
     IsAdmin,
+    age_str,
     esc,
     is_trc20,
     ist_now_str,
+    ist_time_str,
     notify_admins,
     notify_user,
     order_card,
@@ -21,8 +23,8 @@ from ..helpers import (
     try_transition,
     update_order_cards,
 )
-from ..keyboards import AdminCb, admin_order_kb
-from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, User
+from ..keyboards import PANEL_TABS, AdminCb, admin_order_kb, panel_kb
+from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, User, utcnow
 
 router = Router(name="admin")
 router.message.filter(IsAdmin())
@@ -37,6 +39,8 @@ async def admin_help(message: Message) -> None:
         "/rates — show all live rates\n"
         "/setaddress T… — set the TRC20 deposit address\n"
         "/setsupport @help1 @help2 — set the support contact(s) users see\n"
+        "/setchannel @channel — proof channel for completed orders (off = disable)\n"
+        "/panel (or /orders) — tabbed live order panel\n"
         "/orders — list open orders\n"
         "/order 12 — reshow an order card with its buttons\n"
         "/setstatus 12 completed — force an order's status (repair tool)\n"
@@ -113,22 +117,104 @@ async def cmd_setsupport(message: Message, command: CommandObject) -> None:
     await message.answer(f"✅ Support contact(s) now shown to users: {esc(' '.join(handles))}")
 
 
-@router.message(Command("orders"))
-async def cmd_orders(message: Message) -> None:
-    async with Session() as session:
-        orders = (await session.scalars(
-            select(Order).where(Order.status.in_(OPEN_STATUSES)).order_by(Order.id)
-        )).all()
-    if not orders:
-        await message.answer("No open orders. 🎉")
+@router.message(Command("setchannel"))
+async def cmd_setchannel(message: Message, command: CommandObject) -> None:
+    arg = (command.args or "").strip()
+    if not arg:
+        async with Session() as session:
+            current = await get_setting(session, "proof_channel")
+        await message.answer("Usage: <code>/setchannel @yourchannel</code> (bot must be "
+                             "admin there) or <code>/setchannel off</code>\n"
+                             f"Current: {esc(current) if current else '— none —'}")
         return
-    lines = ["<b>Open orders</b>"]
+    if arg.lower() == "off":
+        async with Session() as session:
+            await set_setting(session, "proof_channel", "")
+        await message.answer("✅ Proof channel disabled.")
+        return
+    if not (arg.startswith("@") or arg.lstrip("-").isdigit()):
+        await message.answer("Send the channel as <code>@username</code> or a numeric "
+                             "<code>-100…</code> ID.")
+        return
+    target: int | str = int(arg) if arg.lstrip("-").isdigit() else arg
+    try:
+        await message.bot.send_message(target, "✅ Proof channel connected — completed "
+                                               "orders will be posted here.")
+    except Exception:
+        await message.answer("⚠️ Couldn't post there. Add the bot as an <b>admin</b> of "
+                             "the channel first, then run /setchannel again.")
+        return
+    async with Session() as session:
+        await set_setting(session, "proof_channel", arg)
+    await message.answer(f"✅ Proof channel set to {esc(arg)} — every completed order "
+                         "posts an anonymized proof card there.")
+
+
+async def _post_proof(bot, order: Order) -> None:
+    """Anonymized completion post to the public proof channel, if configured."""
+    async with Session() as session:
+        channel = await get_setting(session, "proof_channel")
+    if not channel:
+        return
+    target: int | str = int(channel) if channel.lstrip("-").isdigit() else channel
+    minutes = max(1, int((utcnow() - order.created_at).total_seconds() // 60))
+    try:
+        await bot.send_message(target, texts.proof_post(
+            order.id, order.usd_amount, order.inr_amount,
+            SERVICES.get(order.service, order.service), minutes))
+    except Exception:
+        await notify_admins(bot, "⚠️ Couldn't post to the proof channel — "
+                                 "is the bot still admin there?")
+
+
+TAB_STATUSES = {
+    "active": (OrderStatus.SUBMITTED.value, OrderStatus.USDT_SENT.value),
+    "refunds": (OrderStatus.CANCELLED.value, OrderStatus.REFUND_REQUESTED.value),
+    "done": (OrderStatus.COMPLETED.value, OrderStatus.REFUNDED.value),
+}
+
+
+async def _panel_text(tab: str) -> str:
+    async with Session() as session:
+        query = select(Order).where(Order.status.in_(TAB_STATUSES[tab]))
+        if tab == "done":
+            query = query.order_by(Order.id.desc()).limit(10)
+        else:
+            query = query.order_by(Order.id)
+        orders = (await session.scalars(query)).all()
+    lines = [f"🗂 <b>Orders — {PANEL_TABS[tab]}</b> ({len(orders)})", ""]
+    if not orders:
+        lines.append("Nothing here. 🎉")
     for o in orders:
         status = o.status.value if hasattr(o.status, "value") else str(o.status)
-        lines.append(f"{texts.tag(o.id)} — {o.usd_amount:g}$ via {SERVICES.get(o.service, o.service)} "
-                     f"→ ₹{o.inr_amount:,.2f} — <i>{status}</i>")
-    lines.append("\nUse /order &lt;id&gt; for the card + buttons.")
-    await message.answer("\n".join(lines))
+        emoji = texts.STATUS_EMOJI.get(status, "•")
+        lines.append(f"{emoji} {texts.tag(o.id)} — {o.usd_amount:g}$ "
+                     f"{SERVICES.get(o.service, o.service)} → ₹{o.inr_amount:,.2f} "
+                     f"— {age_str(o.created_at)}")
+    lines.append("")
+    lines.append("Open one: /order &lt;id&gt;")
+    lines.append(f"🔄 Updated: {ist_time_str()}")
+    return "\n".join(lines)
+
+
+@router.message(Command("orders"))
+@router.message(Command("panel"))
+async def cmd_orders(message: Message) -> None:
+    await message.answer(await _panel_text("active"), reply_markup=panel_kb("active"))
+
+
+@router.callback_query(F.data.startswith("tab:"))
+async def panel_tab(callback: CallbackQuery) -> None:
+    tab = callback.data.split(":", 1)[1]
+    if tab not in TAB_STATUSES:
+        await callback.answer()
+        return
+    try:
+        await callback.message.edit_text(await _panel_text(tab),
+                                         reply_markup=panel_kb(tab))
+    except Exception:
+        pass  # unmodified or too old — the refresh timestamp makes this rare
+    await callback.answer("Updated")
 
 
 @router.message(Command("order"))
@@ -244,6 +330,7 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
                                 + ("" if delivered else " ⚠️ User DM failed (blocked bot?)."))
             if user is not None:
                 await update_order_cards(callback.bot, session, updated, user, card, None)
+            await _post_proof(callback.bot, updated)
 
         elif callback_data.action == "refunded":
             if order.status == OrderStatus.CANCELLED:
@@ -294,9 +381,16 @@ async def relay_to_user(message: Message) -> None:
     if order is None:
         return
     try:
-        await message.bot.copy_message(chat_id=order.user_id,
-                                       from_chat_id=message.chat.id,
-                                       message_id=message.message_id)
+        if message.photo and not message.caption:
+            # a bare screenshot becomes a labeled payment proof
+            await message.bot.copy_message(
+                chat_id=order.user_id, from_chat_id=message.chat.id,
+                message_id=message.message_id,
+                caption=f"🧾 Payment proof — order {texts.tag(order.id)}")
+        else:
+            await message.bot.copy_message(chat_id=order.user_id,
+                                           from_chat_id=message.chat.id,
+                                           message_id=message.message_id)
         who = f"{esc(user.first_name)} (@{esc(user.username)})" if user and user.username \
             else (esc(user.first_name) if user else "the user")
         await message.reply(f"📨 Delivered to {who} — order {texts.tag(order.id)}.")

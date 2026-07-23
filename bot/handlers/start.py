@@ -86,6 +86,33 @@ async def menu_rates(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "menu:orders")
+async def my_orders(callback: CallbackQuery) -> None:
+    async with Session() as session:
+        orders = (await session.scalars(
+            select(Order).where(Order.user_id == callback.from_user.id)
+            .order_by(Order.id.desc()).limit(10)
+        )).all()
+        support = await get_support(session)
+    if not orders:
+        await callback.message.answer(
+            "📋 You have no orders yet — tap 💵 USDT Sell to start!"
+            + texts.trust_footer(callback.from_user.first_name,
+                                 callback.from_user.id, support))
+        await callback.answer()
+        return
+    lines = ["📋 <b>Your last orders</b>", ""]
+    for o in orders:
+        status = o.status.value if hasattr(o.status, "value") else str(o.status)
+        emoji = texts.STATUS_EMOJI.get(status, "•")
+        lines.append(f"{emoji} <code>{texts.tag(o.id)}</code> — {o.usd_amount:g}$ "
+                     f"→ ₹{o.inr_amount:,.2f} — <i>{status}</i>")
+    await callback.message.answer(
+        "\n".join(lines)
+        + texts.trust_footer(callback.from_user.first_name, callback.from_user.id, support))
+    await callback.answer()
+
+
 @router.callback_query(F.data == "menu:support")
 async def menu_support(callback: CallbackQuery) -> None:
     async with Session() as session:

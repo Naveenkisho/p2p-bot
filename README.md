@@ -38,6 +38,12 @@ A TRON auto-scan (instant deposit confirmation) is a planned next step — the
   @username link and chat ID — one tap to DM them outside the bot.
 - Completion sends the user a full receipt: amount sold, locked rate, INR
   credited, bank, and timestamp (IST).
+- Orders show a live queue position ("You're #3 — moves up on every payout").
+- 📋 My Orders gives users their last 10 orders with statuses.
+- A bare screenshot replied to an order card is delivered to the user
+  auto-captioned as "🧾 Payment proof — order #ORD12".
+- Optional public proof channel: completed orders post an anonymized card
+  ("✅ #ORD12 — 100$ → ₹9,100 via IMPS — paid in 14 min").
 
 ## Admin commands
 
@@ -48,9 +54,11 @@ A TRON auto-scan (instant deposit confirmation) is a planned next step — the
 | `/rates` | show all rates + deposit address |
 | `/setaddress T…` | set the TRC20 deposit address |
 | `/setsupport @a @b` | set the support contact(s) shown to users everywhere |
-| `/orders` | list open orders |
+| `/setchannel @channel` | public proof channel — every completed order posts an anonymized proof card (`off` disables; bot must be channel admin) |
+| `/panel` or `/orders` | live tabbed order panel — ⏳ Active / ↩️ Refunds / ✅ Done, every tap refreshes |
 | `/order 12` (or `#ORD12`) | reshow an order card with its buttons |
 | `/setstatus 12 completed` | force an order's status (repair tool) |
+| `/setrefund 12 T…` | record a refund address on the user's behalf |
 | `/ban` / `/unban <user_id>` | block/unblock a user |
 | *reply to an order card* | DM that order's user through the bot (text/photo) |
 

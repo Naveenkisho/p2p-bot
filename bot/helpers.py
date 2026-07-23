@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from aiogram import Bot
 from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import texts
@@ -68,6 +68,26 @@ def status_str(order: Order) -> str:
 def ist_now_str() -> str:
     ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     return ist.strftime("%d %b %Y, %I:%M %p") + " IST"
+
+
+def ist_time_str() -> str:
+    ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist.strftime("%I:%M:%S %p") + " IST"
+
+
+async def queue_position(session: AsyncSession, order_id: int) -> int:
+    """1-based position among orders still waiting for a payout."""
+    ahead = await session.scalar(
+        select(func.count()).select_from(Order).where(
+            Order.status.in_([OrderStatus.SUBMITTED.value, OrderStatus.USDT_SENT.value]),
+            Order.id < order_id))
+    return (ahead or 0) + 1
+
+
+def age_str(created_at) -> str:
+    from .models import utcnow
+    mins = max(0, int((utcnow() - created_at).total_seconds() // 60))
+    return f"{mins}m" if mins < 60 else f"{mins // 60}h{mins % 60:02d}m"
 
 
 def user_line(user: User) -> str:

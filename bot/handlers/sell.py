@@ -13,6 +13,7 @@ from ..helpers import (
     is_trc20,
     notify_admins,
     post_order_card,
+    queue_position,
     strip_kb,
     try_transition,
     update_order_cards,
@@ -219,10 +220,11 @@ async def _place_order(message: Message, state: FSMContext,
         session.add(order)
         await session.commit()
         footer = await _footer(session, user)
+        q_note = texts.queue_note(await queue_position(session, order.id))
         await message.answer(
             texts.order_placed(order.id, order.usd_amount, order.inr_amount,
                                SERVICES[order.service], card.label, address,
-                               rate, rate_note) + footer,
+                               rate, rate_note, q_note) + footer,
             reply_markup=order_placed_kb(order.id),
         )
         posted = await post_order_card(message.bot, session, order, user, card,
@@ -256,9 +258,11 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                     reply_markup=order_sent_kb(order.id))
             except Exception:
                 pass
+            q_note = texts.queue_note(await queue_position(session, order.id))
             await callback.message.answer(
                 texts.order_submitted(order.id,
-                                      card.details if card else "your saved bank") + footer)
+                                      card.details if card else "your saved bank",
+                                      q_note) + footer)
             await notify_admins(callback.bot,
                                 f"📤 Order {texts.tag(order.id)}: user says the USDT is sent "
                                 f"({order.usd_amount:g}$).")

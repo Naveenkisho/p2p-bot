@@ -80,12 +80,29 @@ ASK_BANK_NEW = (
 CHOOSE_BANK = "🏦 Final step — <b>choose your bank</b> for the payout:"
 
 
+STATUS_EMOJI = {
+    "submitted": "⏳",
+    "usdt_sent": "📤",
+    "completed": "✅",
+    "cancelled": "❌",
+    "refund_requested": "↩️",
+    "refunded": "💸",
+}
+
+
+def queue_note(position: int) -> str:
+    if position <= 1:
+        return "🚀 You're <b>first in the queue</b> — payout comes fast!\n\n"
+    return f"📊 Queue position: <b>#{position}</b> — moves up on every payout.\n\n"
+
+
 def order_placed(order_id: int, usd: float, inr: float, service_label: str,
                  bank_label: str, address: str, rate: float,
-                 rate_note: str = "") -> str:
+                 rate_note: str = "", q_note: str = "") -> str:
     return (
         f"📝 <b>Order {tag(order_id)} placed!</b>\n"
         f"🧾 Order ID: <code>{tag(order_id)}</code> — quote it to support anytime.\n\n"
+        f"{q_note}"
         f"{rate_note}"
         f"Sell: <b>{usd:g}$</b> via {service_label} at 1$/₹{rate:g}\n"
         f"You receive: <b>₹{inr:,.2f}</b> → {html.escape(bank_label)}\n\n"
@@ -96,9 +113,10 @@ def order_placed(order_id: int, usd: float, inr: float, service_label: str,
     )
 
 
-def order_submitted(order_id: int, bank_details: str) -> str:
+def order_submitted(order_id: int, bank_details: str, q_note: str = "") -> str:
     return (
         f"✅✅ <b>Order {tag(order_id)} successfully submitted!</b>\n\n"
+        f"{q_note}"
         f"We will send your funds to:\n<code>{html.escape(bank_details)}</code>\n"
         f"within <b>{settings.eta_text}</b> — you can also receive it faster, "
         "it depends on the queue. 🟢\n\n"
@@ -141,6 +159,16 @@ def refund_sent(order_id: int, usd: float, address: str) -> str:
     return (
         f"💸 <b>Refund sent for order {tag(order_id)}</b> — {usd:g} USDT to:\n"
         f"<code>{address}</code> ✅"
+    )
+
+
+def proof_post(order_id: int, usd: float, inr: float, service_label: str,
+               minutes: int) -> str:
+    """Anonymized completion proof for the public channel — no names, no banks."""
+    return (
+        f"✅ <b>Order {tag(order_id)} completed</b>\n"
+        f"💵 {usd:g}$ USDT → ₹{inr:,.0f} via {service_label}\n"
+        f"⚡ Paid out in <b>{minutes} min</b> 🟢"
     )
 
 

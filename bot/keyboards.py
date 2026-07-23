@@ -36,10 +36,33 @@ def main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🛒 USDT Buy", callback_data="menu:buy"),
         ],
         [
+            InlineKeyboardButton(text="📋 My Orders", callback_data="menu:orders"),
             InlineKeyboardButton(text="🏦 My Bank Cards", callback_data="menu:banks"),
-            InlineKeyboardButton(text="📈 Rates", callback_data="menu:rates"),
         ],
-        [InlineKeyboardButton(text="🆘 Support", callback_data="menu:support")],
+        [
+            InlineKeyboardButton(text="📈 Rates", callback_data="menu:rates"),
+            InlineKeyboardButton(text="🆘 Support", callback_data="menu:support"),
+        ],
+    ])
+
+
+PANEL_TABS = {
+    "active": "⏳ Active",
+    "refunds": "↩️ Refunds",
+    "done": "✅ Done",
+}
+
+
+def panel_kb(active_tab: str) -> InlineKeyboardMarkup:
+    tabs = [
+        InlineKeyboardButton(
+            text=("• " + label if key == active_tab else label),
+            callback_data=f"tab:{key}")
+        for key, label in PANEL_TABS.items()
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[
+        tabs,
+        [InlineKeyboardButton(text="🔄 Refresh", callback_data=f"tab:{active_tab}")],
     ])
 
 
