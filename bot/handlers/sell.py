@@ -68,15 +68,22 @@ async def _ctx(session, tg_user) -> tuple[str, str]:
 
 
 async def _reserve_amount(session, requested: float) -> float:
-    """Give this order a unique deposit amount so the amount alone identifies it
-    to the scanner (unique cents). Returns the smallest 2-decimal value ≥
-    `requested` that no other AWAITING_DEPOSIT order is currently using; a 0.01
-    gap sits comfortably outside the scanner's ±0.005 match tolerance, so no two
-    open orders can be confused. Integer cents avoid float-equality pitfalls.
+    """Give EVERY open order a unique, non-round deposit amount so the amount
+    alone identifies it to the scanner (unique cents). Returns the smallest
+    2-decimal value ≥ `requested` that (a) has non-zero cents — so it never looks
+    like a bare round number and never collides with a stray round-number deposit
+    — and (b) no other AWAITING_DEPOSIT order is currently using. A whole-dollar
+    request like $100 becomes 100.01, the next 100.02, and so on; a 0.01 gap sits
+    comfortably outside the scanner's ±0.005 match tolerance, so no two open
+    orders can be confused. Integer cents avoid float-equality pitfalls.
 
-    Best-effort: two orders committed in the exact same instant could still land
-    on the same amount, but the scanner then simply holds that deposit for manual
-    assignment (2+ candidates) rather than crediting the wrong user."""
+    The user isn't charged the extra cents — they send that exact amount and
+    receive the matching INR (inr = usd × rate), so it's a slightly larger trade,
+    not a fee. Deviation from the requested amount is at most a few cents.
+
+    Best-effort on races: two orders committed in the exact same instant could
+    still land on the same amount, but the scanner then simply holds that deposit
+    for manual assignment (2+ candidates) rather than crediting the wrong user."""
     base = round(requested, 2)
     if not settings.unique_cents:
         return base
@@ -84,11 +91,13 @@ async def _reserve_amount(session, requested: float) -> float:
         select(Order.usd_amount).where(
             Order.status == OrderStatus.AWAITING_DEPOSIT.value))).all()}
     cents = round(base * 100)
-    for _ in range(500):  # up to +4.99 before giving up — never loops forever
-        if cents not in taken:
-            return round(cents / 100, 2)
+    if cents % 100 == 0:          # whole dollar → give it a .01–.99 tag
         cents += 1
-    return round(base + 5.0, 2)
+    for _ in range(2000):         # bounded; never loops forever
+        if cents % 100 != 0 and cents not in taken:
+            return round(cents / 100, 2)
+        cents += 1                # skip taken amounts AND any whole-dollar value
+    return round(cents / 100, 2)
 
 
 @router.callback_query(F.data == "menu:sell")
