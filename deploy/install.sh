@@ -23,8 +23,20 @@ echo "==> Installing P2P bot in $APP_DIR (service user: $RUN_USER)"
 command -v python3 >/dev/null || { echo "python3 not found — install it first." >&2; exit 1; }
 
 echo "==> Python virtualenv + dependencies"
+# remove a broken/partial venv (e.g. created before python3-venv was installed)
+if [[ -d "$APP_DIR/.venv" && ! -x "$APP_DIR/.venv/bin/pip" ]]; then
+  echo "  (removing incomplete .venv)"
+  rm -rf "$APP_DIR/.venv"
+fi
 if [[ ! -d "$APP_DIR/.venv" ]]; then
-  python3 -m venv "$APP_DIR/.venv"
+  if ! python3 -m venv "$APP_DIR/.venv" 2>/dev/null; then
+    echo "  venv module missing — installing python3-venv + pip…"
+    apt-get update -qq && apt-get install -y -qq python3-venv python3-pip || {
+      echo "  Could not auto-install. Run: apt install -y python3-venv python3-pip" >&2
+      exit 1; }
+    rm -rf "$APP_DIR/.venv"
+    python3 -m venv "$APP_DIR/.venv"
+  fi
 fi
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
 "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
