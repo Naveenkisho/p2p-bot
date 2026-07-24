@@ -176,9 +176,11 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
             bot,
             f"⚠️ <b>Unmatched deposit: {texts.usd_str(amount)} USDT</b> "
             f"(tx <code>{txid}</code>)\n"
-            f"No open order expects exactly {texts.usd_str(amount)}$.\n\n"
+            f"No open order expects exactly {texts.usd_str(amount)}$ "
+            f"(a sender's platform may have deducted a fee).\n\n"
             f"<b>Open orders:</b>\n{ctx}\n\n"
-            f"If it's a late payer, get their order ref &amp; assign it:\n"
+            f"If it's for one of them, credit the <b>actual {texts.usd_str(amount)}</b> "
+            f"received (not the ordered amount):\n"
             f"<code>/received &lt;id&gt; {txid}</code>\n"
             f"Otherwise refund the sender.")
     else:

@@ -369,17 +369,18 @@ async def cmd_received(message: Message, command: CommandObject) -> None:
     parts = (command.args or "").split()
     raw = parts[0].lstrip("#").upper().removeprefix("ORD") if parts else ""
     if not raw.isdigit():
-        await message.answer("Usage: <code>/received 12</code> or "
-                             "<code>/received 12 &lt;txid&gt;</code> — confirms the "
-                             "deposit and asks the user for their bank.")
+        await message.answer(
+            "Usage: <code>/received 12 &lt;txid&gt;</code> — confirms the deposit. "
+            "With the TXID it credits the <b>actual</b> amount that landed on-chain, "
+            "so a fee shortfall (e.g. 30.13 sent → 28.63 received) pays out "
+            "<b>28.63</b>, not 30.13. Without a TXID it credits the ordered amount.")
         return
     txid = parts[1] if len(parts) > 1 else "manual"
     ok, msg = await confirm_deposit(message.bot, int(raw), txid)
     if not ok:
         await message.answer(f"{msg} Check /order {raw} first.")
         return
-    await message.answer(f"✅ Deposit confirmed manually for {texts.tag(int(raw))} — "
-                         "the user is choosing their bank.")
+    await message.answer(f"{texts.tag(int(raw))} — {msg}")
 
 
 @router.message(Command("pay"))

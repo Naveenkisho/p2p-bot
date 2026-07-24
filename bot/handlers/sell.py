@@ -630,7 +630,8 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
             f"🔗 TXID: <code>{esc(txid)}</code>\n"
             f"🔎 {tronscan_tx(esc(txid))}\n\n"
             f"<b>On-chain check:</b> {vsum}\n\n"
-            "Confirm only if it checks out — Confirm moves it to your payout queue.")
+            "Confirm credits the <b>actual amount received</b> (above), converted at "
+            "this order's rate, and moves it to your payout queue.")
         targets = await get_admin_targets(session)
         for chat_id in targets:
             try:

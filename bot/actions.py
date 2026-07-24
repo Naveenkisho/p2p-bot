@@ -13,6 +13,7 @@ from . import texts
 from .config import SERVICES
 from .db import Session, get_rates, get_setting, get_support
 from .flow import notify_deposit_received
+from .scanner import _ms
 from .keyboards import admin_order_kb, bot_link_kb
 from .helpers import (
     ist_now_str,
@@ -242,20 +243,50 @@ def launch_broadcast(bot: Bot, text: str, to_proof: bool) -> None:
 
 
 async def confirm_deposit(bot: Bot, order_id: int, txid: str = "manual") -> tuple[bool, str]:
+    """Manually confirm a deposit. When a real TXID is given the amount is
+    reconciled to what ACTUALLY landed on-chain — a sender's platform can deduct
+    a network fee (30.13 sent → 28.63 received), so we credit and pay out the
+    received amount at the order's locked method rate, never the ordered amount."""
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None:
+            return False, "Order not found."
+        address, rate = order.deposit_address, order.rate_inr
+        since_ms = _ms(order.created_at)
+    actual = None
+    warn = ""
+    if txid and txid != "manual":
+        from .scanner import lookup_claim_tx
+        info = await lookup_claim_tx(txid, address, since_ms)
+        if info.get("found") and info.get("to_ok") and (info.get("amount") or 0) > 0:
+            actual = round(info["amount"], 6)
+        elif info.get("found") and not info.get("to_ok"):
+            return False, "⚠️ That TXID isn't a USDT transfer to your deposit address — not confirming."
+        elif info.get("error"):
+            warn = " ⚠️ Couldn't reach TronGrid — credited the ORDERED amount; check the actual on Tronscan."
+        else:
+            warn = " ⚠️ TXID not found on-chain — credited the ORDERED amount; verify on Tronscan."
     async with Session() as session:
         if txid != "manual":
             seen = await session.get(SeenTx, txid)
             if seen is not None and seen.order_id is None:
                 seen.order_id = order_id
                 await session.commit()
+        extra = {"txid": txid, "deposit_detected_at": utcnow()}
+        if actual is not None:
+            extra["usd_amount"] = actual
+            extra["inr_amount"] = round(actual * rate, 2)
         order = await try_transition(
             session, order_id,
             (OrderStatus.AWAITING_DEPOSIT, OrderStatus.EXPIRED, OrderStatus.CANCELLED),
-            OrderStatus.DEPOSIT_RECEIVED, txid=txid, deposit_detected_at=utcnow())
+            OrderStatus.DEPOSIT_RECEIVED, **extra)
     if order is None:
         return False, "That order can't be confirmed (already processing or refunded)."
     await notify_deposit_received(bot, order_id)
-    return True, "Deposit confirmed — order queued for payout."
+    if actual is not None:
+        return True, (f"✅ Confirmed — actual {texts.usd_str(actual)} USDT received "
+                      f"→ pay ₹{actual * rate:,.2f}. Queued for payout.")
+    return True, "Deposit confirmed — order queued for payout." + warn
 
 
 async def confirm_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
@@ -283,7 +314,8 @@ async def confirm_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
             if o is not None:
                 o.claim_txid = None      # claim resolved → clear the marker
                 await session.commit()
-        return True, f"✅ Payment confirmed for {texts.tag(order_id)} — queued for payout."
+        # msg already reports the ACTUAL amount reconciled on-chain
+        return True, f"{texts.tag(order_id)} — {msg}"
     return ok, msg
 
 
