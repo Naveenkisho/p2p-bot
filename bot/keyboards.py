@@ -116,23 +116,24 @@ def language_kb() -> InlineKeyboardMarkup:
 
 
 PANEL_TABS = {
-    "active": "⏳ Active",
+    "active": "💰 Active",
+    "pending": "⏳ Pending",
     "refunds": "↩️ Refunds",
     "done": "✅ Done",
 }
 
 
 def panel_kb(active_tab: str) -> InlineKeyboardMarkup:
-    tabs = [
-        InlineKeyboardButton(
+    keys = list(PANEL_TABS.items())
+    # two tabs per row so 4 fit cleanly, then a refresh row
+    rows = [
+        [InlineKeyboardButton(
             text=("• " + label if key == active_tab else label),
-            callback_data=f"tab:{key}")
-        for key, label in PANEL_TABS.items()
+            callback_data=f"tab:{key}") for key, label in keys[i:i + 2]]
+        for i in range(0, len(keys), 2)
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[
-        tabs,
-        [InlineKeyboardButton(text="🔄 Refresh", callback_data=f"tab:{active_tab}")],
-    ])
+    rows.append([InlineKeyboardButton(text="🔄 Refresh", callback_data=f"tab:{active_tab}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def services_kb(rates: dict[str, float]) -> InlineKeyboardMarkup:

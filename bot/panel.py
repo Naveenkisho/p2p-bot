@@ -48,9 +48,9 @@ log = logging.getLogger(__name__)
 COOKIE = "p2p_panel"
 SESSION_TTL = 12 * 3600
 TABS = {
-    "active": ("⏳ Active", (OrderStatus.AWAITING_DEPOSIT.value,
-                             OrderStatus.DEPOSIT_RECEIVED.value,
+    "active": ("💰 Active", (OrderStatus.DEPOSIT_RECEIVED.value,
                              OrderStatus.PENDING_PAYOUT.value)),
+    "pending": ("⏳ Pending", (OrderStatus.AWAITING_DEPOSIT.value,)),
     "refunds": ("↩️ Refunds", (OrderStatus.CANCELLED.value,
                                OrderStatus.REFUND_REQUESTED.value)),
     "done": ("✅ Done", (OrderStatus.COMPLETED.value, OrderStatus.REFUNDED.value,

@@ -260,8 +260,10 @@ async def cmd_testproof(message: Message) -> None:
 
 
 TAB_STATUSES = {
-    "active": (OrderStatus.AWAITING_DEPOSIT.value, OrderStatus.DEPOSIT_RECEIVED.value,
-               OrderStatus.PENDING_PAYOUT.value),
+    # Active = money is IN (deposit verified) and needs payout action
+    "active": (OrderStatus.DEPOSIT_RECEIVED.value, OrderStatus.PENDING_PAYOUT.value),
+    # Pending = order created, no deposit yet (tx nil) — nothing to do
+    "pending": (OrderStatus.AWAITING_DEPOSIT.value,),
     "refunds": (OrderStatus.CANCELLED.value, OrderStatus.REFUND_REQUESTED.value),
     "done": (OrderStatus.COMPLETED.value, OrderStatus.REFUNDED.value,
              OrderStatus.EXPIRED.value),

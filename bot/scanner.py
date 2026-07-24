@@ -227,6 +227,37 @@ async def _bootstrap_addresses(session, http: aiohttp.ClientSession) -> None:
     await session.commit()
 
 
+async def remind_pending_orders(bot: Bot) -> None:
+    """Nudge users who created an order but haven't deposited after remind_min
+    (once per order), before it eventually expires."""
+    from datetime import timedelta
+
+    from .helpers import notify_user
+    from .keyboards import deposit_kb
+    from .models import User
+
+    now = utcnow()
+    due = now - timedelta(minutes=settings.remind_min)
+    not_expired = now - timedelta(minutes=settings.deposit_ttl_min)
+    pending: list[tuple[int, int, float, str, str]] = []
+    async with Session() as session:
+        rows = (await session.scalars(
+            select(Order).where(
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value,
+                Order.reminded.is_(False),
+                Order.created_at < due,
+                Order.created_at > not_expired))).all()
+        for o in rows:
+            o.reminded = True
+            user = await session.get(User, o.user_id)
+            lang = user.lang if user and user.lang else "en"
+            pending.append((o.user_id, o.id, o.usd_amount, o.deposit_address, lang))
+        await session.commit()
+    for uid, oid, usd, addr, lang in pending:
+        await notify_user(bot, uid, texts.deposit_reminder(oid, usd, addr, lang),
+                          reply_markup=deposit_kb(oid))
+
+
 async def scan_once(bot: Bot, http: aiohttp.ClientSession) -> None:
     async with Session() as session:
         await _bootstrap_addresses(session, http)
@@ -238,6 +269,7 @@ async def scan_once(bot: Bot, http: aiohttp.ClientSession) -> None:
             if int(tx.get("block_timestamp", 0) or 0) <= watermark:
                 continue
             await _credit_or_hold(bot, tx, address)
+    await remind_pending_orders(bot)
     await expire_stale_orders(bot)
 
 

@@ -300,6 +300,23 @@ def order_cancelled(order_id: int, lang: str = "en") -> str:
     )
 
 
+def deposit_reminder(order_id: int, usd: float, address: str,
+                     lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"⏳ <b>Order {tag(order_id)} abhi pending hai</b>\n\n"
+            f"Complete karne ke liye bhejein <b>exactly {usd:g} USDT</b> (TRC20):\n"
+            f"<code>{address}</code>\n\n"
+            "⚡ Auto-verify seconds me. Bhej diya? Niche <b>🔍 Check status</b> dabayein."
+        )
+    return (
+        f"⏳ <b>Order {tag(order_id)} is still pending</b>\n\n"
+        f"To complete it, send <b>exactly {usd:g} USDT</b> (TRC20) to:\n"
+        f"<code>{address}</code>\n\n"
+        "⚡ Auto-verified in seconds. Already sent? Tap <b>🔍 Check status</b> below."
+    )
+
+
 def order_expired(order_id: int, lang: str = "en") -> str:
     if lang == "hi":
         return (

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # TRON auto-scan
     scan_interval_sec: int = 10
     deposit_ttl_min: int = 60          # awaiting_deposit orders expire after this
+    remind_min: int = 5                # remind the user if no deposit after this
     scan_page_limit: int = 100         # transfers fetched per TronGrid page
     scan_max_pages: int = 10           # page cap per address per tick
     trongrid_url: str = "https://api.trongrid.io"

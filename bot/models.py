@@ -72,6 +72,7 @@ class Order(Base):
     txid: Mapped[str | None] = mapped_column(String(80))
     deposit_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
     admin_note: Mapped[str | None] = mapped_column(String(64))
+    reminded: Mapped[bool] = mapped_column(default=False)
     status: Mapped[str] = mapped_column(String(20), default=OrderStatus.AWAITING_DEPOSIT,
                                         index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
