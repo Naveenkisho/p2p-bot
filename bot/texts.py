@@ -367,7 +367,9 @@ def proof_post(order_id: int, usd: float, rate: float, inr: float,
         f"✅ <b>Order {tag(order_id)} completed</b>\n"
         f"💵 Sold: <b>{usd:g}$ USDT</b> @ 1$/₹{rate:g}\n"
         f"🏦 Paid: <b>₹{inr:,.0f}</b> via {service_label}\n"
-        f"⚡ Done in <b>{minutes} min</b> 🟢"
+        f"⚡ Done in <b>{minutes} min</b> 🟢\n"
+        f"🛡 <b>100% clean funds only</b> — zero freeze risk\n"
+        f"📈 Rates change fast — <b>order now!</b>"
     )
 
 

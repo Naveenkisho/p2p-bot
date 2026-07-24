@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from .. import texts
 from ..actions import (
+    bot_username,
     complete_order,
     compose_announcement,
     confirm_deposit,
@@ -32,7 +33,7 @@ from ..helpers import (
     order_card,
     strip_kb,
 )
-from ..keyboards import PANEL_TABS, AdminCb, admin_order_kb, panel_kb
+from ..keyboards import PANEL_TABS, AdminCb, admin_order_kb, bot_link_kb, panel_kb
 from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, User, utcnow
 
 router = Router(name="admin")
@@ -244,8 +245,9 @@ async def cmd_testproof(message: Message) -> None:
     target: int | str = int(channel) if channel.lstrip("-").isdigit() else channel
     sample = texts.proof_post(0, 100, 91, 9100, "IMPS instant", 12) + \
         "\n\n<i>— test post, ignore —</i>"
+    kb = bot_link_kb(await bot_username(message.bot))
     try:
-        await message.bot.send_message(target, sample)
+        await message.bot.send_message(target, sample, reply_markup=kb)
         await message.answer(f"✅ Test posted to {esc(channel)} — check the channel. "
                              "Every completed order posts a card like this.")
     except Exception as e:

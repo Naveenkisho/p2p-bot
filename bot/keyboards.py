@@ -84,6 +84,15 @@ def with_back(kb: InlineKeyboardMarkup | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def bot_link_kb(username: str | None) -> InlineKeyboardMarkup | None:
+    """Tap-to-open-bot button shown under every proof-channel post."""
+    if not username:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💵 Start Trading — Sell USDT",
+                             url=f"https://t.me/{username}")]])
+
+
 def support_row_kb(handles: list[str]) -> InlineKeyboardMarkup | None:
     """Support contacts as tap-to-chat buttons laid out horizontally (up to 3
     per row) — a clean, straight row of contacts."""

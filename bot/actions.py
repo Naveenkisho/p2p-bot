@@ -13,6 +13,7 @@ from . import texts
 from .config import SERVICES
 from .db import Session, get_setting, get_support
 from .flow import notify_deposit_received
+from .keyboards import bot_link_kb
 from .helpers import (
     ist_now_str,
     notify_admins,
@@ -24,6 +25,19 @@ from .models import BankCard, Order, OrderStatus, SeenTx, User, utcnow
 
 log = logging.getLogger(__name__)
 
+_bot_username: str | None = None
+
+
+async def bot_username(bot: Bot) -> str | None:
+    """Cached bot @username, for the 'open bot' button on proof posts."""
+    global _bot_username
+    if _bot_username is None:
+        try:
+            _bot_username = (await bot.get_me()).username
+        except Exception:
+            return None
+    return _bot_username
+
 
 async def post_proof(bot: Bot, order: Order) -> None:
     """Anonymized completion post to the public proof channel, if configured."""
@@ -33,10 +47,11 @@ async def post_proof(bot: Bot, order: Order) -> None:
         return
     target: int | str = int(channel) if channel.lstrip("-").isdigit() else channel
     minutes = max(1, int((utcnow() - order.created_at).total_seconds() // 60))
+    kb = bot_link_kb(await bot_username(bot))
     try:
         await bot.send_message(target, texts.proof_post(
             order.id, order.usd_amount, order.rate_inr, order.inr_amount,
-            SERVICES.get(order.service, order.service), minutes))
+            SERVICES.get(order.service, order.service), minutes), reply_markup=kb)
     except Exception:
         await notify_admins(bot, "⚠️ Couldn't post to the proof channel — "
                                  "is the bot still admin there?")
