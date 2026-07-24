@@ -421,32 +421,43 @@ def deposit_reminder(order_id: int, usd: float, address: str,
     amt = usd_str(usd)
     dec_hi = " — decimals ke saath" if "." in amt else ""
     dec_en = ", including the decimals" if "." in amt else ""
+    left = max(1, settings.deposit_ttl_min - settings.remind_min)
     if lang == "hi":
         return (
-            f"⏳ <b>Order {tag(order_id)} abhi pending hai</b>\n\n"
+            f"⏳ <b>Order {tag(order_id)} abhi pending hai</b>\n"
+            f"⚠️ <b>Ye quote ~{left} min me expire ho jayega — abhi bhejein.</b>\n\n"
             f"Complete karne ke liye bhejein <b>exactly {amt} USDT</b> (TRC20){dec_hi}:\n"
             f"<code>{address}</code>\n\n"
             "⚡ Auto-verify seconds me. Bhej diya? Niche <b>🔍 Check status</b> dabayein."
         )
     return (
-        f"⏳ <b>Order {tag(order_id)} is still pending</b>\n\n"
+        f"⏳ <b>Order {tag(order_id)} is still pending</b>\n"
+        f"⚠️ <b>This quote expires in ~{left} min — please send now.</b>\n\n"
         f"To complete it, send <b>exactly {amt} USDT</b> (TRC20){dec_en} to:\n"
         f"<code>{address}</code>\n\n"
         "⚡ Auto-verified in seconds. Already sent? Tap <b>🔍 Check status</b> below."
     )
 
 
-def order_expired(order_id: int, lang: str = "en") -> str:
+def order_expired(order_id: int, support: str = "@support", lang: str = "en") -> str:
     if lang == "hi":
         return (
-            f"⌛ <b>Order {tag(order_id)} expire ho gaya</b> — time par deposit nahi mila.\n\n"
-            "Kuch bheja nahi tha to koi baat nahi — naya order shuru karein. "
-            "USDT bheja tha? Support ko order ID ke saath message karein."
+            f"⌛ <b>Order {tag(order_id)} ka {settings.deposit_ttl_min}-minute window "
+            f"khatam ho gaya</b> — time par deposit nahi mila.\n\n"
+            f"⚠️ <b>Ab us purane address/amount par kuch mat bhejein.</b>\n"
+            f"Naya payout shuru karein 👇 — fresh address aur amount milega "
+            f"(current rate par).\n\n"
+            f"USDT already bhej diya tha? {html.escape(support)} ko order "
+            f"{tag(order_id)} aur apna TXID bhejein — hum sort kar denge."
         )
     return (
-        f"⌛ <b>Order {tag(order_id)} expired</b> — we didn't see a deposit in time.\n\n"
-        "Nothing to worry about if you didn't send anything — just start a fresh "
-        "order. If you DID send USDT, message support with your order ID."
+        f"⌛ <b>Order {tag(order_id)}'s {settings.deposit_ttl_min}-minute window has "
+        f"closed</b> — no deposit arrived in time.\n\n"
+        f"⚠️ <b>Don't send anything to that old address/amount now.</b>\n"
+        f"Start a fresh payout 👇 — you'll get a new address and amount "
+        f"(at the current rate).\n\n"
+        f"Already sent the USDT? Message {html.escape(support)} with order "
+        f"{tag(order_id)} and your TXID — we'll sort it out."
     )
 
 

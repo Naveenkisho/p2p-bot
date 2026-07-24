@@ -69,6 +69,13 @@ def request_refund_kb(order_id: int) -> InlineKeyboardMarkup:
                              callback_data=RefundReqCb(order_id=order_id).pack())]])
 
 
+def start_fresh_kb() -> InlineKeyboardMarkup:
+    """Shown when a deposit session expires — one tap to begin a fresh payout
+    (new address + amount at the current rate)."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💵 Start a fresh payout", callback_data="menu:sell")]])
+
+
 def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [

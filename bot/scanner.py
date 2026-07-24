@@ -163,19 +163,44 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
         await session.commit()
 
     if not candidates:
+        from datetime import timedelta
+
         # show the open orders so the admin has context (typo? overpay? no order?)
+        # and — since amounts are unique — try to trace this to a recently-expired
+        # order whose 5-min window closed just before the deposit confirmed.
         async with Session() as session:
             opens = (await session.scalars(
                 select(Order).where(
                     Order.status == OrderStatus.AWAITING_DEPOSIT.value)
                 .order_by(Order.id))).all()
+            grace_cutoff = utcnow() - timedelta(
+                minutes=settings.deposit_ttl_min + settings.deposit_grace_min)
+            late = (await session.scalars(
+                select(Order).where(
+                    Order.status == OrderStatus.EXPIRED.value,
+                    Order.created_at > grace_cutoff,
+                    Order.usd_amount >= amount - AMOUNT_TOLERANCE,
+                    Order.usd_amount <= amount + AMOUNT_TOLERANCE,
+                ).order_by(Order.id.desc()))).all()
         ctx = "\n".join(f"• {texts.tag(o.id)} expects <b>{texts.usd_str(o.usd_amount)}$</b>"
                         for o in opens[:8]) or "• (no orders waiting)"
+        late_note = ""
+        if late:
+            o = late[0]
+            mins = max(0, int((utcnow() - o.created_at).total_seconds() // 60))
+            late_note = (
+                f"\n🔎 <b>Looks like a late payment.</b> This exact amount matches "
+                f"<b>{texts.tag(o.id)}</b>, whose {settings.deposit_ttl_min}-min window "
+                f"closed ~{mins} min ago. If this is that customer paying late, credit "
+                f"it at their locked rate:\n"
+                f"<code>/received {o.id} {txid}</code>\n"
+                f"— otherwise refund the sender.\n")
         await notify_admins(
             bot,
             f"⚠️ <b>Unmatched deposit: {texts.usd_str(amount)} USDT</b> "
             f"(tx <code>{txid}</code>)\n"
-            f"No open order expects exactly {texts.usd_str(amount)}$.\n\n"
+            f"No open order expects exactly {texts.usd_str(amount)}$.\n"
+            f"{late_note}\n"
             f"<b>Open orders:</b>\n{ctx}\n\n"
             f"If it's for one of them, assign it:\n"
             f"<code>/received &lt;id&gt; {txid}</code>\n"
@@ -214,9 +239,16 @@ async def expire_stale_orders(bot: Bot) -> None:
                 await update_order_cards(bot, session, updated, user, card, None)
                 expired.append((order.user_id,
                                 user.lang if user and user.lang else "en", order.id))
-    for user_id, lang, order_id in expired:
+    if expired:
+        from .db import get_support
         from .helpers import notify_user
-        await notify_user(bot, user_id, texts.order_expired(order_id, lang))
+        from .keyboards import start_fresh_kb
+        async with Session() as session:
+            support = await get_support(session)
+        for user_id, lang, order_id in expired:
+            await notify_user(bot, user_id,
+                              texts.order_expired(order_id, support, lang),
+                              reply_markup=start_fresh_kb())
 
 
 async def _bootstrap_addresses(session, http: aiohttp.ClientSession) -> None:

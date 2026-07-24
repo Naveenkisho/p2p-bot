@@ -1,9 +1,10 @@
 import re
+from datetime import timedelta
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from .. import texts
 from ..config import SERVICES, settings
@@ -40,8 +41,9 @@ from ..keyboards import (
     pre_bank_chooser_kb,
     request_refund_kb,
     services_kb,
+    start_fresh_kb,
 )
-from ..models import BankCard, Order, OrderStatus, SeenTx, User
+from ..models import BankCard, Order, OrderStatus, SeenTx, User, utcnow
 from ..states import BankForOrder, RefundFlow, SellFlow
 from .start import bank_details_error, make_bank_label
 
@@ -87,9 +89,18 @@ async def _reserve_amount(session, requested: float) -> float:
     base = round(requested, 2)
     if not settings.unique_cents:
         return base
-    taken = {round((a or 0) * 100) for a in (await session.scalars(
-        select(Order.usd_amount).where(
-            Order.status == OrderStatus.AWAITING_DEPOSIT.value))).all()}
+    # amounts we must not hand out: every open (awaiting) order, PLUS orders that
+    # expired within the grace window — a late deposit could still arrive for one
+    # of those, and if a new order reused that amount the two would be
+    # indistinguishable on-chain.
+    grace_cutoff = utcnow() - timedelta(
+        minutes=settings.deposit_ttl_min + settings.deposit_grace_min)
+    rows = (await session.scalars(
+        select(Order.usd_amount).where(or_(
+            Order.status == OrderStatus.AWAITING_DEPOSIT.value,
+            and_(Order.status == OrderStatus.EXPIRED.value,
+                 Order.created_at > grace_cutoff))))).all()
+    taken = {round((a or 0) * 100) for a in rows}
     cents = round(base * 100)
     if cents % 100 == 0:          # whole dollar → give it a .01–.99 tag
         cents += 1
@@ -334,6 +345,16 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             elif status == OrderStatus.PENDING_PAYOUT:
                 await callback.answer("✅ Verified — your payout is in the queue.",
                                       show_alert=True)
+            elif status == OrderStatus.EXPIRED:
+                await callback.answer(
+                    f"⌛ This {settings.deposit_ttl_min}-minute payment window "
+                    "expired — please start a fresh payout.", show_alert=True)
+                await strip_kb(callback.message)
+                lang, footer = await _ctx(session, callback.from_user)
+                support = await get_support(session)
+                await callback.message.answer(
+                    texts.order_expired(order.id, support, lang),
+                    reply_markup=start_fresh_kb())
             else:
                 await callback.answer("This order is already in processing.", show_alert=True)
 
