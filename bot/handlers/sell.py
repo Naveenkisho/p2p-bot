@@ -67,6 +67,30 @@ async def _ctx(session, tg_user) -> tuple[str, str]:
     return lang, texts.trust_footer(tg_user.first_name, tg_user.id, support, lang)
 
 
+async def _reserve_amount(session, requested: float) -> float:
+    """Give this order a unique deposit amount so the amount alone identifies it
+    to the scanner (unique cents). Returns the smallest 2-decimal value ≥
+    `requested` that no other AWAITING_DEPOSIT order is currently using; a 0.01
+    gap sits comfortably outside the scanner's ±0.005 match tolerance, so no two
+    open orders can be confused. Integer cents avoid float-equality pitfalls.
+
+    Best-effort: two orders committed in the exact same instant could still land
+    on the same amount, but the scanner then simply holds that deposit for manual
+    assignment (2+ candidates) rather than crediting the wrong user."""
+    base = round(requested, 2)
+    if not settings.unique_cents:
+        return base
+    taken = {round((a or 0) * 100) for a in (await session.scalars(
+        select(Order.usd_amount).where(
+            Order.status == OrderStatus.AWAITING_DEPOSIT.value))).all()}
+    cents = round(base * 100)
+    for _ in range(500):  # up to +4.99 before giving up — never loops forever
+        if cents not in taken:
+            return round(cents / 100, 2)
+        cents += 1
+    return round(base + 5.0, 2)
+
+
 @router.callback_query(F.data == "menu:sell")
 async def sell_menu(callback: CallbackQuery, state: FSMContext) -> None:
     async with Session() as session:
@@ -130,13 +154,14 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
                              reply_markup=hide_kb())
         return
     service_label = SERVICES.get(data.get("service"), data.get("service"))
-    await state.update_data(usd=usd)
     async with Session() as session:
+        usd = await _reserve_amount(session, usd)
         cards = (await session.scalars(
             select(BankCard).where(BankCard.user_id == message.from_user.id)
             .order_by(BankCard.id)
         )).all()
         lang, footer = await _ctx(session, message.from_user)
+    await state.update_data(usd=usd)
     if cards:
         await state.set_state(SellFlow.choose_bank)
         await message.answer(
@@ -202,6 +227,9 @@ async def _create_order(message_target, state: FSMContext, tg_user,
         if rates[service] != rate:
             rate = rates[service]
             rate_note = texts.rate_updated_note(rate, lang)
+        # re-claim a unique amount at the money moment: another order may have
+        # taken the one we quoted while this user was choosing a bank
+        usd = await _reserve_amount(session, usd)
         order = Order(
             user_id=user.id,
             side="sell",

@@ -28,6 +28,14 @@ def tag(order_id: int) -> str:
     return f"#ORD{order_id:04d}"
 
 
+def usd_str(amount: float) -> str:
+    """Exact deposit amount for display: 2 decimals, trailing zeros trimmed
+    (100 → "100", 100.02 → "100.02", 10000.5 → "10000.5"). Unlike "%g" this
+    never rounds past 6 significant figures, so the number the customer is
+    told to send always equals the amount the scanner matches on."""
+    return f"{amount:.2f}".rstrip("0").rstrip(".")
+
+
 def trust_footer(name: str | None, user_id: int, support: str, lang: str = "en") -> str:
     who = html.escape(name or ("dost" if lang == "hi" else "friend"))
     if lang == "hi":
@@ -139,14 +147,14 @@ def ask_amount(service_label: str, rate: float, lo: float, hi: float,
 def choose_bank(usd: float, inr: float, service_label: str, rate: float,
                 has_bank: bool, lang: str = "en") -> str:
     if lang == "hi":
-        head = (f"💵 Aap bhejte hain: <b>{usd:g}$ USDT</b>\n"
+        head = (f"💵 Aap bhejte hain: <b>{usd_str(usd)}$ USDT</b>\n"
                 f"📊 Method: <b>{service_label}</b> · 1$ = ₹{rate:g}\n"
                 f"💰 Aapko milenge: <b>₹{inr:,.2f}</b>\n\n")
         head += ("🏦 <b>Apna payout bank chunein 👇</b>" if has_bank
                  else "🏦 <b>Koi bank saved nahi — continue karne ke liye niche "
                       "apni bank details add karein:</b>")
         return head
-    head = (f"💵 You send: <b>{usd:g}$ USDT</b>\n"
+    head = (f"💵 You send: <b>{usd_str(usd)}$ USDT</b>\n"
             f"📊 Method: <b>{service_label}</b> · 1$ = ₹{rate:g}\n"
             f"💰 You receive: <b>₹{inr:,.2f}</b>\n\n")
     head += ("🏦 <b>Choose your payout bank 👇</b>" if has_bank
@@ -164,10 +172,13 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
                     address: str, rate: float, rate_note: str = "",
                     bank_label: str = "", lang: str = "en") -> str:
     bank = html.escape(bank_label) if bank_label else service_label
+    amt = usd_str(usd)
     if lang == "hi":
         return (
-            f"💸 Bhejein <b>exactly {usd:g} USDT</b> (TRC20) is address par:\n"
+            f"💸 Bhejein <b>exactly {amt} USDT</b> (TRC20) is address par:\n"
             f"<code>{address}</code>\n\n"
+            f"🎯 Ye exact amount is order ka tag hai — isse hum instantly match "
+            f"karte hain. Thoda kam/zyada na bhejein.\n"
             f"⏱ Auto-verify — transfer confirm hote hi, usually <b>10–20 second</b> me.\n"
             f"⚠️ Sirf TRC20 · exact amount · {settings.deposit_ttl_min} min me expire\n\n"
             f"{rate_note}"
@@ -175,8 +186,10 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
             f"🧾 Ref: <code>{tag(order_id)}</code>"
         )
     return (
-        f"💸 Send <b>exactly {usd:g} USDT</b> (TRC20) to:\n"
+        f"💸 Send <b>exactly {amt} USDT</b> (TRC20) to:\n"
         f"<code>{address}</code>\n\n"
+        f"🎯 This exact amount is your order's tag — it's how we match your "
+        f"deposit instantly. Don't round it up or down.\n"
         f"⏱ Auto-verified — usually <b>10–20 seconds</b> after your transfer confirms.\n"
         f"⚠️ TRC20 only · exact amount only · expires in {settings.deposit_ttl_min} min\n\n"
         f"{rate_note}"
@@ -386,13 +399,13 @@ def deposit_reminder(order_id: int, usd: float, address: str,
     if lang == "hi":
         return (
             f"⏳ <b>Order {tag(order_id)} abhi pending hai</b>\n\n"
-            f"Complete karne ke liye bhejein <b>exactly {usd:g} USDT</b> (TRC20):\n"
+            f"Complete karne ke liye bhejein <b>exactly {usd_str(usd)} USDT</b> (TRC20):\n"
             f"<code>{address}</code>\n\n"
             "⚡ Auto-verify seconds me. Bhej diya? Niche <b>🔍 Check status</b> dabayein."
         )
     return (
         f"⏳ <b>Order {tag(order_id)} is still pending</b>\n\n"
-        f"To complete it, send <b>exactly {usd:g} USDT</b> (TRC20) to:\n"
+        f"To complete it, send <b>exactly {usd_str(usd)} USDT</b> (TRC20) to:\n"
         f"<code>{address}</code>\n\n"
         "⚡ Auto-verified in seconds. Already sent? Tap <b>🔍 Check status</b> below."
     )

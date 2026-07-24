@@ -169,12 +169,13 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
                 select(Order).where(
                     Order.status == OrderStatus.AWAITING_DEPOSIT.value)
                 .order_by(Order.id))).all()
-        ctx = "\n".join(f"• {texts.tag(o.id)} expects <b>{o.usd_amount:g}$</b>"
+        ctx = "\n".join(f"• {texts.tag(o.id)} expects <b>{texts.usd_str(o.usd_amount)}$</b>"
                         for o in opens[:8]) or "• (no orders waiting)"
         await notify_admins(
             bot,
-            f"⚠️ <b>Unmatched deposit: {amount:g} USDT</b> (tx <code>{txid}</code>)\n"
-            f"No open order expects exactly {amount:g}$.\n\n"
+            f"⚠️ <b>Unmatched deposit: {texts.usd_str(amount)} USDT</b> "
+            f"(tx <code>{txid}</code>)\n"
+            f"No open order expects exactly {texts.usd_str(amount)}$.\n\n"
             f"<b>Open orders:</b>\n{ctx}\n\n"
             f"If it's for one of them, assign it:\n"
             f"<code>/received &lt;id&gt; {txid}</code>\n"
@@ -182,7 +183,8 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
     else:
         ids = ", ".join(texts.tag(o.id) for o in candidates)
         await notify_admins(bot,
-                            f"⚠️ <b>{amount:g} USDT</b> deposit (tx <code>{txid}</code>) "
+                            f"⚠️ <b>{texts.usd_str(amount)} USDT</b> deposit "
+                            f"(tx <code>{txid}</code>) "
                             f"matches {len(candidates)} awaiting orders: {ids}.\n"
                             f"Confirm the correct one manually: "
                             f"/received &lt;id&gt; {txid}")

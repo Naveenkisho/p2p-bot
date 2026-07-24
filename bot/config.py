@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # Max simultaneously-open orders per user (awaiting/received/pending)
     open_orders_max: int = 3
 
+    # Give every open order a unique deposit amount (unique cents) so the
+    # scanner matches instantly with no amount collisions.
+    unique_cents: bool = True
+
     # Web admin panel (optional; disabled unless a password is set)
     panel_password: str = ""           # required to enable the web panel
     panel_secret: str = ""             # cookie-signing secret (auto-derived if blank)
