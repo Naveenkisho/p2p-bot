@@ -52,6 +52,7 @@ async def admin_help(message: Message) -> None:
         "/setaddress T… — set the TRC20 deposit address\n"
         "/setsupport @help1 @help2 — set the support contact(s) users see\n"
         "/setchannel @channel — proof channel for completed orders (off = disable)\n"
+        "/testproof — post a sample card to the proof channel\n"
         "/panel (or /orders) — tabbed live order panel\n"
         "/orders — list open orders\n"
         "/order 12 — reshow an order card with its buttons\n"
@@ -228,7 +229,32 @@ async def cmd_setchannel(message: Message, command: CommandObject) -> None:
     async with Session() as session:
         await set_setting(session, "proof_channel", arg)
     await message.answer(f"✅ Proof channel set to {esc(arg)} — every completed order "
-                         "posts an anonymized proof card there.")
+                         "posts an anonymized proof card there. Try /testproof.")
+
+
+@router.message(Command("testproof"))
+async def cmd_testproof(message: Message) -> None:
+    """Post a sample card to the proof channel to verify the connection."""
+    async with Session() as session:
+        channel = await get_setting(session, "proof_channel")
+    if not channel:
+        await message.answer("No proof channel set. Use "
+                             "<code>/setchannel @yourchannel</code> first.")
+        return
+    target: int | str = int(channel) if channel.lstrip("-").isdigit() else channel
+    sample = texts.proof_post(0, 100, 91, 9100, "IMPS instant", 12) + \
+        "\n\n<i>— test post, ignore —</i>"
+    try:
+        await message.bot.send_message(target, sample)
+        await message.answer(f"✅ Test posted to {esc(channel)} — check the channel. "
+                             "Every completed order posts a card like this.")
+    except Exception as e:
+        await message.answer(
+            f"⚠️ Couldn't post to {esc(channel)}.\n\n"
+            "Fix: add the bot to the channel as an <b>Admin</b> with the "
+            "<b>Post Messages</b> permission. If you used a numeric ID it must look "
+            "like <code>-100xxxxxxxxxx</code>.\n\n"
+            f"Error: <code>{esc(str(e))}</code>")
 
 
 TAB_STATUSES = {
