@@ -148,7 +148,7 @@ def banks_menu_kb(cards: list[BankCard]) -> InlineKeyboardMarkup:
 
 def deposit_kb(order_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 I've sent — check status",
+        [InlineKeyboardButton(text="🔍 Check status",
                               callback_data=OrderCb(action="check", order_id=order_id).pack())],
         [InlineKeyboardButton(text="❌ Cancel order",
                               callback_data=OrderCb(action="cancel", order_id=order_id).pack())],

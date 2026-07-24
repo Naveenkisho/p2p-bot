@@ -45,12 +45,11 @@ async def notify_deposit_received(bot: Bot, order_id: int) -> None:
                                             OrderStatus.PENDING_PAYOUT)
             if advanced is None:
                 return  # already moved on (double notify) — nothing to do
-            q_note = texts.queue_note(await queue_position(session, order.id), lang)
-            text = texts.deposit_received(order.id, order.usd_amount,
+            position = await queue_position(session, order.id)
+            text = texts.deposit_verified(order.id, order.usd_amount,
                                           order.inr_amount, order.txid or "",
-                                          lang, ask_bank=False)
-            text += "\n\n" + texts.order_submitted(
-                order.id, card.details if card else "your saved bank", q_note, lang)
+                                          card.label if card else "your bank",
+                                          position, lang)
             if user is not None:
                 text += texts.trust_footer(user.first_name, user.id, support, lang)
             delivered = await notify_user(bot, order.user_id, text)

@@ -28,12 +28,19 @@ def bank_details_error(details: str) -> str | None:
 
 
 def make_bank_label(details: str) -> str:
-    first_line = details.strip().splitlines()[0].strip()[:20]
+    lines = [ln.strip() for ln in details.strip().splitlines() if ln.strip()]
+    bank_name = lines[0] if lines else "Bank"
+    # prefer the value after a "Bank:" label if the user used the labelled format
+    for ln in lines:
+        if ":" in ln and ln.split(":", 1)[0].strip().lower() in ("bank", "bank name"):
+            bank_name = ln.split(":", 1)[1].strip() or bank_name
+            break
+    bank_name = bank_name[:20]
     digits = re.findall(r"\d{6,}", details)
     if not digits:
-        return first_line
+        return bank_name
     account = max(digits, key=len)  # longest run = the account number, not the IFSC
-    return f"{first_line} ••{account[-4:]}"
+    return f"{bank_name} ••{account[-4:]}"
 
 
 @router.message(CommandStart())

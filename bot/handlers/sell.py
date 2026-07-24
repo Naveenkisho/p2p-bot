@@ -209,7 +209,7 @@ async def _create_order(message_target, state: FSMContext, tg_user,
         )
         session.add(order)
         await session.commit()
-        await message_target.answer("✅ Bank locked in.", reply_markup=hide_kb())
+        await message_target.answer(f"🏦 {card.label} ✅", reply_markup=hide_kb())
         await message_target.answer(
             texts.deposit_request(order.id, order.usd_amount, order.inr_amount,
                                   SERVICES[service], address, rate, rate_note,
