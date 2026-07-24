@@ -300,6 +300,29 @@ def order_cancelled(order_id: int, lang: str = "en") -> str:
     )
 
 
+def payment_not_detected(order_id: int, support: str, lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"❌ <b>Order {tag(order_id)} — abhi tak payment nahi mila.</b>\n\n"
+            "Abhi tak nahi bheja? Upar diye address par <b>exact amount</b> bhejein.\n\n"
+            f"Bhej diya hai aur lagta hai ye hamari galti hai? Apna <b>payment "
+            f"screenshot + TXID</b> {html.escape(support)} ko bhejein — hum usually "
+            "<b>5 min</b> me reply karte hain."
+        )
+    return (
+        f"❌ <b>Order {tag(order_id)} — payment not received yet.</b>\n\n"
+        "Haven't sent it yet? Send the <b>exact amount</b> to the address above.\n\n"
+        f"Already sent and think it's an error on our side? Send your <b>payment "
+        f"screenshot + TXID</b> to {html.escape(support)} — we usually reply within "
+        "<b>5 minutes</b>."
+    )
+
+
+def checking_now(lang: str = "en") -> str:
+    return ("🔍 Blockchain check kar rahe hain — ek second…" if lang == "hi"
+            else "🔍 Checking the blockchain now — one moment…")
+
+
 def deposit_reminder(order_id: int, usd: float, address: str,
                      lang: str = "en") -> str:
     if lang == "hi":

@@ -285,6 +285,66 @@ async def scan_once(bot: Bot, http: aiohttp.ClientSession) -> None:
     await expire_stale_orders(bot)
 
 
+_checking: set[int] = set()
+_check_tasks: set = set()
+
+
+async def check_order_now(bot: Bot, order_id: int) -> str | None:
+    """On-demand scan of a single order's deposit address (triggered when the
+    user taps 'Check status'). Returns the order's status afterwards."""
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None:
+            return None
+        address = order.deposit_address
+        watermark = await address_watermark(session, address)
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
+            transfers = await fetch_transfers(http, address, watermark)
+        for tx in transfers:
+            if int(tx.get("block_timestamp", 0) or 0) <= watermark:
+                continue
+            await _credit_or_hold(bot, tx, address)
+    except Exception:
+        log.exception("on-demand check failed for order %s", order_id)
+    async with Session() as session:
+        o = await session.get(Order, order_id)
+        return o.status if o else None
+
+
+def launch_order_check(bot: Bot, order_id: int) -> bool:
+    """Fire a background on-demand check; message the user if still unpaid.
+    Returns False if a check for this order is already running."""
+    if order_id in _checking:
+        return False
+    _checking.add(order_id)
+
+    async def _run():
+        from .db import get_support
+        from .helpers import notify_user
+        from .keyboards import deposit_kb
+        from .models import User
+        try:
+            status = await check_order_now(bot, order_id)
+            if status == OrderStatus.AWAITING_DEPOSIT.value:
+                async with Session() as session:
+                    o = await session.get(Order, order_id)
+                    user = await session.get(User, o.user_id) if o else None
+                    support = await get_support(session)
+                lang = user.lang if user and user.lang else "en"
+                await notify_user(bot, o.user_id,
+                                  texts.payment_not_detected(o.id, support, lang),
+                                  reply_markup=deposit_kb(o.id))
+        finally:
+            _checking.discard(order_id)
+
+    task = asyncio.create_task(_run())
+    _check_tasks.add(task)
+    task.add_done_callback(_check_tasks.discard)
+    return True
+
+
 async def scan_loop(bot: Bot) -> None:
     """Never exits: any error (network, DB, TronGrid) is logged and retried."""
     timeout = aiohttp.ClientTimeout(total=15)

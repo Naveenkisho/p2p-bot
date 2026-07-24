@@ -18,6 +18,7 @@ from ..db import (
     get_support,
 )
 from ..flow import notify_deposit_received
+from ..scanner import launch_order_check
 from ..helpers import (
     TRC20_RE,
     notify_admins,
@@ -277,18 +278,13 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
         if callback_data.action == "check":
             status = order.status
             if status == OrderStatus.AWAITING_DEPOSIT:
-                if order.admin_note != "sent_claimed":
-                    order.admin_note = "sent_claimed"
-                    await session.commit()
-                    await notify_admins(callback.bot,
-                                        f"🔍 Order {texts.tag(order.id)}: user says the USDT "
-                                        f"is sent but it's not detected yet "
-                                        f"({order.usd_amount:g}$). If it doesn't confirm, "
-                                        f"check manually and use /received {order.id}.")
-                await callback.answer(
-                    "We're watching the blockchain every few seconds — you'll get "
-                    "a message the moment it lands. If nothing in ~5 minutes, "
-                    "message support.", show_alert=True)
+                lang = await get_lang(session, callback.from_user.id)
+                started = launch_order_check(callback.bot, order.id)
+                if started:
+                    await callback.answer(texts.checking_now(lang), show_alert=True)
+                else:
+                    await callback.answer("Already checking — one moment…",
+                                          show_alert=True)
             elif status == OrderStatus.DEPOSIT_RECEIVED:
                 # deposit just verified — re-drive the next step (payout queue,
                 # or the bank chooser for legacy orders without a bank)
