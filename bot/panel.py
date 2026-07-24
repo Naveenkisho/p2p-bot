@@ -317,6 +317,12 @@ async def settings_get(request: web.Request):
             "Changing it restarts the bot.</p>"
             "<label>New bot token (leave blank to keep current)</label>"
             "<input type=password name=bot_token autocomplete=off placeholder='••••••'>"
+            "<h2>Panel password</h2>"
+            "<p class=muted>The panel is reachable from any device, so make this "
+            "long — a 4-word phrase plus numbers is ideal.</p>"
+            "<label>New panel password (blank = keep current)</label>"
+            "<input type=password name=panel_password autocomplete=new-password "
+            "placeholder='••••••'>"
             "<div class=row><button>Save settings</button></div>"
             "</form>")
     return _page("Settings", body)
@@ -379,6 +385,13 @@ async def settings_post(request: web.Request):
             await set_setting(s, "admin_chat_id", chat)
         else:
             errors.append("admin chat id must be numeric")
+
+        new_pw = str(data.get("panel_password", "")).strip()
+        if new_pw:
+            if len(new_pw) >= 6:
+                await set_setting(s, "panel_password", new_pw)
+            else:
+                errors.append("panel password too short (use at least 6, longer is better)")
 
         token = str(data.get("bot_token", "")).strip()
         if token:
