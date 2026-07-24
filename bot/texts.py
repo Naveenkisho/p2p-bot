@@ -176,37 +176,44 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
     whole = f"{int(usd)}"
     has_dec = "." in amt
     if lang == "hi":
-        note = (
-            f"🎯 <b>Poora amount decimals ke saath bhejein — exactly {amt}, "
-            f"na ki {whole}.</b> Ye decimals aapke order ka tag hain — isi se hum "
-            f"turant match karte hain.\n"
+        amt_line = (
+            f"💵 <b>{amt} USDT</b>  —  🎯 <b>decimals ke saath ({amt}, na ki {whole})</b>"
+            if has_dec else f"💵 <b>{amt} USDT</b>")
+        tag_note = (
+            "Ye decimals aapke order ka tag hain — hum turant match kar lete hain.\n\n"
             if has_dec else
-            f"🎯 Bilkul yahi exact amount bhejein — isse hum turant match karte hain.\n"
-        )
+            "Bilkul yahi exact amount bhejein — turant match ho jayega.\n\n")
         return (
-            f"💸 Bhejein <b>exactly {amt} USDT</b> (TRC20) is address par:\n"
-            f"<code>{address}</code>\n\n"
-            f"{note}"
-            f"⏱ Auto-verify — transfer confirm hote hi, usually <b>10–20 second</b> me.\n"
-            f"⚠️ Sirf TRC20 · exact amount decimals ke saath · "
-            f"{settings.deposit_ttl_min} min me expire\n\n"
+            f"📥 <b>USDT Deposit · TRC20 network</b>\n\n"
+            f"<b>①  Is address par bhejein</b>  👇 <i>copy karne ke liye tap karein</i>\n"
+            f"<pre>{address}</pre>\n"
+            f"<b>②  Exactly itna bhejein</b>\n"
+            f"{amt_line}\n"
+            f"{tag_note}"
+            f"━━━━━━━━━━━━━━\n"
+            f"⏱ Confirm hote hi ~<b>10–20 sec</b> me auto-verify\n"
+            f"⚠️ Sirf TRC20 · exact amount decimals ke saath · {settings.deposit_ttl_min} min me expire\n"
             f"{rate_note}"
             f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}\n"
             f"🧾 Ref: <code>{tag(order_id)}</code>"
         )
-    note = (
-        f"🎯 <b>Send the exact amount with the decimals — {amt}, not {whole}.</b> "
-        f"Those decimals are your order's tag; we auto-match your deposit to it.\n"
+    amt_line = (
+        f"💵 <b>{amt} USDT</b>  —  🎯 <b>with the decimals ({amt}, not {whole})</b>"
+        if has_dec else f"💵 <b>{amt} USDT</b>")
+    tag_note = (
+        "Those decimals are your order's tag — we auto-match your deposit to it.\n\n"
         if has_dec else
-        f"🎯 Send this exact amount — it's how we match your deposit instantly.\n"
-    )
+        "Send this exact amount — it's how we match your deposit instantly.\n\n")
     return (
-        f"💸 Send <b>exactly {amt} USDT</b> (TRC20) to:\n"
-        f"<code>{address}</code>\n\n"
-        f"{note}"
-        f"⏱ Auto-verified — usually <b>10–20 seconds</b> after your transfer confirms.\n"
-        f"⚠️ TRC20 only · exact amount with decimals · expires in "
-        f"{settings.deposit_ttl_min} min\n\n"
+        f"📥 <b>USDT Deposit · TRC20 network</b>\n\n"
+        f"<b>①  Send to this address</b>  👇 <i>tap to copy</i>\n"
+        f"<pre>{address}</pre>\n"
+        f"<b>②  Send exactly this amount</b>\n"
+        f"{amt_line}\n"
+        f"{tag_note}"
+        f"━━━━━━━━━━━━━━\n"
+        f"⏱ Auto-verified ~<b>10–20 sec</b> after it confirms\n"
+        f"⚠️ TRC20 only · exact amount with decimals · expires in {settings.deposit_ttl_min} min\n"
         f"{rate_note}"
         f"💵 You'll receive <b>₹{inr:,.2f}</b> → {bank}\n"
         f"🧾 Ref: <code>{tag(order_id)}</code>"
