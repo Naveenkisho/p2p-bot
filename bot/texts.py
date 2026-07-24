@@ -319,8 +319,22 @@ def payment_not_detected(order_id: int, support: str, lang: str = "en") -> str:
 
 
 def checking_now(lang: str = "en") -> str:
-    return ("🔍 Blockchain check kar rahe hain — ek second…" if lang == "hi"
-            else "🔍 Checking the blockchain now — one moment…")
+    return ("🔍 Check kar rahe hain — chat dekhein 👇" if lang == "hi"
+            else "🔍 Checking — see your chat 👇")
+
+
+def checking_wait(lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            "🔍 <b>Blockchain check kar rahe hain…</b>\n\n"
+            "Please <b>~60 second wait</b> karein — fresh transfer ko confirm hone me "
+            "lagbhag 1 minute lagta hai. Result yahi bhej denge. ⏳"
+        )
+    return (
+        "🔍 <b>Checking the blockchain…</b>\n\n"
+        "Please <b>wait ~60 seconds</b> — a fresh transfer takes about a minute to "
+        "confirm on-chain. We'll send the result here. ⏳"
+    )
 
 
 def deposit_reminder(order_id: int, usd: float, address: str,

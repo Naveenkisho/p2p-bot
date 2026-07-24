@@ -313,9 +313,14 @@ async def check_order_now(bot: Bot, order_id: int) -> str | None:
         return o.status if o else None
 
 
+CHECK_ROUNDS = 5        # scans spread across the wait window
+CHECK_INTERVAL = 15     # seconds between scans (≈60s total)
+
+
 def launch_order_check(bot: Bot, order_id: int) -> bool:
-    """Fire a background on-demand check; message the user if still unpaid.
-    Returns False if a check for this order is already running."""
+    """DM the user 'checking, wait ~60s', re-scan the address across a ~60s
+    window (so a freshly-sent transfer has time to confirm), then DM the
+    result. Returns False if a check for this order is already running."""
     if order_id in _checking:
         return False
     _checking.add(order_id)
@@ -326,14 +331,27 @@ def launch_order_check(bot: Bot, order_id: int) -> bool:
         from .keyboards import deposit_kb
         from .models import User
         try:
-            status = await check_order_now(bot, order_id)
-            if status == OrderStatus.AWAITING_DEPOSIT.value:
-                async with Session() as session:
-                    o = await session.get(Order, order_id)
-                    user = await session.get(User, o.user_id) if o else None
-                    support = await get_support(session)
+            async with Session() as session:
+                o = await session.get(Order, order_id)
+                if o is None:
+                    return
+                user_id = o.user_id
+                user = await session.get(User, user_id)
                 lang = user.lang if user and user.lang else "en"
-                await notify_user(bot, o.user_id,
+            await notify_user(bot, user_id, texts.checking_wait(lang))
+
+            for i in range(CHECK_ROUNDS):
+                status = await check_order_now(bot, order_id)
+                if status != OrderStatus.AWAITING_DEPOSIT.value:
+                    return  # verified/closed — the verified DM was already sent
+                if i < CHECK_ROUNDS - 1:
+                    await asyncio.sleep(CHECK_INTERVAL)
+
+            async with Session() as session:
+                o = await session.get(Order, order_id)
+                support = await get_support(session)
+            if o and o.status == OrderStatus.AWAITING_DEPOSIT.value:
+                await notify_user(bot, user_id,
                                   texts.payment_not_detected(o.id, support, lang),
                                   reply_markup=deposit_kb(o.id))
         finally:
