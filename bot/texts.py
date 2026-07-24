@@ -173,25 +173,40 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
                     bank_label: str = "", lang: str = "en") -> str:
     bank = html.escape(bank_label) if bank_label else service_label
     amt = usd_str(usd)
+    whole = f"{int(usd)}"
+    has_dec = "." in amt
     if lang == "hi":
+        note = (
+            f"🎯 <b>Poora amount decimals ke saath bhejein — exactly {amt}, "
+            f"na ki {whole}.</b> Ye decimals aapke order ka tag hain — isi se hum "
+            f"turant match karte hain.\n"
+            if has_dec else
+            f"🎯 Bilkul yahi exact amount bhejein — isse hum turant match karte hain.\n"
+        )
         return (
             f"💸 Bhejein <b>exactly {amt} USDT</b> (TRC20) is address par:\n"
             f"<code>{address}</code>\n\n"
-            f"🎯 Ye exact amount is order ka tag hai — isse hum instantly match "
-            f"karte hain. Thoda kam/zyada na bhejein.\n"
+            f"{note}"
             f"⏱ Auto-verify — transfer confirm hote hi, usually <b>10–20 second</b> me.\n"
-            f"⚠️ Sirf TRC20 · exact amount · {settings.deposit_ttl_min} min me expire\n\n"
+            f"⚠️ Sirf TRC20 · exact amount decimals ke saath · "
+            f"{settings.deposit_ttl_min} min me expire\n\n"
             f"{rate_note}"
             f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}\n"
             f"🧾 Ref: <code>{tag(order_id)}</code>"
         )
+    note = (
+        f"🎯 <b>Send the exact amount with the decimals — {amt}, not {whole}.</b> "
+        f"Those decimals are your order's tag; we auto-match your deposit to it.\n"
+        if has_dec else
+        f"🎯 Send this exact amount — it's how we match your deposit instantly.\n"
+    )
     return (
         f"💸 Send <b>exactly {amt} USDT</b> (TRC20) to:\n"
         f"<code>{address}</code>\n\n"
-        f"🎯 This exact amount is your order's tag — it's how we match your "
-        f"deposit instantly. Don't round it up or down.\n"
+        f"{note}"
         f"⏱ Auto-verified — usually <b>10–20 seconds</b> after your transfer confirms.\n"
-        f"⚠️ TRC20 only · exact amount only · expires in {settings.deposit_ttl_min} min\n\n"
+        f"⚠️ TRC20 only · exact amount with decimals · expires in "
+        f"{settings.deposit_ttl_min} min\n\n"
         f"{rate_note}"
         f"💵 You'll receive <b>₹{inr:,.2f}</b> → {bank}\n"
         f"🧾 Ref: <code>{tag(order_id)}</code>"
@@ -396,16 +411,19 @@ def checking_wait(lang: str = "en") -> str:
 
 def deposit_reminder(order_id: int, usd: float, address: str,
                      lang: str = "en") -> str:
+    amt = usd_str(usd)
+    dec_hi = " — decimals ke saath" if "." in amt else ""
+    dec_en = ", including the decimals" if "." in amt else ""
     if lang == "hi":
         return (
             f"⏳ <b>Order {tag(order_id)} abhi pending hai</b>\n\n"
-            f"Complete karne ke liye bhejein <b>exactly {usd_str(usd)} USDT</b> (TRC20):\n"
+            f"Complete karne ke liye bhejein <b>exactly {amt} USDT</b> (TRC20){dec_hi}:\n"
             f"<code>{address}</code>\n\n"
             "⚡ Auto-verify seconds me. Bhej diya? Niche <b>🔍 Check status</b> dabayein."
         )
     return (
         f"⏳ <b>Order {tag(order_id)} is still pending</b>\n\n"
-        f"To complete it, send <b>exactly {usd_str(usd)} USDT</b> (TRC20) to:\n"
+        f"To complete it, send <b>exactly {amt} USDT</b> (TRC20){dec_en} to:\n"
         f"<code>{address}</code>\n\n"
         "⚡ Auto-verified in seconds. Already sent? Tap <b>🔍 Check status</b> below."
     )
