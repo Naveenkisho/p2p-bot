@@ -26,7 +26,15 @@ from ..helpers import (
     try_transition,
     update_order_cards,
 )
-from ..keyboards import OrderCb, PickBankCb, admin_order_kb, deposit_kb, services_kb
+from ..keyboards import (
+    OrderCb,
+    PickBankCb,
+    admin_order_kb,
+    cancel_kb,
+    deposit_kb,
+    hide_kb,
+    services_kb,
+)
 from ..models import BankCard, Order, OrderStatus, User
 from ..states import BankForOrder, RefundFlow, SellFlow
 from .start import bank_details_error, make_bank_label
@@ -89,7 +97,8 @@ async def sell_service(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await state.update_data(service=key, rate=rates[key])
     await state.set_state(SellFlow.amount)
-    await callback.message.answer(texts.ask_amount(SERVICES[key], rates[key], lang) + footer)
+    await callback.message.answer(texts.ask_amount(SERVICES[key], rates[key], lang) + footer,
+                                  reply_markup=cancel_kb())
     await callback.answer()
 
 
@@ -154,6 +163,7 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
         )
         session.add(order)
         await session.commit()
+        await message.answer("✅ Amount received.", reply_markup=hide_kb())
         await message.answer(
             texts.deposit_request(order.id, order.usd_amount, order.inr_amount,
                                   SERVICES[service], address, rate, rate_note,
@@ -227,7 +237,8 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             await strip_kb(callback.message)
             await state.clear()
             await state.set_state(RefundFlow.address)
-            await callback.message.answer(texts.order_cancelled(order.id, lang) + footer)
+            await callback.message.answer(texts.order_cancelled(order.id, lang) + footer,
+                                          reply_markup=cancel_kb())
             await notify_admins(callback.bot,
                                 f"🚫 Order {texts.tag(order.id)} cancelled by the user "
                                 f"(no deposit detected).")
@@ -263,6 +274,7 @@ async def _finish_bank_step(message_target, bot, order: Order, card: BankCard,
         lang, footer = await _ctx(session, tg_user)
         q_note = texts.queue_note(await queue_position(session, order.id), lang)
         user = await session.get(User, order.user_id)
+        await message_target.answer("✅ Bank selected.", reply_markup=hide_kb())
         await message_target.answer(
             texts.order_submitted(order.id, card.details, q_note, lang) + footer)
         posted = await post_order_card(bot, session, order, user, card,
@@ -291,7 +303,7 @@ async def pick_bank(callback: CallbackQuery, callback_data: PickBankCb,
         await state.clear()
         await state.set_state(BankForOrder.details)
         await state.update_data(order_id=order.id)
-        await callback.message.answer(texts.ask_bank_new(lang))
+        await callback.message.answer(texts.ask_bank_new(lang), reply_markup=cancel_kb())
         await callback.answer()
         return
     result = await _attach_bank(callback.bot, order.id, callback.from_user.id,
@@ -378,7 +390,8 @@ async def _record_refund_address(message: Message, address: str) -> None:
                 note = (f"\n\n⚠️ You have another cancelled order "
                         f"{texts.tag(cancelled[1].id)} — send its refund address too.")
         await message.answer(
-            texts.refund_noted(order.id, order.usd_amount, address, lang) + note + footer)
+            texts.refund_noted(order.id, order.usd_amount, address, lang) + note + footer,
+            reply_markup=hide_kb())
         await post_order_card(message.bot, session, order, user, card,
                               admin_order_kb(order.id, "refund_requested"))
         await update_order_cards(message.bot, session, order, user, card,

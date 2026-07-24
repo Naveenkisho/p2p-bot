@@ -1,3 +1,4 @@
-from . import admin, buy, fallback, sell, start
+from . import admin, buy, fallback, guard, sell, start
 
-routers = [admin.router, start.router, sell.router, buy.router, fallback.router]
+routers = [admin.router, guard.router, start.router, sell.router, buy.router,
+           fallback.router]

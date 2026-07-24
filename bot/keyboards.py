@@ -1,8 +1,29 @@
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 from .config import SERVICES
 from .models import BankCard
+
+CANCEL_TEXT = "❌ Cancel"
+
+
+def cancel_kb() -> ReplyKeyboardMarkup:
+    """Bottom reply-keyboard shown only while the user is mid-task, so there's
+    always a one-tap way out of the current step."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=CANCEL_TEXT)]],
+        resize_keyboard=True, one_time_keyboard=False,
+        input_field_placeholder="Type here, or tap ❌ Cancel")
+
+
+def hide_kb() -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
 
 
 class OrderCb(CallbackData, prefix="o"):

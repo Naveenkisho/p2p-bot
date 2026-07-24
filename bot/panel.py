@@ -34,6 +34,7 @@ from .db import (
     Session,
     desk_state,
     get_deposit_address,
+    get_desk_open,
     get_setting,
     get_support,
     set_setting,
@@ -143,6 +144,15 @@ code{{background:#0d1117;padding:1px 5px;border-radius:5px}}
     return web.Response(text=doc, content_type="text/html")
 
 
+def _desk_toggle_btn(switch_on: bool, csrf: str, back: str) -> str:
+    label = "🔴 Close desk now" if switch_on else "🟢 Open desk now"
+    cls = "warn" if switch_on else ""
+    return (f"<form method=post action=/desk/toggle style='display:inline'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<input type=hidden name=back value='{_esc(back)}'>"
+            f"<button class='{cls}'>{label}</button></form>")
+
+
 def _nav(active: str) -> str:
     def link(href, label, key):
         on = " style='font-weight:700'" if key == active else ""
@@ -199,17 +209,18 @@ async def dashboard(request: web.Request):
     label, statuses = TABS[tab]
     async with Session() as s:
         is_open, reason = await desk_state(s)
+        switch_on = await get_desk_open(s)
         q = select(Order).where(Order.status.in_(statuses))
         q = q.order_by(Order.id.desc()).limit(30) if tab == "done" else q.order_by(Order.id)
         orders = (await s.scalars(q)).all()
+    toggle = _desk_toggle_btn(switch_on, await _csrf_for(request), "/")
     if is_open:
         desk_banner = ("<div class=card style='border-color:#238636'>"
-                       "🟢 <b>Desk is OPEN</b> — taking new sell orders."
-                       " <a href='/settings'>Manage</a></div>")
+                       "🟢 <b>Desk is OPEN</b> — taking new sell orders.  "
+                       f"{toggle}</div>")
     else:
         desk_banner = ("<div class=card style='border-color:#da3633'>"
-                       f"🔴 <b>Desk is CLOSED</b> — {_esc(reason)}."
-                       " <a href='/settings'>Open it in Settings</a></div>")
+                       f"🔴 <b>Desk is CLOSED</b> — {_esc(reason)}.  {toggle}</div>")
     tabs_html = "<div class=tabs>" + "".join(
         f"<a class='{'on' if k == tab else ''}' href='/?tab={k}'>{lbl}</a>"
         for k, (lbl, _) in TABS.items()) + "</div>"
@@ -299,6 +310,18 @@ def _order_action(fn, needs_txid=False):
 
 
 @_authed
+async def desk_toggle(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("orders") + "<p>Invalid CSRF token.</p>")
+    async with Session() as s:
+        cur = await get_desk_open(s)
+        await set_setting(s, "desk_open", "0" if cur else "1")
+    back = str(data.get("back", "/"))
+    raise web.HTTPFound(back if back in ("/", "/settings") else "/")
+
+
+@_authed
 async def broadcast_get(request: web.Request):
     async with Session() as s:
         n = await s.scalar(select(func.count()).select_from(User)
@@ -363,16 +386,14 @@ async def settings_get(request: web.Request):
         f"<input name='rate_{k}' value='{_esc(rates[k])}'>" for k in SERVICES)
     status_line = ("🟢 Desk is OPEN" if is_open
                    else f"🔴 Desk is CLOSED — {_esc(reason)}")
-    checked = "checked" if desk_switch else ""
+    desk_toggle_html = _desk_toggle_btn(desk_switch, csrf, "/settings")
     body = (_nav("settings") + "<h1>Settings</h1>"
+            f"<div class=card>{status_line}<br>"
+            f"<div style='margin-top:8px'>{desk_toggle_html}</div>"
+            "<span class=muted>Toggles instantly — no Save needed. The desk also "
+            "needs a deposit address and at least one rate below.</span></div>"
             "<form method=post action=/settings>"
             f"<input type=hidden name=csrf value='{csrf}'>"
-            f"<div class=card>{status_line}<br>"
-            f"<label style='display:flex;gap:8px;align-items:center;margin-top:8px'>"
-            f"<input type=checkbox name=desk_open value='1' {checked} style='width:auto'> "
-            f"Desk open for new orders</label>"
-            "<span class=muted>Uncheck to pause new sell orders instantly. "
-            "The desk also needs a deposit address and at least one rate below.</span></div>"
             "<h2>Rates</h2>" + rate_fields
             + "<h2>Deposit & payout</h2>"
             "<label>TRC20 deposit address</label>"
@@ -410,8 +431,6 @@ async def settings_post(request: web.Request):
     errors: list[str] = []
     restart = False
     async with Session() as s:
-        # checkbox: present when ticked, absent when unticked
-        await set_setting(s, "desk_open", "1" if data.get("desk_open") else "0")
         for k in SERVICES:
             raw = str(data.get(f"rate_{k}", "")).strip()
             if raw == "":
@@ -503,6 +522,7 @@ async def start_panel(bot):
         web.post("/login", login_post),
         web.get("/logout", logout),
         web.get("/", dashboard),
+        web.post("/desk/toggle", desk_toggle),
         web.get("/broadcast", broadcast_get),
         web.post("/broadcast", broadcast_post),
         web.get("/settings", settings_get),

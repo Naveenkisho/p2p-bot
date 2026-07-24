@@ -10,7 +10,7 @@ from .. import texts
 from ..config import SERVICES
 from ..db import Session, get_lang, get_or_create_user, get_rates, get_support
 from ..helpers import esc, strip_kb
-from ..keyboards import BankRmCb, banks_menu_kb, language_kb, main_menu
+from ..keyboards import BankRmCb, banks_menu_kb, cancel_kb, hide_kb, language_kb, main_menu
 from ..models import OPEN_STATUSES, BankCard, Order
 from ..states import AddBank
 
@@ -183,7 +183,7 @@ async def banks_add(callback: CallbackQuery, state: FSMContext) -> None:
     async with Session() as session:
         lang = await get_lang(session, callback.from_user.id)
     await state.set_state(AddBank.details)
-    await callback.message.answer(texts.ask_bank_new(lang))
+    await callback.message.answer(texts.ask_bank_new(lang), reply_markup=cancel_kb())
     await callback.answer()
 
 
@@ -199,8 +199,9 @@ async def banks_add_details(message: Message, state: FSMContext) -> None:
         session.add(BankCard(user_id=message.from_user.id,
                              label=make_bank_label(details), details=details))
         await session.commit()
+    await message.answer("✅ Bank saved.", reply_markup=hide_kb())
     text, kb = await _banks_view(message.from_user.id)
-    await message.answer("✅ Bank saved!\n\n" + text, reply_markup=kb)
+    await message.answer(text, reply_markup=kb)
 
 
 @router.message(AddBank.details)
