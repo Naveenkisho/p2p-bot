@@ -6,12 +6,12 @@ from datetime import datetime, timedelta, timezone
 from aiogram import Bot
 from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import texts
 from .config import SERVICES, settings
-from .models import BankCard, Order, OrderMsg, OrderStatus, User
+from .models import BankCard, Order, OrderMsg, OrderStatus, SeenTx, User
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +21,27 @@ TXID_RE = re.compile(r"^[0-9a-fA-F]{64}$")   # TRON transaction hash
 
 def tronscan_tx(txid: str) -> str:
     return f"https://tronscan.org/#/transaction/{txid}"
+
+
+async def txid_used_elsewhere(session: AsyncSession, txid: str,
+                              exclude_order_id: int) -> int | None:
+    """Return the id of another order this TXID is already tied to — as a
+    confirmed deposit (Order.txid), a pending claim (claim_txid), or a refund
+    (refund_txid), or via the scanner's seen-tx ledger (a deposit already
+    credited to some order). Returns None if the TXID is free to use for
+    `exclude_order_id`. This is what stops one on-chain transfer from ever
+    being cashed out twice — e.g. a user cancelling a fresh order and pasting a
+    TXID that already paid out an earlier one."""
+    row = await session.scalar(
+        select(Order.id).where(
+            or_(Order.txid == txid, Order.claim_txid == txid, Order.refund_txid == txid),
+            Order.id != exclude_order_id).limit(1))
+    if row is not None:
+        return row
+    seen = await session.get(SeenTx, txid)
+    if seen is not None and seen.order_id is not None and seen.order_id != exclude_order_id:
+        return seen.order_id
+    return None
 
 
 class IsAdmin(BaseFilter):

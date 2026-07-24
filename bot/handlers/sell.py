@@ -3,7 +3,7 @@ import re
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 
 from .. import texts
 from ..config import SERVICES, settings
@@ -29,6 +29,7 @@ from ..helpers import (
     strip_kb,
     tronscan_tx,
     try_transition,
+    txid_used_elsewhere,
     update_order_cards,
 )
 from ..keyboards import (
@@ -661,14 +662,14 @@ async def claim_txid(message: Message, state: FSMContext) -> None:
             await message.answer("This order can't be confirmed by TXID anymore — "
                                  "contact support.", reply_markup=hide_kb())
             return
-        # a TXID can only ever back ONE order (as a deposit or a claim)
-        dup = await session.scalar(
-            select(Order).where(or_(Order.txid == txid, Order.claim_txid == txid),
-                                Order.id != order.id).limit(1))
-        if dup is not None:
-            await message.answer("That TXID is already linked to another order. "
-                                 "Contact support if this is a mistake.",
-                                 reply_markup=hide_kb())
+        # a TXID can only ever back ONE payout — reject one already tied to
+        # another order (auto-detected deposit, claim, refund, or seen-tx)
+        used = await txid_used_elsewhere(session, txid, order.id)
+        if used is not None:
+            await message.answer(
+                f"🚫 That TXID has already been used for order {texts.tag(used)} — "
+                "an on-chain transfer can only be cashed out once. If you think "
+                "this is a mistake, contact support.", reply_markup=hide_kb())
             return
         order.claim_txid = txid
         await session.commit()

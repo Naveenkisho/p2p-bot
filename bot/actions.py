@@ -19,6 +19,7 @@ from .helpers import (
     notify_admins,
     notify_user,
     try_transition,
+    txid_used_elsewhere,
     update_order_cards,
 )
 from .models import BankCard, Order, OrderStatus, SeenTx, User, utcnow
@@ -248,8 +249,14 @@ async def confirm_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
         if order is None:
             return False, "Order not found."
         txid = order.claim_txid
-    if not txid:
-        return False, "No payment claim on this order."
+        if not txid:
+            return False, "No payment claim on this order."
+        # re-check at confirm time: the scanner or another claim may have tied
+        # this TXID to a different order since the claim was submitted
+        used = await txid_used_elsewhere(session, txid, order_id)
+        if used is not None:
+            return False, (f"🚫 That TXID is already tied to order {texts.tag(used)} — "
+                           "not confirming (an on-chain transfer can't pay out twice).")
     ok, msg = await confirm_deposit(bot, order_id, txid)
     if ok:
         async with Session() as session:

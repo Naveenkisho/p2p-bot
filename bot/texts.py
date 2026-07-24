@@ -186,7 +186,7 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
         return (
             f"📥 <b>USDT Deposit · TRC20 network</b>\n\n"
             f"<b>①  Is address par bhejein</b>  👇 <i>copy karne ke liye tap karein</i>\n"
-            f"<pre>{address}</pre>\n"
+            f"<code>{address}</code>\n\n"
             f"<b>②  Exactly itna bhejein</b>\n"
             f"{amt_line}\n"
             f"{tag_note}"
@@ -207,7 +207,7 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
     return (
         f"📥 <b>USDT Deposit · TRC20 network</b>\n\n"
         f"<b>①  Send to this address</b>  👇 <i>tap to copy</i>\n"
-        f"<pre>{address}</pre>\n"
+        f"<code>{address}</code>\n\n"
         f"<b>②  Send exactly this amount</b>\n"
         f"{amt_line}\n"
         f"{tag_note}"
