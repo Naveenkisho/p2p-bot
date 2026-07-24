@@ -9,7 +9,7 @@ from sqlalchemy import select
 from .. import texts
 from ..config import SERVICES
 from ..db import Session, get_lang, get_or_create_user, get_rates, get_support
-from ..helpers import esc, strip_kb
+from ..helpers import edit_or_send, esc, strip_kb
 from ..keyboards import (
     BankRmCb,
     banks_menu_kb,
@@ -18,6 +18,7 @@ from ..keyboards import (
     language_kb,
     main_menu,
     support_row_kb,
+    with_back,
 )
 from ..models import OPEN_STATUSES, BankCard, Order
 from ..states import AddBank
@@ -128,7 +129,7 @@ async def menu_rates(callback: CallbackQuery) -> None:
     lines = ["📈 <b>Live rates</b>", ""]
     for key, rate in rates.items():
         lines.append(f"• {SERVICES[key]} — <b>1$ / ₹{rate:g}</b>")
-    await callback.message.answer("\n".join(lines))
+    await edit_or_send(callback, "\n".join(lines), with_back())
     await callback.answer()
 
 
@@ -147,7 +148,7 @@ async def my_orders(callback: CallbackQuery) -> None:
         empty = ("📋 Abhi tak koi order nahi — 💵 USDT Sell dabakar shuru karein!"
                  if lang == "hi" else
                  "📋 You have no orders yet — tap 💵 USDT Sell to start!")
-        await callback.message.answer(empty + footer)
+        await edit_or_send(callback, empty + footer, with_back())
         await callback.answer()
         return
     heading = "📋 <b>Aapke last orders</b>" if lang == "hi" else "📋 <b>Your last orders</b>"
@@ -157,7 +158,7 @@ async def my_orders(callback: CallbackQuery) -> None:
         emoji = texts.STATUS_EMOJI.get(status, "•")
         lines.append(f"{emoji} <code>{texts.tag(o.id)}</code> — {o.usd_amount:g}$ "
                      f"→ ₹{o.inr_amount:,.2f} — <i>{status}</i>")
-    await callback.message.answer("\n".join(lines) + footer)
+    await edit_or_send(callback, "\n".join(lines) + footer, with_back())
     await callback.answer()
 
 
@@ -166,8 +167,8 @@ async def menu_support(callback: CallbackQuery) -> None:
     async with Session() as session:
         support = await get_support(session)
         lang = await get_lang(session, callback.from_user.id)
-    await callback.message.answer(texts.support_msg(lang),
-                                  reply_markup=support_row_kb(support.split()))
+    await edit_or_send(callback, texts.support_msg(lang),
+                       with_back(support_row_kb(support.split())))
     await callback.answer()
 
 
@@ -176,8 +177,8 @@ async def menu_guarantee(callback: CallbackQuery) -> None:
     async with Session() as session:
         support = await get_support(session)
         lang = await get_lang(session, callback.from_user.id)
-    await callback.message.answer(texts.guarantee(lang),
-                                  reply_markup=support_row_kb(support.split()))
+    await edit_or_send(callback, texts.guarantee(lang),
+                       with_back(support_row_kb(support.split())))
     await callback.answer()
 
 
@@ -197,7 +198,7 @@ async def _banks_view(user_id: int) -> tuple[str, object]:
 @router.callback_query(F.data == "menu:banks")
 async def menu_banks(callback: CallbackQuery) -> None:
     text, kb = await _banks_view(callback.from_user.id)
-    await callback.message.answer(text, reply_markup=kb)
+    await edit_or_send(callback, text, kb)
     await callback.answer()
 
 

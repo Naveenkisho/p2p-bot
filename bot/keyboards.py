@@ -77,6 +77,13 @@ def main_menu() -> InlineKeyboardMarkup:
     ])
 
 
+def with_back(kb: InlineKeyboardMarkup | None = None) -> InlineKeyboardMarkup:
+    """Append a '⬅️ Back to menu' row to any inline keyboard (or make one)."""
+    rows = list(kb.inline_keyboard) if kb else []
+    rows.append([InlineKeyboardButton(text="⬅️ Back to menu", callback_data="menu:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def support_row_kb(handles: list[str]) -> InlineKeyboardMarkup | None:
     """Support contacts as tap-to-chat buttons laid out horizontally (up to 3
     per row) — a clean, straight row of contacts."""

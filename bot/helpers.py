@@ -42,6 +42,15 @@ async def strip_kb(message) -> None:
         pass
 
 
+async def edit_or_send(callback, text, reply_markup=None) -> None:
+    """Edit the tapped message in place (SPA-style navigation), falling back to
+    a fresh message when it can't be edited (too old / inaccessible)."""
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except Exception:
+        await callback.message.answer(text, reply_markup=reply_markup)
+
+
 async def try_transition(session: AsyncSession, order_id: int,
                          from_statuses: tuple[OrderStatus, ...],
                          to_status: OrderStatus, **extra) -> Order | None:
