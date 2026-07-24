@@ -57,6 +57,18 @@ class BankRmCb(CallbackData, prefix="brm"):
     card_id: int
 
 
+class RefundReqCb(CallbackData, prefix="rfq"):
+    """User taps 'Request refund' on a cancelled order."""
+
+    order_id: int
+
+
+def request_refund_kb(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="↩️ Request refund (I already sent USDT)",
+                             callback_data=RefundReqCb(order_id=order_id).pack())]])
+
+
 def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -193,8 +205,11 @@ def admin_order_kb(order_id: int, status: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="✅ Done — INR sent",
             callback_data=AdminCb(action="done", order_id=order_id).pack())])
-    elif status in ("cancelled", "refund_requested"):
+    elif status == "refund_requested":
         rows.append([InlineKeyboardButton(
-            text="💸 Refund sent",
+            text="💸 Refund sent (to sender)",
             callback_data=AdminCb(action="refunded", order_id=order_id).pack())])
+        rows.append([InlineKeyboardButton(
+            text="🚫 Reject (fake / no deposit)",
+            callback_data=AdminCb(action="reject_refund", order_id=order_id).pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)

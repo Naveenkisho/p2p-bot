@@ -16,6 +16,7 @@ _ADDED_COLUMNS = [
     ("orders", "deposit_detected_at", "DATETIME"),
     ("orders", "admin_note", "VARCHAR(64)"),
     ("orders", "reminded", "BOOLEAN DEFAULT 0"),
+    ("orders", "refund_txid", "VARCHAR(80)"),
 ]
 
 

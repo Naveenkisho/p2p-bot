@@ -20,7 +20,7 @@ from ..db import (
 from ..flow import notify_deposit_received
 from ..scanner import launch_order_check
 from ..helpers import (
-    TRC20_RE,
+    TXID_RE,
     notify_admins,
     post_order_card,
     queue_position,
@@ -32,21 +32,22 @@ from ..keyboards import (
     OrderCb,
     PickBankCb,
     PreBankCb,
+    RefundReqCb,
     admin_order_kb,
     cancel_kb,
     deposit_kb,
     hide_kb,
     pre_bank_chooser_kb,
+    request_refund_kb,
     services_kb,
 )
-from ..models import BankCard, Order, OrderStatus, User
+from ..models import BankCard, Order, OrderStatus, SeenTx, User
 from ..states import BankForOrder, RefundFlow, SellFlow
 from .start import bank_details_error, make_bank_label
 
 router = Router(name="sell")
 
 AMOUNT_RE = re.compile(r"^\$?\s*(\d{1,7}(?:\.\d{1,2})?)\s*\$?$")
-TRC20_PATTERN = TRC20_RE.pattern
 
 _warned_no_address = False
 
@@ -321,9 +322,8 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             lang, footer = await _ctx(session, callback.from_user)
             await strip_kb(callback.message)
             await state.clear()
-            await state.set_state(RefundFlow.address)
             await callback.message.answer(texts.order_cancelled(order.id, lang) + footer,
-                                          reply_markup=cancel_kb())
+                                          reply_markup=request_refund_kb(order.id))
             await notify_admins(callback.bot,
                                 f"🚫 Order {texts.tag(order.id)} cancelled by the user "
                                 f"(no deposit detected).")
@@ -438,70 +438,83 @@ async def bank_for_order_not_text(message: Message) -> None:
                          "not a photo or file.")
 
 
-async def _record_refund_address(message: Message, address: str) -> None:
-    """Attach a refund address to the user's oldest cancelled order.
-
-    Driven by the DB, not FSM state, so it survives /start, restarts, and a
-    second cancel — as long as ANY cancelled order is waiting, a TRC20
-    address message from that user gets recorded.
-    """
+@router.callback_query(RefundReqCb.filter())
+async def request_refund(callback: CallbackQuery, callback_data: RefundReqCb,
+                         state: FSMContext) -> None:
     async with Session() as session:
-        cancelled = (await session.scalars(
-            select(Order).where(Order.user_id == message.from_user.id,
-                                Order.status == OrderStatus.CANCELLED.value)
-            .order_by(Order.id)
-        )).all()
-        support = await get_support(session)
-        if not cancelled:
-            await message.answer("You have no refund pending right now. "
-                                 f"Message {support} if you think that's wrong.")
+        order = await session.get(Order, callback_data.order_id)
+        if order is None or order.user_id != callback.from_user.id:
+            await callback.answer("Order not found.", show_alert=True)
             return
-        order = await try_transition(session, cancelled[0].id,
-                                     (OrderStatus.CANCELLED,), OrderStatus.REFUND_REQUESTED,
-                                     refund_address=address)
-        if order is None:
-            await message.answer(f"That refund is already being processed — "
-                                 f"message {support} if anything is off.")
+        if order.status in (OrderStatus.REFUND_REQUESTED.value, OrderStatus.REFUNDED.value):
+            await callback.answer("A refund is already being processed for this order.",
+                                  show_alert=True)
+            return
+        if order.status != OrderStatus.CANCELLED.value:
+            await callback.answer("This order can't be refunded.", show_alert=True)
+            return
+        lang = await get_lang(session, callback.from_user.id)
+    await state.clear()
+    await state.set_state(RefundFlow.txid)
+    await state.update_data(order_id=order.id)
+    await callback.message.answer(texts.ask_refund_txid(order.id, lang),
+                                  reply_markup=cancel_kb())
+    await callback.answer()
+
+
+@router.message(RefundFlow.txid, F.text)
+async def refund_txid(message: Message, state: FSMContext) -> None:
+    txid = message.text.strip().lower().removeprefix("0x")
+    if not TXID_RE.fullmatch(txid):
+        await message.answer("That doesn't look like a TXID — it's 64 letters/numbers "
+                             "(the transaction hash). Paste it again, or tap ❌ Cancel.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    order_id = data.get("order_id")
+    async with Session() as session:
+        order = await session.get(Order, order_id) if order_id else None
+        if order is None or order.user_id != message.from_user.id:
+            await message.answer("Order not found — contact support.", reply_markup=hide_kb())
+            return
+        # a TXID can only ever back ONE refund
+        dup = await session.scalar(
+            select(Order).where(Order.refund_txid == txid, Order.id != order.id,
+                                Order.status.in_([OrderStatus.REFUND_REQUESTED.value,
+                                                  OrderStatus.REFUNDED.value])).limit(1))
+        if dup is not None:
+            await message.answer("That TXID is already linked to another refund. "
+                                 "Contact support if this is a mistake.",
+                                 reply_markup=hide_kb())
+            return
+        updated = await try_transition(session, order.id, (OrderStatus.CANCELLED,),
+                                       OrderStatus.REFUND_REQUESTED, refund_txid=txid)
+        if updated is None:
+            await message.answer("This order's refund is already being processed.",
+                                 reply_markup=hide_kb())
             return
         user = await session.get(User, order.user_id)
         card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
         lang, footer = await _ctx(session, message.from_user)
-        note = ""
-        if len(cancelled) > 1:
-            if lang == "hi":
-                note = (f"\n\n⚠️ Aapka ek aur cancelled order hai "
-                        f"{texts.tag(cancelled[1].id)} — uska refund address bhi bhejein.")
-            else:
-                note = (f"\n\n⚠️ You have another cancelled order "
-                        f"{texts.tag(cancelled[1].id)} — send its refund address too.")
-        await message.answer(
-            texts.refund_noted(order.id, order.usd_amount, address, lang) + note + footer,
-            reply_markup=hide_kb())
-        await post_order_card(message.bot, session, order, user, card,
+        seen = await session.get(SeenTx, txid)
+        await message.answer(texts.refund_submitted(order.id, lang) + footer,
+                             reply_markup=hide_kb())
+        await post_order_card(message.bot, session, updated, user, card,
                               admin_order_kb(order.id, "refund_requested"))
-        await update_order_cards(message.bot, session, order, user, card,
+        await update_order_cards(message.bot, session, updated, user, card,
                                  admin_order_kb(order.id, "refund_requested"))
+    if seen is not None:
+        await notify_admins(message.bot,
+                            f"↩️ Refund {texts.tag(order_id)}: ✅ TXID matches a deposit "
+                            f"we recorded of <b>{seen.amount:g} USDT</b>. Refund that to "
+                            f"the SENDER (see Tronscan on the card).")
+    else:
+        await notify_admins(message.bot,
+                            f"↩️ Refund {texts.tag(order_id)}: ⚠️ TXID not in our scan "
+                            f"records — verify carefully on Tronscan before refunding.")
 
 
-@router.message(RefundFlow.address, F.text)
-async def refund_address_prompted(message: Message, state: FSMContext) -> None:
-    address = message.text.strip()
-    if not TRC20_RE.fullmatch(address):
-        await message.answer("That doesn't look like a TRC20 address — it starts with "
-                             "<code>T</code> and is 34 characters. Try again, or /cancel.")
-        return
-    await state.clear()
-    await _record_refund_address(message, address)
-
-
-@router.message(RefundFlow.address)
-async def refund_address_not_text(message: Message) -> None:
-    await message.answer("Please send your TRC20 address as <b>text</b> "
-                         "(it starts with <code>T</code>), not a photo.")
-
-
-@router.message(F.text.regexp(TRC20_PATTERN))
-async def refund_address_any_state(message: Message, state: FSMContext) -> None:
-    # A TRC20 address arriving outside the prompt (after /start, a restart,
-    # or a second cancel) still reaches the oldest waiting refund.
-    await _record_refund_address(message, message.text.strip())
+@router.message(RefundFlow.txid)
+async def refund_txid_not_text(message: Message) -> None:
+    await message.answer("Please paste the <b>TXID</b> as text (64 characters), "
+                         "not a photo — or tap ❌ Cancel.")

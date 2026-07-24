@@ -16,4 +16,4 @@ class AddBank(StatesGroup):
 
 
 class RefundFlow(StatesGroup):
-    address = State()        # collecting the TRC20 refund address after a cancel
+    txid = State()           # collecting the deposit TXID for a refund request

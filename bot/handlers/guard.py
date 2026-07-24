@@ -16,7 +16,7 @@ router = Router(name="guard")
 # States where the bot is waiting for the user to TYPE something. A stray tap
 # on an old inline button here should not silently start something else.
 TASK_STATES = (SellFlow.amount, SellFlow.bank_details, BankForOrder.details,
-               AddBank.details, RefundFlow.address)
+               AddBank.details, RefundFlow.txid)
 
 
 @router.message(F.text == CANCEL_TEXT)

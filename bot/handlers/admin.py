@@ -13,6 +13,7 @@ from ..actions import (
     confirm_deposit,
     launch_broadcast,
     refund_order,
+    reject_refund,
 )
 from ..config import SERVICES, settings
 from ..db import (
@@ -26,6 +27,7 @@ from ..db import (
 )
 from ..helpers import (
     IsAdmin,
+    TXID_RE,
     age_str,
     esc,
     is_trc20,
@@ -266,7 +268,7 @@ TAB_STATUSES = {
     "pending": (OrderStatus.AWAITING_DEPOSIT.value,),
     "refunds": (OrderStatus.CANCELLED.value, OrderStatus.REFUND_REQUESTED.value),
     "done": (OrderStatus.COMPLETED.value, OrderStatus.REFUNDED.value,
-             OrderStatus.EXPIRED.value),
+             OrderStatus.EXPIRED.value, OrderStatus.REFUND_REJECTED.value),
 }
 
 
@@ -377,24 +379,27 @@ async def cmd_received(message: Message, command: CommandObject) -> None:
 
 @router.message(Command("setrefund"))
 async def cmd_setrefund(message: Message, command: CommandObject) -> None:
-    """Record a refund address on the user's behalf (e.g. received via DM)."""
+    """Record a refund TXID on the user's behalf (e.g. received via support DM).
+    Usage: /setrefund <order_id> <txid>"""
     parts = (command.args or "").split()
     order_raw = parts[0].lstrip("#").upper().removeprefix("ORD") if parts else ""
-    if len(parts) != 2 or not order_raw.isdigit() or not is_trc20(parts[1]):
-        await message.answer("Usage: <code>/setrefund 12 T…</code> "
-                             "(34-char TRC20 address)")
+    txid = parts[1].lower().removeprefix("0x") if len(parts) > 1 else ""
+    if len(parts) != 2 or not order_raw.isdigit() or not TXID_RE.fullmatch(txid):
+        await message.answer("Usage: <code>/setrefund 12 &lt;txid&gt;</code> "
+                             "(64-char transaction hash)")
         return
     async with Session() as session:
         order = await session.get(Order, int(order_raw))
         if order is None:
             await message.answer("No such order.")
             return
-        order.refund_address = parts[1]
-        if order.status == OrderStatus.CANCELLED:
+        order.refund_txid = txid
+        if order.status == OrderStatus.CANCELLED.value:
             order.status = OrderStatus.REFUND_REQUESTED.value
         await session.commit()
-    await message.answer(f"✅ Refund address recorded for {texts.tag(order.id)} — "
-                         f"use /order {order.id} for the Refund-sent button.")
+    await message.answer(f"✅ Refund TXID recorded for {texts.tag(order.id)} — "
+                         f"use /order {order.id} for the Refund-sent button. "
+                         "Refund to the SENDER address shown on Tronscan.")
 
 
 @router.message(Command("ban"))
@@ -422,6 +427,8 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
         ok, msg = await complete_order(callback.bot, callback_data.order_id)
     elif callback_data.action == "refunded":
         ok, msg = await refund_order(callback.bot, callback_data.order_id)
+    elif callback_data.action == "reject_refund":
+        ok, msg = await reject_refund(callback.bot, callback_data.order_id)
     else:
         await callback.answer()
         return

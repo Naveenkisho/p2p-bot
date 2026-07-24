@@ -28,6 +28,7 @@ from .actions import (
     confirm_deposit,
     launch_broadcast,
     refund_order,
+    reject_refund,
 )
 from .config import SERVICES, settings
 from .db import (
@@ -54,7 +55,7 @@ TABS = {
     "refunds": ("↩️ Refunds", (OrderStatus.CANCELLED.value,
                                OrderStatus.REFUND_REQUESTED.value)),
     "done": ("✅ Done", (OrderStatus.COMPLETED.value, OrderStatus.REFUNDED.value,
-                         OrderStatus.EXPIRED.value)),
+                         OrderStatus.EXPIRED.value, OrderStatus.REFUND_REJECTED.value)),
 }
 _login_fails: dict[str, tuple[int, float]] = {}
 
@@ -266,8 +267,12 @@ async def order_detail(request: web.Request):
         f"<b>Bank:</b><br><code>{_esc(card.details) if card else '—'}</code><br>"
         f"<b>Deposit addr:</b> <code>{_esc(order.deposit_address)}</code><br>"
         f"<b>TX:</b> <code>{_esc(order.txid) or '—'}</code><br>"
-        + (f"<b>Refund to:</b> <code>{_esc(order.refund_address)}</code><br>"
-           if order.refund_address else "")
+        + (f"<b>↩️ Refund TXID:</b> <code>{_esc(order.refund_txid)}</code><br>"
+           f"<a href='https://tronscan.org/#/transaction/{_esc(order.refund_txid)}' "
+           f"target=_blank>🔎 Verify on Tronscan</a><br>"
+           f"<span style='color:#f0b429'>⚠️ Refund ONLY to the address this TX came "
+           f"FROM. Never a typed address.</span><br>"
+           if order.refund_txid else "")
         + "</div>",
     ]
     act = "<div class=row>"
@@ -283,7 +288,10 @@ async def order_detail(request: web.Request):
     if order.status == OrderStatus.REFUND_REQUESTED.value:
         act += (f"<form method=post action='/order/{order.id}/refund'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
-                f"<button class=danger>💸 Refund sent</button></form>")
+                f"<button>💸 Refund sent (to sender)</button></form>"
+                f"<form method=post action='/order/{order.id}/reject'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                f"<button class=danger>🚫 Reject (fake / no deposit)</button></form>")
     act += "</div>"
     lines.append(act)
     return _page(f"Order {order.id}", "".join(lines))
@@ -561,6 +569,7 @@ async def start_panel(bot):
         web.get("/order/{id:\\d+}", order_detail),
         web.post("/order/{id:\\d+}/done", _order_action(complete_order)),
         web.post("/order/{id:\\d+}/refund", _order_action(refund_order)),
+        web.post("/order/{id:\\d+}/reject", _order_action(reject_refund)),
         web.post("/order/{id:\\d+}/confirm", _order_action(confirm_deposit, needs_txid=True)),
     ])
     ssl_context = None

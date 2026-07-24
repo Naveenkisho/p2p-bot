@@ -93,21 +93,43 @@ async def refund_order(bot: Bot, order_id: int) -> tuple[bool, str]:
             return False, "Order not found."
         card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
         if order.status == OrderStatus.CANCELLED:
-            return False, "No refund address from the user yet."
+            return False, "No refund request from the user yet (no TXID submitted)."
         updated = await try_transition(
             session, order.id, (OrderStatus.REFUND_REQUESTED,), OrderStatus.REFUNDED)
         if updated is None:
             return False, "Already handled."
         user = await session.get(User, order.user_id)
         lang = user.lang if user and user.lang else "en"
-        delivered = await notify_user(
-            bot, order.user_id,
-            texts.refund_sent(order.id, order.usd_amount, order.refund_address, lang))
+        delivered = await notify_user(bot, order.user_id,
+                                      texts.refund_sent(order.id, lang))
         await notify_admins(bot, f"💸 Order {texts.tag(order.id)} refunded.")
         if user is not None:
             await update_order_cards(bot, session, updated, user, card, None)
     return True, ("Refund marked sent ✅" if delivered
                   else "Refund marked, but couldn't DM the user ⚠️")
+
+
+async def reject_refund(bot: Bot, order_id: int) -> tuple[bool, str]:
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None:
+            return False, "Order not found."
+        card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
+        updated = await try_transition(
+            session, order.id, (OrderStatus.REFUND_REQUESTED,), OrderStatus.REFUND_REJECTED)
+        if updated is None:
+            return False, "Already handled."
+        user = await session.get(User, order.user_id)
+        support = await get_support(session)
+        lang = user.lang if user and user.lang else "en"
+        delivered = await notify_user(bot, order.user_id,
+                                      texts.refund_rejected(order.id, support, lang))
+        await notify_admins(bot, f"🚫 Order {texts.tag(order.id)} refund rejected "
+                                 "(no verified deposit).")
+        if user is not None:
+            await update_order_cards(bot, session, updated, user, card, None)
+    return True, ("Refund rejected — user notified 🚫" if delivered
+                  else "Refund rejected, but couldn't DM the user ⚠️")
 
 
 def compose_announcement(raw_text: str) -> str:

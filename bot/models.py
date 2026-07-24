@@ -22,8 +22,9 @@ class OrderStatus(str, enum.Enum):
     COMPLETED = "completed"                # admin hit Done — INR credited
     CANCELLED = "cancelled"                # cancelled (refund path if funds came in)
     EXPIRED = "expired"                    # no deposit arrived in time
-    REFUND_REQUESTED = "refund_requested"  # user sent their TRC20 refund address
-    REFUNDED = "refunded"                  # admin sent the USDT back
+    REFUND_REQUESTED = "refund_requested"  # user submitted the deposit TXID for a refund
+    REFUNDED = "refunded"                  # admin sent the USDT back to the sender
+    REFUND_REJECTED = "refund_rejected"    # admin verified: no such deposit (fake TXID)
 
 
 OPEN_STATUSES = (
@@ -73,6 +74,7 @@ class Order(Base):
     deposit_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
     admin_note: Mapped[str | None] = mapped_column(String(64))
     reminded: Mapped[bool] = mapped_column(default=False)
+    refund_txid: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(20), default=OrderStatus.AWAITING_DEPOSIT,
                                         index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

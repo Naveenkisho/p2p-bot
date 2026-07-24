@@ -16,6 +16,11 @@ from .models import BankCard, Order, OrderMsg, OrderStatus, User
 log = logging.getLogger(__name__)
 
 TRC20_RE = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
+TXID_RE = re.compile(r"^[0-9a-fA-F]{64}$")   # TRON transaction hash
+
+
+def tronscan_tx(txid: str) -> str:
+    return f"https://tronscan.org/#/transaction/{txid}"
 
 
 class IsAdmin(BaseFilter):
@@ -130,9 +135,14 @@ def order_card(order: Order, user: User, bank: BankCard | None) -> str:
     lines.append(f"📥 Deposit: <code>{esc(order.deposit_address)}</code>")
     if order.txid:
         lines.append(f"🔗 TX: <code>{esc(order.txid)}</code>")
-    if order.refund_address:
-        lines.append(f"↩️ Refund <b>{order.usd_amount:g} USDT</b> to:\n"
-                     f"<code>{esc(order.refund_address)}</code>")
+    if order.refund_txid:
+        lines.append("")
+        lines.append("↩️ <b>REFUND REQUEST</b>")
+        lines.append(f"TXID: <code>{esc(order.refund_txid)}</code>")
+        lines.append(f"🔎 Verify: {tronscan_tx(esc(order.refund_txid))}")
+        lines.append(f"⚠️ <b>Refund ONLY to the address this TX came FROM</b> "
+                     f"(shown on Tronscan). Never to a typed address. "
+                     f"Order was {order.usd_amount:g}$.")
     lines.append(f"Status: <b>{status_str(order)}</b>")
     lines.append("💬 Reply to this message to DM the user (text or screenshot).")
     return "\n".join(lines)

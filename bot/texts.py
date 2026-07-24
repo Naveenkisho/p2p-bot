@@ -17,6 +17,7 @@ STATUS_EMOJI = {
     "expired": "⌛",
     "refund_requested": "↩️",
     "refunded": "💸",
+    "refund_rejected": "🚫",
 }
 
 
@@ -300,15 +301,46 @@ def order_cancelled(order_id: int, lang: str = "en") -> str:
     if lang == "hi":
         return (
             f"❌ <b>Order {tag(order_id)} cancel ho gaya.</b>\n\n"
-            "Kuch nahi bheja? Done — kabhi bhi naya order shuru karein.\n"
-            "USDT bhej chuke hain? Apna <b>TRC20 address</b> (jo <code>T</code> se "
-            "shuru hota hai) yahan bhejein, refund ho jayega."
+            "Kuch nahi bheja? Done — kabhi bhi naya order shuru karein.\n\n"
+            "USDT <b>bhej chuke hain</b>? Niche <b>Request refund</b> dabayein — "
+            "refund usi wallet me wapas aayega jahan se aapne bheja tha."
         )
     return (
         f"❌ <b>Order {tag(order_id)} cancelled.</b>\n\n"
-        "Didn't send anything? You're done — start a fresh order anytime.\n"
-        "Already sent the USDT? Send your <b>TRC20 address</b> here now "
-        "(starts with <code>T</code>) and we'll sort the refund."
+        "Didn't send anything? You're done — start a fresh order anytime.\n\n"
+        "<b>Already sent</b> the USDT? Tap <b>Request refund</b> below — it goes back "
+        "to the same wallet you sent from."
+    )
+
+
+def ask_refund_txid(order_id: int, lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"↩️ <b>Refund — Order {tag(order_id)}</b>\n\n"
+            "Apne USDT deposit ka <b>TXID</b> (transaction hash) yahan paste karein.\n\n"
+            "🔒 Refund <b>usi wallet</b> me jayega jahan se USDT aaya tha — isliye "
+            "hum address nahi maangte. Aap loot nahi sakte, aur na koi aur. "
+            "Tronscan par verify karke bhejenge."
+        )
+    return (
+        f"↩️ <b>Refund — Order {tag(order_id)}</b>\n\n"
+        "Paste the <b>TXID</b> (transaction hash) of your USDT deposit here.\n\n"
+        "🔒 The refund goes back to the <b>exact wallet you sent from</b> — that's why "
+        "we never ask for an address. We verify the TXID on Tronscan and return it."
+    )
+
+
+def refund_submitted(order_id: int, lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"✅ <b>Refund request submit ho gaya — Order {tag(order_id)}</b>\n\n"
+            "Hamari team TXID verify karegi aur USDT usi wallet me wapas bhejegi "
+            "jahan se aaya tha. Thoda intezar karein. 🙏"
+        )
+    return (
+        f"✅ <b>Refund request submitted — Order {tag(order_id)}</b>\n\n"
+        "Our team will verify the TXID and send the USDT back to the wallet it "
+        "came from. Please allow a little time. 🙏"
     )
 
 
@@ -380,27 +412,35 @@ def order_expired(order_id: int, lang: str = "en") -> str:
     )
 
 
-def refund_noted(order_id: int, usd: float, address: str, lang: str = "en") -> str:
+def refund_rejected(order_id: int, support: str, lang: str = "en") -> str:
     if lang == "hi":
         return (
-            f"👌 Note ho gaya order {tag(order_id)} ke liye — <b>{usd:g} USDT</b> "
-            f"wapas aayenge:\n<code>{address}</code>"
+            f"🚫 <b>Order {tag(order_id)} — payment verify nahi hua.</b>\n\n"
+            "Us TXID par humein aapke deposit ka koi record nahi mila — "
+            "payment kabhi received nahi hua.\n\n"
+            f"Aapko lagta hai ye hamari galti hai? Apna <b>payment screenshot + "
+            f"sahi TXID</b> {html.escape(support)} ko bhejein — hum usually 5 min "
+            "me reply karte hain."
         )
     return (
-        f"👌 Noted for order {tag(order_id)} — <b>{usd:g} USDT</b> will be returned to:\n"
-        f"<code>{address}</code>"
+        f"🚫 <b>Order {tag(order_id)} — payment could not be verified.</b>\n\n"
+        "We found no record of your deposit for that TXID — the payment was never "
+        "received.\n\n"
+        f"Still believe it's an error on our end? Send your <b>payment screenshot + "
+        f"the correct TXID</b> to {html.escape(support)} — we usually reply within "
+        "5 minutes."
     )
 
 
-def refund_sent(order_id: int, usd: float, address: str, lang: str = "en") -> str:
+def refund_sent(order_id: int, lang: str = "en") -> str:
     if lang == "hi":
         return (
-            f"💸 <b>Order {tag(order_id)} ka refund bhej diya</b> — {usd:g} USDT:\n"
-            f"<code>{address}</code> ✅"
+            f"💸 <b>Order {tag(order_id)} ka refund bhej diya</b> — USDT aapke "
+            "sender wallet me wapas aa gaya. ✅"
         )
     return (
-        f"💸 <b>Refund sent for order {tag(order_id)}</b> — {usd:g} USDT to:\n"
-        f"<code>{address}</code> ✅"
+        f"💸 <b>Refund sent for order {tag(order_id)}</b> — the USDT has been "
+        "returned to your sender wallet. ✅"
     )
 
 
