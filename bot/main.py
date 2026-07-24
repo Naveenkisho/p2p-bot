@@ -19,9 +19,29 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     await init_db()
+    log = logging.getLogger(__name__)
 
     async with Session() as session:
         token = await get_bot_token(session)   # DB (panel-set) wins over env
+
+    if not token:
+        # No token yet: run the web panel ONLY so the operator can set the
+        # token (and admins) in Settings. Saving the token restarts the
+        # process (systemd), which then boots the full bot below.
+        log.warning("No bot token set — starting WEB PANEL ONLY. Add the bot "
+                    "token in the panel's Settings and the bot will start.")
+        panel_runner = await start_panel(None)
+        if panel_runner is None:
+            log.error("Nothing to run: no bot token AND no panel password. "
+                      "Set P2P_BOT_TOKEN or P2P_PANEL_PASSWORD in .env.")
+            return
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        finally:
+            await panel_runner.cleanup()
+        return
+
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     for router in routers:

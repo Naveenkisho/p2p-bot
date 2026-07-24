@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="P2P_", extra="ignore")
 
-    bot_token: str
+    bot_token: str = ""   # may be blank at first boot → set it in the web panel
     admin_ids: str = ""
     admin_chat_id: int | None = None
     db_path: str = "p2p.sqlite3"

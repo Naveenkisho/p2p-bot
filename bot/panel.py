@@ -268,6 +268,10 @@ def _order_action(fn, needs_txid=False):
         data = await request.post()
         if not await _check_csrf(request, data):
             return _page("Error", _nav("orders") + "<p>Invalid CSRF token.</p>")
+        if request.app["bot"] is None:
+            raise web.HTTPFound(f"/order/{oid}?msg="
+                                + html.escape("Bot isn't running yet — set the bot "
+                                              "token in Settings first."))
         if needs_txid:
             txid = str(data.get("txid", "")).strip() or "manual"
             ok, msg = await fn(request.app["bot"], oid, txid)

@@ -33,7 +33,10 @@ fi
 if [[ ! -f "$APP_DIR/.env" ]]; then
   echo "==> First-time setup — a few values (leave panel password blank to skip the web panel)"
   read -rp "  Bot token (from @BotFather): " BOT_TOKEN
-  read -rp "  Admin Telegram IDs (space/comma separated): " ADMIN_IDS
+  echo "  (You can leave the bot token and admin IDs blank and set them later"
+  echo "   in the web panel — the panel will boot first.)"
+  read -rp "  Bot token (blank = set it in the panel later): " BOT_TOKEN
+  read -rp "  Admin Telegram IDs (space/comma separated, blank ok): " ADMIN_IDS
   read -rp "  Web panel password (blank = panel off): " PANEL_PW
   read -rp "  TronGrid API key (optional, blank = none): " TRON_KEY
   cp "$APP_DIR/.env.example" "$APP_DIR/.env"
@@ -42,6 +45,23 @@ if [[ ! -f "$APP_DIR/.env" ]]; then
   sed -i "s|^P2P_ADMIN_IDS=.*|P2P_ADMIN_IDS=${ADMIN_IDS}|" "$APP_DIR/.env"
   sed -i "s|^P2P_PANEL_PASSWORD=.*|P2P_PANEL_PASSWORD=${PANEL_PW}|" "$APP_DIR/.env"
   [[ -n "$TRON_KEY" ]] && sed -i "s|^#\?P2P_TRONGRID_KEY=.*|P2P_TRONGRID_KEY=${TRON_KEY}|" "$APP_DIR/.env"
+
+  # Optionally expose the panel at the server IP over self-signed HTTPS
+  if [[ -n "$PANEL_PW" ]]; then
+    read -rp "  Open the web panel at https://<server-ip>:8088 ? [y/N]: " EXPOSE
+    if [[ "$EXPOSE" =~ ^[Yy] ]]; then
+      SRV_IP="$(curl -fsS https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+      if command -v openssl >/dev/null && [[ ! -f "$APP_DIR/panel.crt" ]]; then
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+          -keyout "$APP_DIR/panel.key" -out "$APP_DIR/panel.crt" \
+          -subj "/CN=${SRV_IP:-panel}" >/dev/null 2>&1
+      fi
+      sed -i "s|^P2P_PANEL_HOST=.*|P2P_PANEL_HOST=0.0.0.0|" "$APP_DIR/.env"
+      sed -i "s|^P2P_PANEL_TLS_CERT=.*|P2P_PANEL_TLS_CERT=${APP_DIR}/panel.crt|" "$APP_DIR/.env"
+      sed -i "s|^P2P_PANEL_TLS_KEY=.*|P2P_PANEL_TLS_KEY=${APP_DIR}/panel.key|" "$APP_DIR/.env"
+      EXPOSED=1; PANEL_URL="https://${SRV_IP:-<server-ip>}:8088"
+    fi
+  fi
   chmod 600 "$APP_DIR/.env"
   echo "  Wrote $APP_DIR/.env (chmod 600)"
 else
@@ -67,9 +87,20 @@ echo "==> Status:"
 systemctl --no-pager --lines=0 status p2p-bot || true
 echo ""
 echo "✅ Done. Watch logs with:  journalctl -u p2p-bot -f"
-echo "   Then in Telegram, message your bot /start, and as an admin run:"
-echo "     /setaddress T...      (your TRC20 deposit address)"
-echo "     /setrate CDM 91       (a rate per service)"
-echo "     /setsupport @help     (support contact)"
-echo "   The web panel (if you set a password) is on 127.0.0.1:8088 — put nginx+TLS"
-echo "   in front (see DEPLOY.md) and restrict it to your IP before exposing it."
+if [[ "${EXPOSED:-0}" == "1" ]]; then
+  echo ""
+  echo "🔐 IMPORTANT — lock the panel port to YOUR ip so it isn't open to everyone."
+  echo "   Find your ip at whatismyipaddress.com, then run (keeps SSH working):"
+  echo "     ufw allow OpenSSH"
+  echo "     ufw allow from <YOUR-IP> to any port 8088 proto tcp"
+  echo "     ufw deny 8088"
+  echo "     ufw --force enable"
+  echo ""
+  echo "🌐 Then open the panel:  ${PANEL_URL:-https://<server-ip>:8088}"
+  echo "   (Your browser warns once about the self-signed cert — click Advanced →"
+  echo "    proceed. The connection is still encrypted.)"
+  echo "   Log in, open Settings, and set the bot token + admin IDs there."
+else
+  echo "   The web panel (if you set a password) is on 127.0.0.1:8088 — reach it via"
+  echo "   an SSH tunnel or put nginx+TLS in front (see DEPLOY.md)."
+fi
