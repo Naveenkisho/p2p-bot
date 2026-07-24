@@ -17,13 +17,13 @@ class Settings(BaseSettings):
 
     # TRON auto-scan
     scan_interval_sec: int = 10
-    deposit_ttl_min: int = 5           # the deposit "session": the quote expires this
+    deposit_ttl_min: int = 15          # the deposit "session": the quote expires this
                                        # many minutes after creation, then the user must
                                        # start a fresh payout
     deposit_grace_min: int = 30        # after expiry, keep the order's unique amount
                                        # reserved & traceable so a late deposit is never
                                        # reused by / mis-credited to another order
-    remind_min: int = 3                # nudge the user if no deposit after this (< ttl)
+    remind_min: int = 10               # nudge the user if no deposit after this (< ttl)
     scan_page_limit: int = 100         # transfers fetched per TronGrid page
     scan_max_pages: int = 10           # page cap per address per tick
     trongrid_url: str = "https://api.trongrid.io"
