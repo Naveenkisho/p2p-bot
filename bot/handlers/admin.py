@@ -63,8 +63,8 @@ async def admin_help(message: Message) -> None:
         "/orders — list open orders\n"
         "/order 12 — reshow an order card with its buttons\n"
         "/received 12 — manually confirm a deposit (auto-scan fallback)\n"
-        "/pay 123456789 100 CDM — record a manual settlement (computes ₹, DMs the "
-        "customer a receipt, posts proof)\n"
+        "/pay 123456789 100 CDM — record a manual settlement → drops into Active "
+        "(tap Done when paid to send the receipt + proof)\n"
         "/setstatus 12 completed — force an order's status (repair tool)\n"
         "/setrefund 12 T… — record a refund address for a cancelled order\n"
         "/ban 123456789 · /unban 123456789\n\n"
@@ -393,8 +393,9 @@ async def cmd_pay(message: Message, command: CommandObject) -> None:
             "Usage: <code>/pay &lt;user_id&gt; &lt;usd&gt; &lt;METHOD&gt;</code>\n"
             "e.g. <code>/pay 123456789 100 CDM</code>\n"
             f"Methods: {', '.join(SERVICES)}\n\n"
-            "Records a manual payment — computes ₹ from the method's live rate, "
-            "DMs the customer their receipt and posts the proof to the channel.\n"
+            "Creates a manual order in the <b>Active</b> tab — computes ₹ from the "
+            "method's live rate and DMs the customer it's confirmed. Tap <b>Done</b> "
+            "on the order when you've paid to send the receipt + channel proof.\n"
             "Tip: the user id is on every order card, or the user can send /whoami.")
         return
     try:

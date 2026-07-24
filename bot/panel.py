@@ -398,9 +398,10 @@ async def pay_get(request: web.Request):
         submit = ""
     body = (_nav("pay") + "<h1>💸 Manual pay</h1>" + banner
             + "<p class=muted>Record a settlement done outside the bot. The bot "
-            "computes ₹ from the method's live rate, marks the order completed, "
-            "DMs the customer their receipt and posts the anonymized proof to the "
-            "channel — so manual payments are recorded just like auto ones.</p>"
+            "computes ₹ from the method's live rate, creates the order in the "
+            "<b>Active</b> tab and DMs the customer it's confirmed. Tap <b>Done</b> "
+            "on the order (here or in Telegram) once you've paid, to send the "
+            "receipt + channel proof — so manual payments record just like auto ones.</p>"
             "<form method=post action=/pay>"
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<label>Customer Telegram ID</label>"

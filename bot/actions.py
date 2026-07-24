@@ -13,11 +13,13 @@ from . import texts
 from .config import SERVICES
 from .db import Session, get_rates, get_setting, get_support
 from .flow import notify_deposit_received
-from .keyboards import bot_link_kb
+from .keyboards import admin_order_kb, bot_link_kb
 from .helpers import (
     ist_now_str,
     notify_admins,
     notify_user,
+    post_order_card,
+    queue_position,
     try_transition,
     txid_used_elsewhere,
     update_order_cards,
@@ -121,13 +123,30 @@ async def record_manual_order(bot: Bot, user_id: int, usd: float,
         session.add(order)
         await session.commit()
         order_id = order.id
-    # reuse the exact same completion path (receipt DM + proof post + admin ping)
-    ok, msg = await complete_order(bot, order_id)
-    if ok:
-        return True, (f"✅ Manual order {texts.tag(order_id)} recorded — "
-                      f"{usd:g}$ × ₹{rate:g} = ₹{usd * rate:,.2f} via "
-                      f"{SERVICES.get(method, method)}. {msg}")
-    return ok, msg
+    # move it into ACTIVE (the payout queue) with the same notifications an
+    # auto-detected deposit gets — the admin then taps Done to complete it
+    # (which is when the receipt + channel proof go out).
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        user = await session.get(User, user_id)
+        support = await get_support(session)
+        lang = user.lang if user and user.lang else "en"
+        position = await queue_position(session, order_id)
+        text = texts.deposit_verified(order_id, order.usd_amount, order.inr_amount,
+                                      "manual", SERVICES.get(method, method), position, lang)
+        if user is not None:
+            text += texts.trust_footer(user.first_name, user.id, support, lang)
+        delivered = await notify_user(bot, user_id, text)
+        posted = await post_order_card(bot, session, order, user, None,
+                                       admin_order_kb(order_id, "pending_payout"))
+    tail = ""
+    if not delivered:
+        tail += " ⚠️ Couldn't DM the customer."
+    if not posted:
+        tail += f" ⚠️ Card post failed — run /order {order_id}."
+    return True, (f"✅ Manual order {texts.tag(order_id)} created — "
+                  f"₹{usd * rate:,.2f} via {SERVICES.get(method, method)}. "
+                  f"It's in the Active tab; tap Done when you've paid.{tail}")
 
 
 async def refund_order(bot: Bot, order_id: int) -> tuple[bool, str]:

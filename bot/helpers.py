@@ -149,6 +149,8 @@ def order_card(order: Order, user: User, bank: BankCard | None) -> str:
     lines.append(f"💱 1$/₹{order.rate_inr:g} → pay <b>₹{order.inr_amount:,.2f}</b>")
     if bank is not None:
         lines.append(f"🏦 Payout bank:\n<code>{esc(bank.details)}</code>")
+    elif order.admin_note == "manual settlement":
+        lines.append("🏦 Payout: ✍️ manual settlement (off-bot)")
     elif status_str(order) in ("awaiting_deposit", "deposit_received"):
         lines.append("🏦 Payout bank: not chosen yet")
     else:
