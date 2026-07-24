@@ -218,13 +218,13 @@ async def expire_stale_orders(bot: Bot) -> None:
     if expired:
         from .db import get_support
         from .helpers import notify_user
-        from .keyboards import start_fresh_kb
+        from .keyboards import expired_kb
         async with Session() as session:
             support = await get_support(session)
         for user_id, lang, order_id in expired:
             await notify_user(bot, user_id,
                               texts.order_expired(order_id, support, lang),
-                              reply_markup=start_fresh_kb())
+                              reply_markup=expired_kb(order_id))
 
 
 async def _bootstrap_addresses(session, http: aiohttp.ClientSession) -> None:
@@ -323,6 +323,28 @@ async def check_order_now(bot: Bot, order_id: int) -> str | None:
         return o.status if o else None
 
 
+async def lookup_claim_tx(txid: str, address: str, since_ms: int) -> dict:
+    """Look up a user-submitted TXID on-chain to help the admin verify a
+    late/missed payment: is it a confirmed USDT transfer TO `address`, for how
+    much, and when? Returns {found, error, amount, to, to_ok, timestamp}."""
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
+            transfers = await fetch_transfers(http, address, max(0, since_ms - 3_600_000))
+    except Exception:
+        log.exception("claim lookup failed for %s", txid)
+        return {"found": False, "error": True}
+    for tx in transfers:
+        if (tx.get("transaction_id") or "") != txid:
+            continue
+        return {"found": True, "error": False,
+                "amount": transfer_amount(tx),
+                "to": tx.get("to") or "",
+                "to_ok": (tx.get("to") or "") == address,
+                "timestamp": int(tx.get("block_timestamp", 0) or 0)}
+    return {"found": False, "error": False}
+
+
 CHECK_ROUNDS = 5        # scans spread across the wait window
 CHECK_INTERVAL = 15     # seconds between scans (≈60s total)
 
@@ -338,7 +360,7 @@ def launch_order_check(bot: Bot, order_id: int) -> bool:
     async def _run():
         from .db import get_support
         from .helpers import notify_user
-        from .keyboards import deposit_kb
+        from .keyboards import not_detected_kb
         from .models import User
         try:
             async with Session() as session:
@@ -363,7 +385,7 @@ def launch_order_check(bot: Bot, order_id: int) -> bool:
             if o and o.status == OrderStatus.AWAITING_DEPOSIT.value:
                 await notify_user(bot, user_id,
                                   texts.payment_not_detected(o.id, support, lang),
-                                  reply_markup=deposit_kb(o.id))
+                                  reply_markup=not_detected_kb(o.id))
         finally:
             _checking.discard(order_id)
 

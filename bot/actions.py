@@ -230,9 +230,51 @@ async def confirm_deposit(bot: Bot, order_id: int, txid: str = "manual") -> tupl
                 await session.commit()
         order = await try_transition(
             session, order_id,
-            (OrderStatus.AWAITING_DEPOSIT, OrderStatus.EXPIRED),
+            (OrderStatus.AWAITING_DEPOSIT, OrderStatus.EXPIRED, OrderStatus.CANCELLED),
             OrderStatus.DEPOSIT_RECEIVED, txid=txid, deposit_detected_at=utcnow())
     if order is None:
-        return False, "That order isn't awaiting (or expired)."
+        return False, "That order can't be confirmed (already processing or refunded)."
     await notify_deposit_received(bot, order_id)
-    return True, "Deposit confirmed — the user is choosing their bank."
+    return True, "Deposit confirmed — order queued for payout."
+
+
+async def confirm_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
+    """Admin approves a user's payment claim (a deposit auto-detect missed or an
+    order that expired before the transfer confirmed). Reuses the exact deposit
+    path, so the order lands in the payout queue and the user gets the same
+    'verified — funds on the way' DM as an auto-detected deposit."""
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None:
+            return False, "Order not found."
+        txid = order.claim_txid
+    if not txid:
+        return False, "No payment claim on this order."
+    ok, msg = await confirm_deposit(bot, order_id, txid)
+    if ok:
+        async with Session() as session:
+            o = await session.get(Order, order_id)
+            if o is not None:
+                o.claim_txid = None      # claim resolved → clear the marker
+                await session.commit()
+        return True, f"✅ Payment confirmed for {texts.tag(order_id)} — queued for payout."
+    return ok, msg
+
+
+async def reject_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None:
+            return False, "Order not found."
+        if not order.claim_txid:
+            return False, "No pending claim on this order."
+        order.claim_txid = None
+        await session.commit()
+        user = await session.get(User, order.user_id)
+        support = await get_support(session)
+        lang = user.lang if user and user.lang else "en"
+    delivered = await notify_user(bot, order.user_id,
+                                  texts.claim_rejected(order_id, support, lang))
+    await notify_admins(bot, f"🚫 Payment claim for {texts.tag(order_id)} rejected.")
+    return True, ("Claim rejected — user notified 🚫" if delivered
+                  else "Claim rejected, but couldn't DM the user ⚠️")

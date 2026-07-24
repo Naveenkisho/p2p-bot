@@ -439,6 +439,57 @@ def deposit_reminder(order_id: int, usd: float, address: str,
     )
 
 
+def ask_claim_txid(order_id: int, lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"✅ <b>Payment confirm karein — Order {tag(order_id)}</b>\n\n"
+            "USDT bhej diya hai? Apna <b>TXID</b> (64-character transaction hash) "
+            "paste karein — hum use on-chain verify karke aapka payout confirm "
+            "karenge.\n\n"
+            "TXID aapko apne wallet ki transaction history me milega. "
+            "Ya ❌ Cancel dabayein."
+        )
+    return (
+        f"✅ <b>Confirm your payment — Order {tag(order_id)}</b>\n\n"
+        "Already sent the USDT? Paste your <b>TXID</b> (the 64-character "
+        "transaction hash) — we'll verify it on-chain and confirm your payout.\n\n"
+        "You'll find the TXID in your wallet's transaction history. "
+        "Or tap ❌ Cancel."
+    )
+
+
+def claim_submitted(order_id: int, lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"🔎 <b>Mil gaya — Order {tag(order_id)} review me hai.</b>\n\n"
+            "Hum aapka TXID check kar rahe hain. Verify hote hi aapko payout "
+            "confirmation yahi milega — usually kuch hi minute me. 🟢"
+        )
+    return (
+        f"🔎 <b>Got it — Order {tag(order_id)} is under review.</b>\n\n"
+        "We're checking your TXID. As soon as it's verified you'll get the "
+        "payout confirmation right here — usually within minutes. 🟢"
+    )
+
+
+def claim_rejected(order_id: int, support: str, lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"❌ <b>Order {tag(order_id)} — payment verify nahi ho paya.</b>\n\n"
+            "Us TXID par humein is order ka deposit nahi mila (galat amount, "
+            "galat network, ya galat TXID ho sakta hai).\n\n"
+            f"Aapko lagta hai ye galti hai? {html.escape(support)} ko apna "
+            "<b>payment screenshot + TXID</b> bhejein — hum check karenge."
+        )
+    return (
+        f"❌ <b>Order {tag(order_id)} — we couldn't verify that payment.</b>\n\n"
+        "That TXID doesn't match this order's deposit (it may be the wrong "
+        "amount, wrong network, or wrong TXID).\n\n"
+        f"Think it's a mistake? Send your <b>payment screenshot + TXID</b> to "
+        f"{html.escape(support)} and we'll take a look."
+    )
+
+
 def order_expired(order_id: int, support: str = "@support", lang: str = "en") -> str:
     if lang == "hi":
         return (

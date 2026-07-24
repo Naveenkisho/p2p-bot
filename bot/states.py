@@ -17,3 +17,7 @@ class AddBank(StatesGroup):
 
 class RefundFlow(StatesGroup):
     txid = State()           # collecting the deposit TXID for a refund request
+
+
+class ClaimFlow(StatesGroup):
+    txid = State()           # collecting the TXID to claim a missed/late payment

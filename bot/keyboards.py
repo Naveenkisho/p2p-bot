@@ -36,7 +36,13 @@ class OrderCb(CallbackData, prefix="o"):
 class AdminCb(CallbackData, prefix="a"):
     """Admin actions on an order."""
 
-    action: str  # done | refunded
+    action: str  # done | refunded | reject_refund | claim_ok | claim_no
+    order_id: int
+
+
+class ClaimReqCb(CallbackData, prefix="clm"):
+    """User taps 'I already sent USDT' to claim a payment auto-detect missed."""
+
     order_id: int
 
 
@@ -74,6 +80,50 @@ def start_fresh_kb() -> InlineKeyboardMarkup:
     (new address + amount at the current rate)."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="💵 Start a fresh payout", callback_data="menu:sell")]])
+
+
+def _claim_btn(order_id: int) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        text="✅ I already sent USDT — confirm it",
+        callback_data=ClaimReqCb(order_id=order_id).pack())
+
+
+def expired_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Expired deposit: start over, or claim a payment that landed late."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💵 Start a fresh payout", callback_data="menu:sell")],
+        [_claim_btn(order_id)],
+    ])
+
+
+def cancelled_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Cancelled order: claim a payment already sent, or ask for a refund."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_claim_btn(order_id)],
+        [InlineKeyboardButton(text="↩️ Refund me instead (I want my USDT back)",
+                              callback_data=RefundReqCb(order_id=order_id).pack())],
+    ])
+
+
+def not_detected_kb(order_id: int) -> InlineKeyboardMarkup:
+    """After a check finds nothing: re-check, claim with a TXID, or cancel."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Check status",
+                              callback_data=OrderCb(action="check", order_id=order_id).pack())],
+        [_claim_btn(order_id)],
+        [InlineKeyboardButton(text="❌ Cancel order",
+                              callback_data=OrderCb(action="cancel", order_id=order_id).pack())],
+    ])
+
+
+def claim_review_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Admin review of a user's payment claim."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Confirm payment — queue payout",
+                              callback_data=AdminCb(action="claim_ok", order_id=order_id).pack())],
+        [InlineKeyboardButton(text="🚫 Reject (can't verify)",
+                              callback_data=AdminCb(action="claim_no", order_id=order_id).pack())],
+    ])
 
 
 def main_menu() -> InlineKeyboardMarkup:

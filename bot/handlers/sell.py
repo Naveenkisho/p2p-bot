@@ -3,12 +3,13 @@ import re
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from .. import texts
 from ..config import SERVICES, settings
 from ..db import (
     Session,
+    get_admin_targets,
     get_deposit_address,
     get_desk_open,
     get_lang,
@@ -18,32 +19,38 @@ from ..db import (
     get_support,
 )
 from ..flow import notify_deposit_received
-from ..scanner import launch_order_check
+from ..scanner import _ms, launch_order_check, lookup_claim_tx
 from ..helpers import (
     TXID_RE,
+    esc,
     notify_admins,
     post_order_card,
     queue_position,
     strip_kb,
+    tronscan_tx,
     try_transition,
     update_order_cards,
 )
 from ..keyboards import (
+    ClaimReqCb,
     OrderCb,
     PickBankCb,
     PreBankCb,
     RefundReqCb,
     admin_order_kb,
     cancel_kb,
+    cancelled_kb,
+    claim_review_kb,
     deposit_kb,
+    expired_kb,
     hide_kb,
     pre_bank_chooser_kb,
     request_refund_kb,
     services_kb,
     start_fresh_kb,
 )
-from ..models import BankCard, Order, OrderStatus, SeenTx, User
-from ..states import BankForOrder, RefundFlow, SellFlow
+from ..models import BankCard, Order, OrderMsg, OrderStatus, SeenTx, User
+from ..states import BankForOrder, ClaimFlow, RefundFlow, SellFlow
 from .start import bank_details_error, make_bank_label
 
 router = Router(name="sell")
@@ -333,7 +340,7 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                 support = await get_support(session)
                 await callback.message.answer(
                     texts.order_expired(order.id, support, lang),
-                    reply_markup=start_fresh_kb())
+                    reply_markup=expired_kb(order.id))
             else:
                 await callback.answer("This order is already in processing.", show_alert=True)
 
@@ -360,7 +367,7 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             await strip_kb(callback.message)
             await state.clear()
             await callback.message.answer(texts.order_cancelled(order.id, lang) + footer,
-                                          reply_markup=request_refund_kb(order.id))
+                                          reply_markup=cancelled_kb(order.id))
             await notify_admins(callback.bot,
                                 f"🚫 Order {texts.tag(order.id)} cancelled by the user "
                                 f"(no deposit detected).")
@@ -553,5 +560,128 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
 
 @router.message(RefundFlow.txid)
 async def refund_txid_not_text(message: Message) -> None:
+    await message.answer("Please paste the <b>TXID</b> as text (64 characters), "
+                         "not a photo — or tap ❌ Cancel.")
+
+
+_CLAIMABLE = (OrderStatus.AWAITING_DEPOSIT.value, OrderStatus.EXPIRED.value,
+              OrderStatus.CANCELLED.value)
+
+
+@router.callback_query(ClaimReqCb.filter())
+async def request_claim(callback: CallbackQuery, callback_data: ClaimReqCb,
+                        state: FSMContext) -> None:
+    async with Session() as session:
+        order = await session.get(Order, callback_data.order_id)
+        if order is None or order.user_id != callback.from_user.id:
+            await callback.answer("Order not found.", show_alert=True)
+            return
+        if order.claim_txid:
+            await callback.answer("We already have your TXID — it's under review.",
+                                  show_alert=True)
+            return
+        if order.status not in _CLAIMABLE:
+            await callback.answer("This order can't be confirmed by TXID anymore — "
+                                  "contact support.", show_alert=True)
+            return
+        lang = await get_lang(session, callback.from_user.id)
+    await state.clear()
+    await state.set_state(ClaimFlow.txid)
+    await state.update_data(order_id=order.id)
+    await callback.message.answer(texts.ask_claim_txid(order.id, lang),
+                                  reply_markup=cancel_kb())
+    await callback.answer()
+
+
+async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
+    """Post the admin review card for a payment claim: bank details, the TXID
+    with a Tronscan link, the on-chain auto-check result, and Confirm/Reject."""
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None:
+            return
+        user = await session.get(User, order.user_id)
+        card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
+        expected = order.usd_amount
+        if verify.get("error"):
+            vsum = "⚠️ Couldn't reach TronGrid to auto-check — verify on Tronscan."
+        elif not verify.get("found"):
+            vsum = ("⚠️ <b>NOT found</b> as a confirmed USDT transfer to your deposit "
+                    "address — could be unconfirmed, wrong network, or wrong TXID. "
+                    "Check Tronscan before confirming.")
+        else:
+            amt = verify.get("amount") or 0.0
+            ts = verify.get("timestamp") or 0
+            m = lambda ok: "✅" if ok else "⚠️"
+            vsum = (
+                f"{m(verify.get('to_ok'))} to your address · "
+                f"{m(abs(amt - expected) <= 0.01)} amount <b>{texts.usd_str(amt)} USDT</b> "
+                f"(order expects {texts.usd_str(expected)}) · "
+                f"{m(ts >= _ms(order.created_at))} sent after the order was created")
+        bank = (f"🏦 Payout bank:\n<code>{esc(card.details)}</code>\n" if card
+                else "🏦 Payout bank: ⚠️ none on file\n")
+        text = (
+            f"🧾 <b>Payment claim — Order {texts.tag(order_id)}</b>\n"
+            f"👤 {esc(user.first_name or '')} · 🆔 <code>{user.id}</code>\n"
+            f"💱 pay <b>₹{order.inr_amount:,.2f}</b> "
+            f"({texts.usd_str(order.usd_amount)}$ × ₹{order.rate_inr:g})\n"
+            f"{bank}"
+            f"🔗 TXID: <code>{esc(txid)}</code>\n"
+            f"🔎 {tronscan_tx(esc(txid))}\n\n"
+            f"<b>On-chain check:</b> {vsum}\n\n"
+            "Confirm only if it checks out — Confirm moves it to your payout queue.")
+        targets = await get_admin_targets(session)
+        for chat_id in targets:
+            try:
+                msg = await bot.send_message(chat_id, text,
+                                             reply_markup=claim_review_kb(order_id))
+                session.add(OrderMsg(order_id=order_id, chat_id=chat_id,
+                                     message_id=msg.message_id))
+            except Exception:
+                pass
+        await session.commit()
+
+
+@router.message(ClaimFlow.txid, F.text)
+async def claim_txid(message: Message, state: FSMContext) -> None:
+    txid = message.text.strip().lower().removeprefix("0x")
+    if not TXID_RE.fullmatch(txid):
+        await message.answer("That doesn't look like a TXID — it's 64 letters/numbers "
+                             "(the transaction hash). Paste it again, or tap ❌ Cancel.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    order_id = data.get("order_id")
+    async with Session() as session:
+        order = await session.get(Order, order_id) if order_id else None
+        if order is None or order.user_id != message.from_user.id:
+            await message.answer("Order not found — contact support.", reply_markup=hide_kb())
+            return
+        if order.status not in _CLAIMABLE:
+            await message.answer("This order can't be confirmed by TXID anymore — "
+                                 "contact support.", reply_markup=hide_kb())
+            return
+        # a TXID can only ever back ONE order (as a deposit or a claim)
+        dup = await session.scalar(
+            select(Order).where(or_(Order.txid == txid, Order.claim_txid == txid),
+                                Order.id != order.id).limit(1))
+        if dup is not None:
+            await message.answer("That TXID is already linked to another order. "
+                                 "Contact support if this is a mistake.",
+                                 reply_markup=hide_kb())
+            return
+        order.claim_txid = txid
+        await session.commit()
+        lang, footer = await _ctx(session, message.from_user)
+        address = order.deposit_address
+        since_ms = _ms(order.created_at)
+    verify = await lookup_claim_tx(txid, address, since_ms)
+    await message.answer(texts.claim_submitted(order_id, lang) + footer,
+                         reply_markup=hide_kb())
+    await _post_claim_card(message.bot, order_id, txid, verify)
+
+
+@router.message(ClaimFlow.txid)
+async def claim_txid_not_text(message: Message) -> None:
     await message.answer("Please paste the <b>TXID</b> as text (64 characters), "
                          "not a photo — or tap ❌ Cancel.")

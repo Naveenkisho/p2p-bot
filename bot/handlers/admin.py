@@ -10,10 +10,12 @@ from ..actions import (
     bot_username,
     complete_order,
     compose_announcement,
+    confirm_claim,
     confirm_deposit,
     launch_broadcast,
     record_manual_order,
     refund_order,
+    reject_claim,
     reject_refund,
 )
 from ..config import SERVICES, settings
@@ -461,6 +463,10 @@ async def admin_order_action(callback: CallbackQuery, callback_data: AdminCb) ->
         ok, msg = await refund_order(callback.bot, callback_data.order_id)
     elif callback_data.action == "reject_refund":
         ok, msg = await reject_refund(callback.bot, callback_data.order_id)
+    elif callback_data.action == "claim_ok":
+        ok, msg = await confirm_claim(callback.bot, callback_data.order_id)
+    elif callback_data.action == "claim_no":
+        ok, msg = await reject_claim(callback.bot, callback_data.order_id)
     else:
         await callback.answer()
         return

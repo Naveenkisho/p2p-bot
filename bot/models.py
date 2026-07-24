@@ -75,6 +75,8 @@ class Order(Base):
     admin_note: Mapped[str | None] = mapped_column(String(64))
     reminded: Mapped[bool] = mapped_column(default=False)
     refund_txid: Mapped[str | None] = mapped_column(String(80))
+    claim_txid: Mapped[str | None] = mapped_column(String(80))  # user-submitted TXID
+    # awaiting the admin's manual confirm (auto-detect missed / order expired)
     status: Mapped[str] = mapped_column(String(20), default=OrderStatus.AWAITING_DEPOSIT,
                                         index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
