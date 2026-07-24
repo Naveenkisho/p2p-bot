@@ -30,8 +30,10 @@ class Settings(BaseSettings):
     # Web admin panel (optional; disabled unless a password is set)
     panel_password: str = ""           # required to enable the web panel
     panel_secret: str = ""             # cookie-signing secret (auto-derived if blank)
-    panel_host: str = "127.0.0.1"      # bind localhost by default → front with nginx/TLS
+    panel_host: str = "127.0.0.1"      # 0.0.0.0 to reach it at the server IP:port
     panel_port: int = 8088
+    panel_tls_cert: str = ""           # path to a cert (self-signed ok) → serves HTTPS
+    panel_tls_key: str = ""            # path to the matching private key
 
     @property
     def admin_id_list(self) -> list[int]:

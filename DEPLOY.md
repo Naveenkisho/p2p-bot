@@ -59,6 +59,44 @@ sudo nginx -t && sudo systemctl reload nginx
 admin list. Use a long password, and — strongly recommended — restrict it to
 your own IP with the `allow/deny` lines in the nginx config.
 
+### Reaching the panel at the server IP:port (no domain)
+
+If you'd rather open it at `https://<server-ip>:8088` without a domain/nginx,
+serve it over a self-signed cert and lock the port to your own IP.
+
+1. Generate a self-signed cert (once):
+
+   ```bash
+   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+     -keyout /opt/p2p-bot/panel.key -out /opt/p2p-bot/panel.crt \
+     -subj "/CN=<server-ip>"
+   ```
+
+2. In `.env`:
+
+   ```
+   P2P_PANEL_HOST=0.0.0.0
+   P2P_PANEL_PORT=8088
+   P2P_PANEL_TLS_CERT=/opt/p2p-bot/panel.crt
+   P2P_PANEL_TLS_KEY=/opt/p2p-bot/panel.key
+   ```
+
+3. **Firewall — allow only your own IP** (find it at whatismyipaddress.com):
+
+   ```bash
+   ufw allow from <your-ip> to any port 8088 proto tcp
+   ufw deny 8088
+   ufw reload           # (ensure ufw is enabled: `ufw enable`)
+   ```
+
+4. `sudo systemctl restart p2p-bot`, then open `https://<server-ip>:8088`.
+   Your browser will warn about the self-signed cert once — that's expected;
+   click through (Advanced → proceed). The connection is still encrypted, so
+   your password and the bot token are protected in transit.
+
+Without the firewall rule, a token-changing panel would be exposed to the whole
+internet — don't skip step 3.
+
 ## 5. Back up the database
 
 Everything lives in one SQLite file (`P2P_DB_PATH`, default

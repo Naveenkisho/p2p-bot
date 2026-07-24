@@ -165,7 +165,8 @@ async def login_post(request: web.Request):
         _login_fails.pop(ip, None)
         issued = int(time.time())
         resp = web.HTTPFound("/")
-        secure = request.headers.get("X-Forwarded-Proto", "").lower() == "https"
+        secure = request.secure or \
+            request.headers.get("X-Forwarded-Proto", "").lower() == "https"
         resp.set_cookie(COOKIE, await _sign(issued), httponly=True, samesite="Strict",
                         secure=secure, max_age=SESSION_TTL)
         return resp
@@ -416,9 +417,21 @@ async def start_panel(bot):
         web.post("/order/{id:\\d+}/refund", _order_action(refund_order)),
         web.post("/order/{id:\\d+}/confirm", _order_action(confirm_deposit, needs_txid=True)),
     ])
+    ssl_context = None
+    scheme = "http"
+    if settings.panel_tls_cert and settings.panel_tls_key:
+        import ssl
+        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_context.load_cert_chain(settings.panel_tls_cert, settings.panel_tls_key)
+        scheme = "https"
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, settings.panel_host, settings.panel_port)
+    site = web.TCPSite(runner, settings.panel_host, settings.panel_port,
+                       ssl_context=ssl_context)
     await site.start()
-    log.info("web panel on http://%s:%s", settings.panel_host, settings.panel_port)
+    log.info("web panel on %s://%s:%s", scheme, settings.panel_host, settings.panel_port)
+    if settings.panel_host not in ("127.0.0.1", "localhost") and ssl_context is None:
+        log.warning("⚠️ panel is on a public interface WITHOUT TLS — password and "
+                    "bot token travel in clear. Set P2P_PANEL_TLS_CERT/KEY and lock "
+                    "the port to your IP with a firewall.")
     return runner
