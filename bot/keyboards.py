@@ -47,6 +47,12 @@ class PickBankCb(CallbackData, prefix="pb"):
     card_id: int
 
 
+class PreBankCb(CallbackData, prefix="pbk"):
+    """Bank pick during checkout, before the order exists (card_id=0 → add new)."""
+
+    card_id: int
+
+
 class BankRmCb(CallbackData, prefix="brm"):
     card_id: int
 
@@ -105,6 +111,17 @@ def services_kb(rates: dict[str, float]) -> InlineKeyboardMarkup:
         for key, rate in rates.items()
     ]
     rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data="menu:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def pre_bank_chooser_kb(cards: list[BankCard]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"🏦 {c.label}",
+                              callback_data=PreBankCb(card_id=c.id).pack())]
+        for c in cards
+    ]
+    rows.append([InlineKeyboardButton(
+        text="➕ Add new bank", callback_data=PreBankCb(card_id=0).pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

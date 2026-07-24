@@ -82,19 +82,28 @@ def services_header(rates: dict[str, float], lang: str = "en") -> str:
     return "\n".join(lines)
 
 
-def ask_amount(service_label: str, rate: float, lang: str = "en") -> str:
+def ask_amount(service_label: str, rate: float, lo: float, hi: float,
+               lang: str = "en") -> str:
     if lang == "hi":
         return (
             f"Aapne chuna <b>{service_label}</b> — <b>1$ / ₹{rate:g}</b>.\n\n"
-            f"Kitne <b>$</b> bechne hain? ({settings.min_usd:g}–{settings.max_usd:g})\n"
+            f"Kitne <b>$</b> bechne hain? ({lo:g}–{hi:g})\n"
             "Bas number bhejein, jaise <code>100</code>."
         )
     return (
         f"You picked <b>{service_label}</b> at <b>1$ / ₹{rate:g}</b>.\n\n"
         f"How much do you want to sell, in <b>$</b>? "
-        f"({settings.min_usd:g}–{settings.max_usd:g})\n"
+        f"({lo:g}–{hi:g})\n"
         "Just send the number, e.g. <code>100</code>."
     )
+
+
+def choose_bank(usd: float, inr: float, lang: str = "en") -> str:
+    if lang == "hi":
+        return (f"💵 <b>{usd:g}$</b> → aapko milenge <b>₹{inr:,.2f}</b>\n\n"
+                "🏦 Apna <b>bank chunein</b> payout ke liye — ya naya add karein 👇")
+    return (f"💵 <b>{usd:g}$</b> → you receive <b>₹{inr:,.2f}</b>\n\n"
+            "🏦 <b>Choose your bank</b> for the payout — or add a new one 👇")
 
 
 def rate_updated_note(rate: float, lang: str = "en") -> str:
@@ -105,18 +114,22 @@ def rate_updated_note(rate: float, lang: str = "en") -> str:
 
 def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
                     address: str, rate: float, rate_note: str = "",
-                    lang: str = "en") -> str:
+                    bank_label: str = "", lang: str = "en") -> str:
+    bank_line_hi = (f"Bank: <b>{html.escape(bank_label)}</b>\n" if bank_label else "")
+    bank_line_en = (f"To your bank: <b>{html.escape(bank_label)}</b>\n" if bank_label else "")
     if lang == "hi":
         return (
             f"📝 <b>Order {tag(order_id)} ban gaya!</b>\n"
             f"🧾 Order ID: <code>{tag(order_id)}</code> — support ke liye yahi ID batayein.\n\n"
             f"{rate_note}"
             f"Sell: <b>{usd:g}$</b> via {service_label} @ 1$/₹{rate:g}\n"
-            f"Aapko milenge: <b>₹{inr:,.2f}</b>\n\n"
+            f"Aapko milenge: <b>₹{inr:,.2f}</b>\n"
+            f"{bank_line_hi}\n"
             f"Bhejein <b>exactly {usd:g} USDT (TRC20)</b> is address par:\n"
             f"<code>{address}</code>\n\n"
             "⚡ Hamara system blockchain khud watch karta hai — deposit confirm hote "
-            "hi seconds me yahan message aayega, phir bas apna bank chunna hai.\n\n"
+            "hi seconds me yahan verified message aayega aur payout process shuru "
+            "ho jayega.\n\n"
             "⚠️ Sirf TRC20 network, exact amount.\n"
             f"⌛ Ye order {settings.deposit_ttl_min} minute tak open rahega."
         )
@@ -125,36 +138,41 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
         f"🧾 Order ID: <code>{tag(order_id)}</code> — quote it to support anytime.\n\n"
         f"{rate_note}"
         f"Sell: <b>{usd:g}$</b> via {service_label} at 1$/₹{rate:g}\n"
-        f"You receive: <b>₹{inr:,.2f}</b>\n\n"
+        f"You receive: <b>₹{inr:,.2f}</b>\n"
+        f"{bank_line_en}\n"
         f"Send <b>exactly {usd:g} USDT (TRC20)</b> to:\n"
         f"<code>{address}</code>\n\n"
         "⚡ Our system watches the blockchain — your deposit is auto-detected, "
-        "usually within seconds of confirmation. You'll get an instant message "
-        "here, then just choose your bank for the payout.\n\n"
+        "usually within seconds of confirmation. The moment it's verified you'll "
+        "get a message here and your payout starts processing.\n\n"
         "⚠️ TRC20 network only, exact amount only.\n"
         f"⌛ This order stays open for {settings.deposit_ttl_min} minutes."
     )
 
 
 def deposit_received(order_id: int, usd: float, inr: float, txid: str,
-                     lang: str = "en") -> str:
+                     lang: str = "en", ask_bank: bool = True) -> str:
     tx_note = f"🔗 TX: <code>{html.escape(txid)}</code>\n" \
         if txid and txid != "manual" else ""
     if lang == "hi":
-        return (
-            f"✅✅ <b>Aapke {usd:g} USDT mil gaye!</b> — Order {tag(order_id)} 🟢\n"
+        base = (
+            f"✅✅ <b>Aapke {usd:g} USDT mil gaye — verified!</b> — Order {tag(order_id)} 🟢\n"
             f"{tx_note}\n"
-            f"Aapka payout: <b>₹{inr:,.2f}</b>\n\n"
-            "🏦 Last step — niche apna <b>bank chunein</b> (ya naya add karein), "
-            "funds turant process honge."
+            f"Aapka payout: <b>₹{inr:,.2f}</b>"
         )
-    return (
-        f"✅✅ <b>We received your {usd:g} USDT!</b> — Order {tag(order_id)} 🟢\n"
+        if ask_bank:
+            base += ("\n\n🏦 Last step — niche apna <b>bank chunein</b> (ya naya "
+                     "add karein), funds turant process honge.")
+        return base
+    base = (
+        f"✅✅ <b>We received your {usd:g} USDT — verified!</b> — Order {tag(order_id)} 🟢\n"
         f"{tx_note}\n"
-        f"Your payout: <b>₹{inr:,.2f}</b>\n\n"
-        "🏦 Final step — <b>choose your bank</b> below (or add one) and your "
-        "funds are on the way."
+        f"Your payout: <b>₹{inr:,.2f}</b>"
     )
+    if ask_bank:
+        base += ("\n\n🏦 Final step — <b>choose your bank</b> below (or add one) "
+                 "and your funds are on the way.")
+    return base
 
 
 def queue_note(position: int, lang: str = "en") -> str:

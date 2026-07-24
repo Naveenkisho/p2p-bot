@@ -47,6 +47,7 @@ async def admin_help(message: Message) -> None:
         "/broadcast &lt;msg&gt; — message all users (add +proof to also post to channel)\n"
         "/open · /close — take the desk open / closed for new orders\n"
         "/setrate CDM 91 — set a service's ₹/$ rate live (0 hides the service)\n"
+        "/setlimit UPI 10 5000 — per-service min/max $ per order\n"
         "/rates — show all live rates\n"
         "/setaddress T… — set the TRC20 deposit address\n"
         "/setsupport @help1 @help2 — set the support contact(s) users see\n"
@@ -85,6 +86,27 @@ async def cmd_setrate(message: Message, command: CommandObject) -> None:
         await message.answer(f"✅ {SERVICES[key]} hidden from the sell menu.")
     else:
         await message.answer(f"✅ {SERVICES[key]} rate is now live: 1$ / ₹{rate:g}.")
+
+
+@router.message(Command("setlimit"))
+async def cmd_setlimit(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    key = parts[0].upper() if parts else ""
+    if len(parts) != 3 or key not in SERVICES:
+        await message.answer("Usage: <code>/setlimit UPI 10 5000</code> — min and max "
+                             f"$ per order for a service.\nServices: {', '.join(SERVICES)}")
+        return
+    try:
+        lo, hi = float(parts[1]), float(parts[2])
+        if lo <= 0 or hi <= 0 or lo > hi:
+            raise ValueError
+    except ValueError:
+        await message.answer("Min/max must be positive numbers with min ≤ max.")
+        return
+    async with Session() as session:
+        await set_setting(session, f"limit_min_{key}", str(lo))
+        await set_setting(session, f"limit_max_{key}", str(hi))
+    await message.answer(f"✅ {SERVICES[key]}: orders now {lo:g}$–{hi:g}$.")
 
 
 @router.message(Command("rates"))

@@ -14,6 +14,7 @@ from ..db import (
     get_lang,
     get_or_create_user,
     get_rates,
+    get_service_limits,
     get_support,
 )
 from ..flow import notify_deposit_received
@@ -29,10 +30,12 @@ from ..helpers import (
 from ..keyboards import (
     OrderCb,
     PickBankCb,
+    PreBankCb,
     admin_order_kb,
     cancel_kb,
     deposit_kb,
     hide_kb,
+    pre_bank_chooser_kb,
     services_kb,
 )
 from ..models import BankCard, Order, OrderStatus, User
@@ -94,11 +97,14 @@ async def sell_service(callback: CallbackQuery, state: FSMContext) -> None:
     if key not in rates:
         await callback.answer("That service is unavailable right now.", show_alert=True)
         return
+    async with Session() as session:
+        lo, hi = await get_service_limits(session, key)
     await state.clear()
-    await state.update_data(service=key, rate=rates[key])
+    await state.update_data(service=key, rate=rates[key], lo=lo, hi=hi)
     await state.set_state(SellFlow.amount)
-    await callback.message.answer(texts.ask_amount(SERVICES[key], rates[key], lang) + footer,
-                                  reply_markup=cancel_kb())
+    await callback.message.answer(
+        texts.ask_amount(SERVICES[key], rates[key], lo, hi, lang) + footer,
+        reply_markup=cancel_kb())
     await callback.answer()
 
 
@@ -109,25 +115,66 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
         await message.answer("Please send just the amount as a number, e.g. <code>100</code>.")
         return
     usd = float(m.group(1))
-    if not (settings.min_usd <= usd <= settings.max_usd):
-        await message.answer(f"Amount must be between {settings.min_usd:g}$ "
-                             f"and {settings.max_usd:g}$.")
+    data = await state.get_data()
+    lo = data.get("lo", settings.min_usd)
+    hi = data.get("hi", settings.max_usd)
+    if not (lo <= usd <= hi):
+        await message.answer(f"Amount must be between {lo:g}$ and {hi:g}$ "
+                             f"for this service.")
         return
+    rate = data.get("rate")
+    if rate is None:
+        await message.answer("That session expired — tap 💵 USDT Sell to start over.",
+                             reply_markup=hide_kb())
+        return
+    await state.update_data(usd=usd)
+    async with Session() as session:
+        cards = (await session.scalars(
+            select(BankCard).where(BankCard.user_id == message.from_user.id)
+            .order_by(BankCard.id)
+        )).all()
+        lang, footer = await _ctx(session, message.from_user)
+    if cards:
+        await state.set_state(SellFlow.choose_bank)
+        await message.answer(texts.choose_bank(usd, usd * rate, lang) + footer,
+                             reply_markup=pre_bank_chooser_kb(cards))
+    else:
+        await state.set_state(SellFlow.bank_details)
+        await message.answer(texts.choose_bank(usd, usd * rate, lang) + "\n\n"
+                             + texts.ask_bank_new(lang) + footer,
+                             reply_markup=cancel_kb())
+
+
+@router.message(SellFlow.amount)
+async def sell_amount_not_text(message: Message) -> None:
+    await message.answer("Please type the amount as a number, e.g. <code>100</code>.")
+
+
+async def _create_order(message_target, state: FSMContext, tg_user,
+                        card: BankCard) -> None:
+    """All money-moment checks + order creation, AFTER the bank is chosen.
+    Shows the deposit address as the LAST message — the admin card is only
+    posted later, when the deposit is verified on-chain."""
     data = await state.get_data()
     await state.clear()
+    usd = data.get("usd")
+    service = data.get("service")
+    if usd is None or service is None:
+        await message_target.answer("That session expired — tap 💵 USDT Sell "
+                                    "to start over.", reply_markup=hide_kb())
+        return
     async with Session() as session:
         address = await get_deposit_address(session)
-        user = await get_or_create_user(session, message.from_user.id,
-                                        message.from_user.username, message.from_user.first_name)
+        user = await get_or_create_user(session, tg_user.id,
+                                        tg_user.username, tg_user.first_name)
+        lang, footer = await _ctx(session, tg_user)
         if user.banned:
-            await message.answer(texts.BANNED)
+            await message_target.answer(texts.BANNED, reply_markup=hide_kb())
             return
-        if not await get_desk_open(session):
-            await message.answer(texts.DESK_CLOSED)
-            return
-        if not address:
-            await message.answer(texts.DESK_CLOSED)
-            await _warn_no_address_once(message.bot)
+        if not await get_desk_open(session) or not address:
+            if not address:
+                await _warn_no_address_once(message_target.bot)
+            await message_target.answer(texts.DESK_CLOSED, reply_markup=hide_kb())
             return
         open_count = await session.scalar(
             select(func.count()).select_from(Order).where(
@@ -136,18 +183,16 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
                                   OrderStatus.DEPOSIT_RECEIVED.value,
                                   OrderStatus.PENDING_PAYOUT.value])))
         if (open_count or 0) >= settings.open_orders_max:
-            await message.answer(
+            await message_target.answer(
                 f"⚠️ You already have {open_count} open order(s). Please finish or "
-                "cancel them before starting another.")
+                "cancel them before starting another.", reply_markup=hide_kb())
             return
         # re-check the live rate at the money moment
         rates = await get_rates(session)
         rate = data.get("rate")
-        service = data.get("service")
-        if service is None or service not in rates:
-            await message.answer("That session expired — tap 💵 USDT Sell to start over.")
+        if service not in rates:
+            await message_target.answer(texts.DESK_CLOSED, reply_markup=hide_kb())
             return
-        lang, footer = await _ctx(session, message.from_user)
         rate_note = ""
         if rates[service] != rate:
             rate = rates[service]
@@ -159,28 +204,65 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
             usd_amount=usd,
             rate_inr=rate,
             inr_amount=usd * rate,
+            bank_card_id=card.id,
             deposit_address=address,
         )
         session.add(order)
         await session.commit()
-        await message.answer("✅ Amount received.", reply_markup=hide_kb())
-        await message.answer(
+        await message_target.answer("✅ Bank locked in.", reply_markup=hide_kb())
+        await message_target.answer(
             texts.deposit_request(order.id, order.usd_amount, order.inr_amount,
                                   SERVICES[service], address, rate, rate_note,
-                                  lang) + footer,
+                                  card.label, lang) + footer,
             reply_markup=deposit_kb(order.id),
         )
-        posted = await post_order_card(message.bot, session, order, user, None,
-                                       admin_order_kb(order.id, "awaiting_deposit"))
-        if not posted:
-            await notify_admins(message.bot,
-                                f"⚠️ Couldn't post the card for Order {texts.tag(order.id)} "
-                                f"— run /order {order.id}.")
 
 
-@router.message(SellFlow.amount)
-async def sell_amount_not_text(message: Message) -> None:
-    await message.answer("Please type the amount as a number, e.g. <code>100</code>.")
+@router.callback_query(SellFlow.choose_bank, PreBankCb.filter())
+async def pre_pick_bank(callback: CallbackQuery, callback_data: PreBankCb,
+                        state: FSMContext) -> None:
+    if callback_data.card_id == 0:
+        async with Session() as session:
+            lang = await get_lang(session, callback.from_user.id)
+        await state.set_state(SellFlow.bank_details)
+        await callback.message.answer(texts.ask_bank_new(lang), reply_markup=cancel_kb())
+        await callback.answer()
+        return
+    async with Session() as session:
+        card = await session.get(BankCard, callback_data.card_id)
+    if card is None or card.user_id != callback.from_user.id:
+        await callback.answer("Bank not found.", show_alert=True)
+        return
+    await strip_kb(callback.message)
+    await _create_order(callback.message, state, callback.from_user, card)
+    await callback.answer()
+
+
+@router.message(SellFlow.bank_details, F.text)
+async def sell_new_bank(message: Message, state: FSMContext) -> None:
+    details = message.text.strip()
+    error = bank_details_error(details)
+    if error:
+        await message.answer(error)
+        return
+    async with Session() as session:
+        card = BankCard(user_id=message.from_user.id,
+                        label=make_bank_label(details), details=details)
+        session.add(card)
+        await session.commit()
+    await _create_order(message, state, message.from_user, card)
+
+
+@router.message(SellFlow.bank_details)
+async def sell_new_bank_not_text(message: Message) -> None:
+    await message.answer("Please <b>type</b> your bank details as text — "
+                         "not a photo or file.")
+
+
+@router.callback_query(PreBankCb.filter())
+async def pre_bank_stale(callback: CallbackQuery) -> None:
+    await callback.answer("That session expired — tap 💵 USDT Sell to start over.",
+                          show_alert=True)
 
 
 @router.callback_query(OrderCb.filter())
@@ -208,9 +290,13 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                     "a message the moment it lands. If nothing in ~5 minutes, "
                     "message support.", show_alert=True)
             elif status == OrderStatus.DEPOSIT_RECEIVED:
-                # re-send the bank chooser in case the original DM was lost
-                await callback.answer("Deposit received! Choose your bank 👇", show_alert=True)
+                # deposit just verified — re-drive the next step (payout queue,
+                # or the bank chooser for legacy orders without a bank)
+                await callback.answer("Deposit verified ✅", show_alert=True)
                 await notify_deposit_received(callback.bot, order.id)
+            elif status == OrderStatus.PENDING_PAYOUT:
+                await callback.answer("✅ Verified — your payout is in the queue.",
+                                      show_alert=True)
             else:
                 await callback.answer("This order is already in processing.", show_alert=True)
 

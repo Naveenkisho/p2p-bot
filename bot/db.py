@@ -87,6 +87,25 @@ async def get_deposit_address(session: AsyncSession) -> str | None:
     return await get_setting(session, "addr_trc20")
 
 
+async def get_service_limits(session: AsyncSession, service: str) -> tuple[float, float]:
+    """Per-service min/max USD, panel-editable; falls back to the global env
+    bounds when unset."""
+    lo, hi = settings.min_usd, settings.max_usd
+    raw_lo = await get_setting(session, f"limit_min_{service}")
+    raw_hi = await get_setting(session, f"limit_max_{service}")
+    try:
+        if raw_lo and float(raw_lo) > 0:
+            lo = float(raw_lo)
+    except ValueError:
+        pass
+    try:
+        if raw_hi and float(raw_hi) > 0:
+            hi = float(raw_hi)
+    except ValueError:
+        pass
+    return lo, hi
+
+
 async def get_desk_open(session: AsyncSession) -> bool:
     """Master on/off switch for taking new sell orders (default open)."""
     return (await get_setting(session, "desk_open")) != "0"

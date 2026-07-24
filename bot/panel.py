@@ -373,6 +373,8 @@ async def settings_get(request: web.Request):
         is_open, reason = await desk_state(s)
         desk_switch = (await get_setting(s, "desk_open")) != "0"
         rates = {k: (await get_setting(s, f"rate_{k}") or "") for k in SERVICES}
+        lims = {k: ((await get_setting(s, f"limit_min_{k}") or ""),
+                    (await get_setting(s, f"limit_max_{k}") or "")) for k in SERVICES}
         addr = await get_deposit_address(s) or ""
         support = await get_setting(s, "support") or ""
         admin_ids = await get_setting(s, "admin_ids")
@@ -382,8 +384,17 @@ async def settings_get(request: web.Request):
         token_set = bool((await get_setting(s, "bot_token")) or settings.bot_token)
     csrf = await _csrf_for(request)
     rate_fields = "".join(
-        f"<label>{_esc(SERVICES[k])} rate (₹/$, blank hides it)</label>"
-        f"<input name='rate_{k}' value='{_esc(rates[k])}'>" for k in SERVICES)
+        f"<div class=card><b>{_esc(SERVICES[k])}</b>"
+        f"<label>Rate (₹/$, blank hides the service)</label>"
+        f"<input name='rate_{k}' value='{_esc(rates[k])}'>"
+        f"<div class=row style='gap:12px'>"
+        f"<div style='flex:1'><label>Min $ (blank = default "
+        f"{settings.min_usd:g})</label>"
+        f"<input name='limit_min_{k}' value='{_esc(lims[k][0])}'></div>"
+        f"<div style='flex:1'><label>Max $ (blank = default "
+        f"{settings.max_usd:g})</label>"
+        f"<input name='limit_max_{k}' value='{_esc(lims[k][1])}'></div>"
+        f"</div></div>" for k in SERVICES)
     status_line = ("🟢 Desk is OPEN" if is_open
                    else f"🔴 Desk is CLOSED — {_esc(reason)}")
     desk_toggle_html = _desk_toggle_btn(desk_switch, csrf, "/settings")
@@ -435,15 +446,35 @@ async def settings_post(request: web.Request):
             raw = str(data.get(f"rate_{k}", "")).strip()
             if raw == "":
                 await set_setting(s, f"rate_{k}", "0")
-                continue
+            else:
+                try:
+                    val = float(raw)
+                    if val < 0 or val > 100_000:
+                        raise ValueError
+                    await set_setting(s, f"rate_{k}", str(val))
+                except ValueError:
+                    errors.append(f"{SERVICES[k]} rate invalid")
+
+            # per-service min/max limits (blank = fall back to env defaults)
+            lo_raw = str(data.get(f"limit_min_{k}", "")).strip()
+            hi_raw = str(data.get(f"limit_max_{k}", "")).strip()
+            lo_val = hi_val = None
             try:
-                val = float(raw)
-                if val < 0 or val > 100_000:
-                    raise ValueError
+                if lo_raw:
+                    lo_val = float(lo_raw)
+                    if lo_val <= 0:
+                        raise ValueError
+                if hi_raw:
+                    hi_val = float(hi_raw)
+                    if hi_val <= 0:
+                        raise ValueError
+                if lo_val is not None and hi_val is not None and lo_val > hi_val:
+                    errors.append(f"{SERVICES[k]}: min is above max")
+                    continue
+                await set_setting(s, f"limit_min_{k}", str(lo_val) if lo_val else "")
+                await set_setting(s, f"limit_max_{k}", str(hi_val) if hi_val else "")
             except ValueError:
-                errors.append(f"{SERVICES[k]} rate invalid")
-                continue
-            await set_setting(s, f"rate_{k}", str(val))
+                errors.append(f"{SERVICES[k]} min/max invalid")
 
         addr = str(data.get("addr", "")).strip()
         if addr:
