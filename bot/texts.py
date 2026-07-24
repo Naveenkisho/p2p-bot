@@ -135,10 +135,22 @@ def ask_amount(service_label: str, rate: float, lo: float, hi: float,
             f"Enter amount in <b>$</b> ({lo:g}–{hi:g}):")
 
 
-def choose_bank(usd: float, inr: float, lang: str = "en") -> str:
+def choose_bank(usd: float, inr: float, service_label: str, rate: float,
+                has_bank: bool, lang: str = "en") -> str:
     if lang == "hi":
-        return (f"<b>{usd:g}$ → ₹{inr:,.2f}</b>\n\n🏦 Payout bank chunein:")
-    return (f"<b>{usd:g}$ → ₹{inr:,.2f}</b>\n\n🏦 Choose your payout bank:")
+        head = (f"💵 Aap bhejte hain: <b>{usd:g}$ USDT</b>\n"
+                f"📊 Method: <b>{service_label}</b> · 1$ = ₹{rate:g}\n"
+                f"💰 Aapko milenge: <b>₹{inr:,.2f}</b>\n\n")
+        head += ("🏦 <b>Apna payout bank chunein 👇</b>" if has_bank
+                 else "🏦 <b>Koi bank saved nahi — continue karne ke liye niche "
+                      "apni bank details add karein:</b>")
+        return head
+    head = (f"💵 You send: <b>{usd:g}$ USDT</b>\n"
+            f"📊 Method: <b>{service_label}</b> · 1$ = ₹{rate:g}\n"
+            f"💰 You receive: <b>₹{inr:,.2f}</b>\n\n")
+    head += ("🏦 <b>Choose your payout bank 👇</b>" if has_bank
+             else "🏦 <b>No bank saved yet — add your bank details below to continue:</b>")
+    return head
 
 
 def rate_updated_note(rate: float, lang: str = "en") -> str:

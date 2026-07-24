@@ -128,6 +128,7 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
         await message.answer("That session expired — tap 💵 USDT Sell to start over.",
                              reply_markup=hide_kb())
         return
+    service_label = SERVICES.get(data.get("service"), data.get("service"))
     await state.update_data(usd=usd)
     async with Session() as session:
         cards = (await session.scalars(
@@ -137,13 +138,15 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
         lang, footer = await _ctx(session, message.from_user)
     if cards:
         await state.set_state(SellFlow.choose_bank)
-        await message.answer(texts.choose_bank(usd, usd * rate, lang) + footer,
-                             reply_markup=pre_bank_chooser_kb(cards))
+        await message.answer(
+            texts.choose_bank(usd, usd * rate, service_label, rate, True, lang) + footer,
+            reply_markup=pre_bank_chooser_kb(cards))
     else:
         await state.set_state(SellFlow.bank_details)
-        await message.answer(texts.choose_bank(usd, usd * rate, lang) + "\n\n"
-                             + texts.ask_bank_new(lang) + footer,
-                             reply_markup=cancel_kb())
+        await message.answer(
+            texts.choose_bank(usd, usd * rate, service_label, rate, False, lang)
+            + "\n\n" + texts.ask_bank_new(lang) + footer,
+            reply_markup=cancel_kb())
 
 
 @router.message(SellFlow.amount)
