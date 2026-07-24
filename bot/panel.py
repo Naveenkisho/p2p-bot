@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import time
+from urllib.parse import quote
 
 from aiohttp import web
 
@@ -27,6 +28,7 @@ from .actions import (
     compose_announcement,
     confirm_deposit,
     launch_broadcast,
+    record_manual_order,
     refund_order,
     reject_refund,
 )
@@ -36,6 +38,7 @@ from .db import (
     desk_state,
     get_deposit_address,
     get_desk_open,
+    get_rates,
     get_setting,
     get_support,
     set_setting,
@@ -159,6 +162,7 @@ def _nav(active: str) -> str:
         on = " style='font-weight:700'" if key == active else ""
         return f"<a href='{href}'{on}>{label}</a>"
     return ("<div class=nav>" + link("/", "📋 Orders", "orders")
+            + link("/pay", "💸 Manual pay", "pay")
             + link("/broadcast", "📢 Broadcast", "broadcast")
             + link("/settings", "⚙️ Settings", "settings")
             + "<a href='/logout' style='margin-left:auto'>Logout</a></div>")
@@ -376,6 +380,62 @@ async def broadcast_post(request: web.Request):
 
 
 @_authed
+async def pay_get(request: web.Request):
+    async with Session() as s:
+        rates = await get_rates(s)
+    csrf = await _csrf_for(request)
+    msg = request.query.get("msg", "")
+    banner = (f"<div class=card style='border-color:#238636'>{_esc(msg)}</div>"
+              if msg else "")
+    if rates:
+        opts = "".join(f"<option value='{_esc(k)}'>{_esc(SERVICES.get(k, k))} "
+                       f"— ₹{v:g}/$</option>" for k, v in rates.items())
+        method_field = f"<label>Method</label><select name=method>{opts}</select>"
+        submit = "<div class=row><button>Record payment &amp; notify customer</button></div>"
+    else:
+        method_field = ("<p class=muted>⚠️ No method has a live rate yet — set one in "
+                        "⚙️ Settings first, then come back.</p>")
+        submit = ""
+    body = (_nav("pay") + "<h1>💸 Manual pay</h1>" + banner
+            + "<p class=muted>Record a settlement done outside the bot. The bot "
+            "computes ₹ from the method's live rate, marks the order completed, "
+            "DMs the customer their receipt and posts the anonymized proof to the "
+            "channel — so manual payments are recorded just like auto ones.</p>"
+            "<form method=post action=/pay>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<label>Customer Telegram ID</label>"
+            "<input name=user_id inputmode=numeric placeholder='e.g. 123456789'>"
+            "<label>Amount (USDT $)</label>"
+            "<input name=usd inputmode=decimal placeholder='e.g. 100'>"
+            + method_field + submit + "</form>"
+            "<p class=muted>The customer can get their ID by sending the bot "
+            "<code>/whoami</code>; it's also shown on every order card.</p>")
+    return _page("Manual pay", body)
+
+
+@_authed
+async def pay_post(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("pay") + "<p>Invalid CSRF token.</p>")
+    if request.app["bot"] is None:
+        raise web.HTTPFound("/pay?msg=" + quote(
+            "Bot isn't running yet — set the bot token in Settings first."))
+    uid_raw = str(data.get("user_id", "")).strip()
+    if not uid_raw.isdigit():
+        raise web.HTTPFound("/pay?msg=" + quote(
+            "Enter a numeric customer Telegram ID (they can send /whoami)."))
+    try:
+        usd = float(str(data.get("usd", "")).strip())
+    except ValueError:
+        raise web.HTTPFound("/pay?msg=" + quote("Amount must be a number."))
+    method = str(data.get("method", "")).upper()
+    ok, msg = await record_manual_order(request.app["bot"], int(uid_raw), usd, method)
+    # url-encode: the message contains '#ORD…' and '&', which break a query string
+    raise web.HTTPFound("/pay?msg=" + quote(msg))
+
+
+@_authed
 async def settings_get(request: web.Request):
     async with Session() as s:
         is_open, reason = await desk_state(s)
@@ -562,6 +622,8 @@ async def start_panel(bot):
         web.get("/logout", logout),
         web.get("/", dashboard),
         web.post("/desk/toggle", desk_toggle),
+        web.get("/pay", pay_get),
+        web.post("/pay", pay_post),
         web.get("/broadcast", broadcast_get),
         web.post("/broadcast", broadcast_post),
         web.get("/settings", settings_get),

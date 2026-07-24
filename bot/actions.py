@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from . import texts
 from .config import SERVICES
-from .db import Session, get_setting, get_support
+from .db import Session, get_rates, get_setting, get_support
 from .flow import notify_deposit_received
 from .keyboards import bot_link_kb
 from .helpers import (
@@ -84,6 +84,49 @@ async def complete_order(bot: Bot, order_id: int) -> tuple[bool, str]:
     await post_proof(bot, updated)
     return True, ("Done — user notified ✅" if delivered
                   else "Done, but couldn't DM the user ⚠️")
+
+
+async def record_manual_order(bot: Bot, user_id: int, usd: float,
+                              method: str) -> tuple[bool, str]:
+    """Record a settlement done outside the normal flow. The admin picks the
+    user, the $ amount and the method; the bot computes INR from that method's
+    live rate, marks a completed order, DMs the customer their receipt and posts
+    the anonymized proof — so manual payments are recorded exactly like the
+    auto-scanned ones. Returns (ok, message)."""
+    method = (method or "").upper()
+    if method not in SERVICES:
+        return False, f"Unknown method '{method}'. Use one of: {', '.join(SERVICES)}."
+    try:
+        usd = float(usd)
+    except (TypeError, ValueError):
+        return False, "Amount must be a number."
+    if not (usd > 0):
+        return False, "Amount must be greater than 0."
+    async with Session() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            return False, (f"No user with id {user_id} has started the bot yet — "
+                           "they must open it once (/start) so it can DM them.")
+        rates = await get_rates(session)
+        if method not in rates:
+            return False, (f"{method} has no live rate. Set it first with "
+                           f"/setrate {method} <₹>.")
+        rate = rates[method]
+        order = Order(user_id=user_id, side="sell", service=method,
+                      usd_amount=usd, rate_inr=rate, inr_amount=usd * rate,
+                      status=OrderStatus.PENDING_PAYOUT.value,
+                      deposit_address="manual", txid="manual",
+                      deposit_detected_at=utcnow(), admin_note="manual settlement")
+        session.add(order)
+        await session.commit()
+        order_id = order.id
+    # reuse the exact same completion path (receipt DM + proof post + admin ping)
+    ok, msg = await complete_order(bot, order_id)
+    if ok:
+        return True, (f"✅ Manual order {texts.tag(order_id)} recorded — "
+                      f"{usd:g}$ × ₹{rate:g} = ₹{usd * rate:,.2f} via "
+                      f"{SERVICES.get(method, method)}. {msg}")
+    return ok, msg
 
 
 async def refund_order(bot: Bot, order_id: int) -> tuple[bool, str]:

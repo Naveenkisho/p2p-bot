@@ -74,6 +74,14 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await message.answer("Cancelled — back to the menu.", reply_markup=main_menu())
 
 
+@router.message(Command("whoami"))
+async def cmd_whoami(message: Message) -> None:
+    """User's own Telegram ID — handy to share with support for a manual payout."""
+    await message.answer(
+        f"🆔 Your Telegram ID: <code>{message.from_user.id}</code>\n"
+        "Tap to copy and send it to support if they ask for it.")
+
+
 @router.callback_query(F.data == "menu:home")
 async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()

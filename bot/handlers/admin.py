@@ -12,6 +12,7 @@ from ..actions import (
     compose_announcement,
     confirm_deposit,
     launch_broadcast,
+    record_manual_order,
     refund_order,
     reject_refund,
 )
@@ -60,6 +61,8 @@ async def admin_help(message: Message) -> None:
         "/orders — list open orders\n"
         "/order 12 — reshow an order card with its buttons\n"
         "/received 12 — manually confirm a deposit (auto-scan fallback)\n"
+        "/pay 123456789 100 CDM — record a manual settlement (computes ₹, DMs the "
+        "customer a receipt, posts proof)\n"
         "/setstatus 12 completed — force an order's status (repair tool)\n"
         "/setrefund 12 T… — record a refund address for a cancelled order\n"
         "/ban 123456789 · /unban 123456789\n\n"
@@ -375,6 +378,35 @@ async def cmd_received(message: Message, command: CommandObject) -> None:
         return
     await message.answer(f"✅ Deposit confirmed manually for {texts.tag(int(raw))} — "
                          "the user is choosing their bank.")
+
+
+@router.message(Command("pay"))
+async def cmd_pay(message: Message, command: CommandObject) -> None:
+    """Record a manual settlement: /pay <user_id> <usd> <METHOD>. The bot
+    computes ₹ from the method's rate, DMs the customer a completed-order
+    receipt and posts the anonymized proof to the channel."""
+    parts = (command.args or "").split()
+    if len(parts) != 3 or not parts[0].isdigit():
+        await message.answer(
+            "Usage: <code>/pay &lt;user_id&gt; &lt;usd&gt; &lt;METHOD&gt;</code>\n"
+            "e.g. <code>/pay 123456789 100 CDM</code>\n"
+            f"Methods: {', '.join(SERVICES)}\n\n"
+            "Records a manual payment — computes ₹ from the method's live rate, "
+            "DMs the customer their receipt and posts the proof to the channel.\n"
+            "Tip: the user id is on every order card, or the user can send /whoami.")
+        return
+    try:
+        usd = float(parts[1])
+    except ValueError:
+        await message.answer("The amount must be a number, e.g. <code>100</code>.")
+        return
+    method = parts[2].upper()
+    if method not in SERVICES:
+        await message.answer(f"Unknown method <b>{esc(parts[2])}</b>. "
+                             f"Use one of: {', '.join(SERVICES)}.")
+        return
+    ok, msg = await record_manual_order(message.bot, int(parts[0]), usd, method)
+    await message.answer(msg)
 
 
 @router.message(Command("setrefund"))
