@@ -2,7 +2,12 @@
 web panel so both go through the exact same state machine and notifications.
 Each returns (ok: bool, message: str) for the caller to surface."""
 
+import asyncio
+import html
+import logging
+
 from aiogram import Bot
+from sqlalchemy import select
 
 from . import texts
 from .config import SERVICES
@@ -16,6 +21,8 @@ from .helpers import (
     update_order_cards,
 )
 from .models import BankCard, Order, OrderStatus, SeenTx, User, utcnow
+
+log = logging.getLogger(__name__)
 
 
 async def post_proof(bot: Bot, order: Order) -> None:
@@ -86,6 +93,52 @@ async def refund_order(bot: Bot, order_id: int) -> tuple[bool, str]:
             await update_order_cards(bot, session, updated, user, card, None)
     return True, ("Refund marked sent ✅" if delivered
                   else "Refund marked, but couldn't DM the user ⚠️")
+
+
+def compose_announcement(raw_text: str) -> str:
+    """Wrap an admin's plain message as a safe HTML announcement."""
+    return "📢 <b>Announcement</b>\n\n" + html.escape(raw_text.strip())
+
+
+async def broadcast(bot: Bot, text: str, to_proof: bool = False) -> tuple[int, int]:
+    """Send `text` to every non-banned user (throttled), and optionally to the
+    proof channel. Returns (sent, failed)."""
+    async with Session() as session:
+        user_ids = (await session.scalars(
+            select(User.id).where(User.banned.is_(False)))).all()
+    sent = failed = 0
+    for uid in user_ids:
+        try:
+            await bot.send_message(uid, text)
+            sent += 1
+        except Exception:
+            failed += 1  # user blocked the bot, deactivated, etc.
+        await asyncio.sleep(0.05)  # ~20/sec, comfortably under Telegram's limit
+    if to_proof:
+        async with Session() as session:
+            channel = await get_setting(session, "proof_channel")
+        if channel:
+            target: int | str = int(channel) if channel.lstrip("-").isdigit() else channel
+            try:
+                await bot.send_message(target, text)
+            except Exception:
+                log.exception("broadcast to proof channel failed")
+    return sent, failed
+
+
+_bg_tasks: set = set()
+
+
+def launch_broadcast(bot: Bot, text: str, to_proof: bool) -> None:
+    """Fire-and-forget broadcast that DMs the admins a summary when done."""
+    async def _run():
+        sent, failed = await broadcast(bot, text, to_proof)
+        extra = " · posted to proof channel" if to_proof else ""
+        await notify_admins(bot, f"📢 Broadcast done — sent {sent}, failed {failed}"
+                                 f"{extra}.")
+    task = asyncio.create_task(_run())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 async def confirm_deposit(bot: Bot, order_id: int, txid: str = "manual") -> tuple[bool, str]:

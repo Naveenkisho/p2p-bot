@@ -3,10 +3,16 @@ import math
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .. import texts
-from ..actions import complete_order, confirm_deposit, refund_order
+from ..actions import (
+    complete_order,
+    compose_announcement,
+    confirm_deposit,
+    launch_broadcast,
+    refund_order,
+)
 from ..config import SERVICES, settings
 from ..db import (
     Session,
@@ -38,6 +44,7 @@ router.callback_query.filter(IsAdmin())
 async def admin_help(message: Message) -> None:
     await message.answer(
         "<b>Admin commands</b>\n"
+        "/broadcast &lt;msg&gt; — message all users (add +proof to also post to channel)\n"
         "/open · /close — take the desk open / closed for new orders\n"
         "/setrate CDM 91 — set a service's ₹/$ rate live (0 hides the service)\n"
         "/rates — show all live rates\n"
@@ -110,6 +117,26 @@ async def cmd_setaddress(message: Message, command: CommandObject) -> None:
     await message.answer(f"✅ Deposit address set:\n<code>{esc(address)}</code>\n\n"
                          "Only deposits from now on will be auto-detected on this "
                          "address (its past history is ignored).")
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message, command: CommandObject) -> None:
+    text = (command.args or "").strip()
+    if not text:
+        await message.answer("Usage: <code>/broadcast your message</code> — sends to "
+                             "all users. Add <code>+proof</code> at the end to also post "
+                             "it to the proof channel.")
+        return
+    to_proof = text.endswith("+proof")
+    if to_proof:
+        text = text[: -len("+proof")].strip()
+    async with Session() as session:
+        n = await session.scalar(select(func.count()).select_from(User)
+                                 .where(User.banned.is_(False)))
+    launch_broadcast(message.bot, compose_announcement(text), to_proof)
+    await message.answer(f"📢 Broadcasting to {n or 0} users"
+                         + (" + proof channel" if to_proof else "")
+                         + " — I'll report the result here when done.")
 
 
 @router.message(Command("open"))

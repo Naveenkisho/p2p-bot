@@ -22,7 +22,13 @@ import time
 from aiohttp import web
 
 from . import texts
-from .actions import complete_order, confirm_deposit, refund_order
+from .actions import (
+    complete_order,
+    compose_announcement,
+    confirm_deposit,
+    launch_broadcast,
+    refund_order,
+)
 from .config import SERVICES, settings
 from .db import (
     Session,
@@ -33,8 +39,8 @@ from .db import (
     set_setting,
 )
 from .helpers import is_trc20
-from .models import Order, OrderStatus
-from sqlalchemy import select
+from .models import Order, OrderStatus, User
+from sqlalchemy import func, select
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +148,7 @@ def _nav(active: str) -> str:
         on = " style='font-weight:700'" if key == active else ""
         return f"<a href='{href}'{on}>{label}</a>"
     return ("<div class=nav>" + link("/", "📋 Orders", "orders")
+            + link("/broadcast", "📢 Broadcast", "broadcast")
             + link("/settings", "⚙️ Settings", "settings")
             + "<a href='/logout' style='margin-left:auto'>Logout</a></div>")
 
@@ -289,6 +296,52 @@ def _order_action(fn, needs_txid=False):
             ok, msg = await fn(request.app["bot"], oid)
         raise web.HTTPFound(f"/order/{oid}?msg={html.escape(msg)}")
     return handler
+
+
+@_authed
+async def broadcast_get(request: web.Request):
+    async with Session() as s:
+        n = await s.scalar(select(func.count()).select_from(User)
+                           .where(User.banned.is_(False)))
+    csrf = await _csrf_for(request)
+    msg = request.query.get("msg", "")
+    banner = (f"<div class=card style='border-color:#238636'>{_esc(msg)}</div>"
+              if msg else "")
+    body = (_nav("broadcast") + "<h1>📢 Broadcast</h1>" + banner
+            + f"<p class=muted>Sends a message to all <b>{n or 0}</b> bot users "
+            "(skipping anyone who blocked the bot).</p>"
+            "<form method=post action=/broadcast>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<label>Message</label>"
+            "<textarea name=text rows=5 style='width:100%;box-sizing:border-box;"
+            "padding:8px;border-radius:8px;border:1px solid #30363d;"
+            "background:#0d1117;color:#e6edf3'></textarea>"
+            "<label style='display:flex;gap:8px;align-items:center;margin:10px 0'>"
+            "<input type=checkbox name=to_proof value='1' style='width:auto'> "
+            "Also post to the proof channel</label>"
+            "<div class=row><button>Send broadcast</button></div>"
+            "</form>")
+    return _page("Broadcast", body)
+
+
+@_authed
+async def broadcast_post(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("broadcast") + "<p>Invalid CSRF token.</p>")
+    text = str(data.get("text", "")).strip()
+    if not text:
+        raise web.HTTPFound("/broadcast?msg=" + html.escape("Message was empty."))
+    if request.app["bot"] is None:
+        raise web.HTTPFound("/broadcast?msg="
+                            + html.escape("Bot isn't running yet — set the token first."))
+    to_proof = bool(data.get("to_proof"))
+    async with Session() as s:
+        n = await s.scalar(select(func.count()).select_from(User)
+                           .where(User.banned.is_(False)))
+    launch_broadcast(request.app["bot"], compose_announcement(text), to_proof)
+    raise web.HTTPFound("/broadcast?msg=" + html.escape(
+        f"Broadcast started to {n or 0} users — you'll get a summary in Telegram."))
 
 
 @_authed
@@ -450,6 +503,8 @@ async def start_panel(bot):
         web.post("/login", login_post),
         web.get("/logout", logout),
         web.get("/", dashboard),
+        web.get("/broadcast", broadcast_get),
+        web.post("/broadcast", broadcast_post),
         web.get("/settings", settings_get),
         web.post("/settings", settings_post),
         web.get("/order/{id:\\d+}", order_detail),
