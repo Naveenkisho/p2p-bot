@@ -10,7 +10,15 @@ from .. import texts
 from ..config import SERVICES
 from ..db import Session, get_lang, get_or_create_user, get_rates, get_support
 from ..helpers import esc, strip_kb
-from ..keyboards import BankRmCb, banks_menu_kb, cancel_kb, hide_kb, language_kb, main_menu
+from ..keyboards import (
+    BankRmCb,
+    banks_menu_kb,
+    cancel_kb,
+    hide_kb,
+    language_kb,
+    main_menu,
+    support_row_kb,
+)
 from ..models import OPEN_STATUSES, BankCard, Order
 from ..states import AddBank
 
@@ -158,10 +166,18 @@ async def menu_support(callback: CallbackQuery) -> None:
     async with Session() as session:
         support = await get_support(session)
         lang = await get_lang(session, callback.from_user.id)
-    await callback.message.answer(
-        texts.support_text(support, lang)
-        + texts.trust_footer(callback.from_user.first_name, callback.from_user.id,
-                             support, lang))
+    await callback.message.answer(texts.support_msg(lang),
+                                  reply_markup=support_row_kb(support.split()))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:guarantee")
+async def menu_guarantee(callback: CallbackQuery) -> None:
+    async with Session() as session:
+        support = await get_support(session)
+        lang = await get_lang(session, callback.from_user.id)
+    await callback.message.answer(texts.guarantee(lang),
+                                  reply_markup=support_row_kb(support.split()))
     await callback.answer()
 
 

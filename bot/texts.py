@@ -50,20 +50,70 @@ def welcome(name: str | None, user_id: int, support: str, lang: str = "en") -> s
         return (
             f"👋 Welcome, <b>{who}</b>!\n"
             f"🆔 Aapki ID: <code>{user_id}</code>\n\n"
-            "🇮🇳 <b>India ki sabse safe P2P trading.</b>\n\n"
-            "Hum settle karte hain <b>UPI · IMPS instant · CDM · Cheque transfer</b> "
-            "se — har service ka apna live rate hai.\n\n"
-            f"🆘 Support: {html.escape(support)}\n\n"
+            "🇮🇳 <b>India ki sabse safe P2P trading.</b>\n"
+            "💯 <b>100% clean funds · zero freeze risk</b> — tap 🛡 Guarantee niche.\n\n"
+            "Settle karte hain <b>UPI · IMPS instant · CDM · Cheque transfer</b> se — "
+            "har service ka apna live rate.\n\n"
             "Kya karna chahenge?"
         )
     return (
         f"👋 Welcome, <b>{who}</b>!\n"
         f"🆔 Your ID: <code>{user_id}</code>\n\n"
-        "🇮🇳 <b>The safest P2P trading in entire India.</b>\n\n"
+        "🇮🇳 <b>The safest P2P trading in entire India.</b>\n"
+        "💯 <b>100% clean funds · zero freeze risk</b> — tap 🛡 Guarantee below.\n\n"
         "We settle through <b>UPI · IMPS instant · CDM · Cheque transfer</b> — "
-        "each service has its own rate, always live below.\n\n"
-        f"🆘 Support: {html.escape(support)}\n\n"
+        "each with its own live rate.\n\n"
         "What would you like to do?"
+    )
+
+
+def guarantee(lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            "🛡 <b>100% Clean Funds — Hamari Guarantee</b>\n\n"
+            "Har payout <b>verified, legal source</b> se aata hai:\n\n"
+            "✅ Mutual &amp; stock-market funds\n"
+            "✅ Cash-deposit funds\n"
+            "✅ Credit-card funds\n"
+            "✅ Payment-gateway funds\n\n"
+            "Sab <b>100% clean, legally sourced</b> paisa — aapke account ko kabhi "
+            "freeze/hold ka risk nahi. Ye hamari <b>commitment</b> hai: hamare saath "
+            "trade karein aur <b>zindagi bhar freeze ki tension bhulein.</b>\n\n"
+            "📸 Har deal par <b>payout proof</b> bhejte hain.\n"
+            "🔒 Admins khud personally handle karte hain.\n"
+            "⚡ Auto-verified deposits · fast payout.\n"
+            "🇮🇳 India ka sabse safe P2P desk."
+        )
+    return (
+        "🛡 <b>100% Clean Funds — Our Guarantee</b>\n\n"
+        "Every rupee we pay out comes from <b>verified, legitimate sources</b>:\n\n"
+        "✅ Mutual &amp; stock-market funds\n"
+        "✅ Cash-deposit funds\n"
+        "✅ Credit-card funds\n"
+        "✅ Payment-gateway funds\n\n"
+        "All <b>100% clean, legally sourced</b> money — so your account is "
+        "<b>never</b> at risk of a freeze or hold. That's our commitment: trade "
+        "with us and <b>never worry about fund-freeze issues in your entire life.</b>\n\n"
+        "📸 We share a <b>payout proof</b> on every single deal.\n"
+        "🔒 Every order handled personally by our admins.\n"
+        "⚡ Deposits auto-verified on-chain · fast payout.\n"
+        "🇮🇳 The safest P2P desk in India."
+    )
+
+
+def support_msg(lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            "🆘 <b>Support</b>\n\n"
+            "Kisi bhi help ke liye niche apne <b>support contact</b> par tap karein — "
+            "apna order ID (<code>#ORD…</code>) zaroor batayein.\n\n"
+            "⚡ Fast reply · 🔒 Verified admins · 📸 Proof on request"
+        )
+    return (
+        "🆘 <b>Support</b>\n\n"
+        "Tap your <b>support contact</b> below for any help — always mention your "
+        "order ID (<code>#ORD…</code>).\n\n"
+        "⚡ Fast replies · 🔒 Verified admins · 📸 Proof on request"
     )
 
 

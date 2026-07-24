@@ -63,6 +63,8 @@ def main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💵 USDT Sell", callback_data="menu:sell"),
             InlineKeyboardButton(text="🛒 USDT Buy", callback_data="menu:buy"),
         ],
+        [InlineKeyboardButton(text="🛡 100% Clean Funds — Guarantee",
+                              callback_data="menu:guarantee")],
         [
             InlineKeyboardButton(text="📋 My Orders", callback_data="menu:orders"),
             InlineKeyboardButton(text="🏦 My Bank Cards", callback_data="menu:banks"),
@@ -73,6 +75,19 @@ def main_menu() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton(text="🌐 Language / Bhasha", callback_data="menu:lang")],
     ])
+
+
+def support_row_kb(handles: list[str]) -> InlineKeyboardMarkup | None:
+    """Support contacts as tap-to-chat buttons laid out horizontally (up to 3
+    per row) — a clean, straight row of contacts."""
+    btns = [
+        InlineKeyboardButton(text=f"💬 {h}", url=f"https://t.me/{h.lstrip('@')}")
+        for h in handles if h.lstrip("@")
+    ]
+    if not btns:
+        return None
+    rows = [btns[i:i + 3] for i in range(0, len(btns), 3)]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def language_kb() -> InlineKeyboardMarkup:
