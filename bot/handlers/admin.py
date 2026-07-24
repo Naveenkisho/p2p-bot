@@ -8,7 +8,15 @@ from sqlalchemy import select
 from .. import texts
 from ..actions import complete_order, confirm_deposit, refund_order
 from ..config import SERVICES, settings
-from ..db import Session, get_deposit_address, get_rates, get_setting, get_support, set_setting
+from ..db import (
+    Session,
+    desk_state,
+    get_deposit_address,
+    get_rates,
+    get_setting,
+    get_support,
+    set_setting,
+)
 from ..helpers import (
     IsAdmin,
     age_str,
@@ -30,6 +38,7 @@ router.callback_query.filter(IsAdmin())
 async def admin_help(message: Message) -> None:
     await message.answer(
         "<b>Admin commands</b>\n"
+        "/open · /close — take the desk open / closed for new orders\n"
         "/setrate CDM 91 — set a service's ₹/$ rate live (0 hides the service)\n"
         "/rates — show all live rates\n"
         "/setaddress T… — set the TRC20 deposit address\n"
@@ -101,6 +110,26 @@ async def cmd_setaddress(message: Message, command: CommandObject) -> None:
     await message.answer(f"✅ Deposit address set:\n<code>{esc(address)}</code>\n\n"
                          "Only deposits from now on will be auto-detected on this "
                          "address (its past history is ignored).")
+
+
+@router.message(Command("open"))
+async def cmd_open(message: Message) -> None:
+    async with Session() as session:
+        await set_setting(session, "desk_open", "1")
+        ok, reason = await desk_state(session)
+    if ok:
+        await message.answer("✅ Desk is now <b>OPEN</b> for new sell orders.")
+    else:
+        await message.answer(f"Switch is on, but the desk still can't take orders: "
+                             f"<b>{reason}</b>. Set it, then it's live.")
+
+
+@router.message(Command("close"))
+async def cmd_close(message: Message) -> None:
+    async with Session() as session:
+        await set_setting(session, "desk_open", "0")
+    await message.answer("🔒 Desk is now <b>CLOSED</b> — no new sell orders. "
+                         "Existing orders keep running. Use /open to reopen.")
 
 
 @router.message(Command("setsupport"))

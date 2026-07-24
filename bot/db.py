@@ -87,6 +87,22 @@ async def get_deposit_address(session: AsyncSession) -> str | None:
     return await get_setting(session, "addr_trc20")
 
 
+async def get_desk_open(session: AsyncSession) -> bool:
+    """Master on/off switch for taking new sell orders (default open)."""
+    return (await get_setting(session, "desk_open")) != "0"
+
+
+async def desk_state(session: AsyncSession) -> tuple[bool, str]:
+    """(open?, reason). Open needs the switch on + an address + at least one rate."""
+    if not await get_desk_open(session):
+        return False, "manually closed"
+    if not await get_deposit_address(session):
+        return False, "no deposit address set"
+    if not await get_rates(session):
+        return False, "no service rate set"
+    return True, "open"
+
+
 async def get_support(session: AsyncSession) -> str:
     """Support contact(s) — chat-managed via /setsupport, env fallback."""
     return (await get_setting(session, "support")) or settings.support_handle

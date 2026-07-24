@@ -26,6 +26,7 @@ from .actions import complete_order, confirm_deposit, refund_order
 from .config import SERVICES, settings
 from .db import (
     Session,
+    desk_state,
     get_deposit_address,
     get_setting,
     get_support,
@@ -190,9 +191,18 @@ async def dashboard(request: web.Request):
         tab = "active"
     label, statuses = TABS[tab]
     async with Session() as s:
+        is_open, reason = await desk_state(s)
         q = select(Order).where(Order.status.in_(statuses))
         q = q.order_by(Order.id.desc()).limit(30) if tab == "done" else q.order_by(Order.id)
         orders = (await s.scalars(q)).all()
+    if is_open:
+        desk_banner = ("<div class=card style='border-color:#238636'>"
+                       "🟢 <b>Desk is OPEN</b> — taking new sell orders."
+                       " <a href='/settings'>Manage</a></div>")
+    else:
+        desk_banner = ("<div class=card style='border-color:#da3633'>"
+                       f"🔴 <b>Desk is CLOSED</b> — {_esc(reason)}."
+                       " <a href='/settings'>Open it in Settings</a></div>")
     tabs_html = "<div class=tabs>" + "".join(
         f"<a class='{'on' if k == tab else ''}' href='/?tab={k}'>{lbl}</a>"
         for k, (lbl, _) in TABS.items()) + "</div>"
@@ -205,7 +215,7 @@ async def dashboard(request: web.Request):
             f"{o.usd_amount:g}$ · {_esc(SERVICES.get(o.service, o.service))} → "
             f"₹{o.inr_amount:,.2f}<br>"
             f"<a href='/order/{o.id}'>Open →</a></div>")
-    body = (_nav("orders") + f"<h1>Orders — {label} ({len(orders)})</h1>"
+    body = (_nav("orders") + desk_banner + f"<h1>Orders — {label} ({len(orders)})</h1>"
             + tabs_html + ("".join(rows) or "<p class=muted>Nothing here.</p>"))
     return _page("Orders", body)
 
@@ -284,6 +294,8 @@ def _order_action(fn, needs_txid=False):
 @_authed
 async def settings_get(request: web.Request):
     async with Session() as s:
+        is_open, reason = await desk_state(s)
+        desk_switch = (await get_setting(s, "desk_open")) != "0"
         rates = {k: (await get_setting(s, f"rate_{k}") or "") for k in SERVICES}
         addr = await get_deposit_address(s) or ""
         support = await get_setting(s, "support") or ""
@@ -296,9 +308,18 @@ async def settings_get(request: web.Request):
     rate_fields = "".join(
         f"<label>{_esc(SERVICES[k])} rate (₹/$, blank hides it)</label>"
         f"<input name='rate_{k}' value='{_esc(rates[k])}'>" for k in SERVICES)
+    status_line = ("🟢 Desk is OPEN" if is_open
+                   else f"🔴 Desk is CLOSED — {_esc(reason)}")
+    checked = "checked" if desk_switch else ""
     body = (_nav("settings") + "<h1>Settings</h1>"
             "<form method=post action=/settings>"
             f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<div class=card>{status_line}<br>"
+            f"<label style='display:flex;gap:8px;align-items:center;margin-top:8px'>"
+            f"<input type=checkbox name=desk_open value='1' {checked} style='width:auto'> "
+            f"Desk open for new orders</label>"
+            "<span class=muted>Uncheck to pause new sell orders instantly. "
+            "The desk also needs a deposit address and at least one rate below.</span></div>"
             "<h2>Rates</h2>" + rate_fields
             + "<h2>Deposit & payout</h2>"
             "<label>TRC20 deposit address</label>"
@@ -336,6 +357,8 @@ async def settings_post(request: web.Request):
     errors: list[str] = []
     restart = False
     async with Session() as s:
+        # checkbox: present when ticked, absent when unticked
+        await set_setting(s, "desk_open", "1" if data.get("desk_open") else "0")
         for k in SERVICES:
             raw = str(data.get(f"rate_{k}", "")).strip()
             if raw == "":

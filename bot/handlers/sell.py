@@ -7,7 +7,15 @@ from sqlalchemy import func, select
 
 from .. import texts
 from ..config import SERVICES, settings
-from ..db import Session, get_deposit_address, get_lang, get_or_create_user, get_rates, get_support
+from ..db import (
+    Session,
+    get_deposit_address,
+    get_desk_open,
+    get_lang,
+    get_or_create_user,
+    get_rates,
+    get_support,
+)
 from ..flow import notify_deposit_received
 from ..helpers import (
     TRC20_RE,
@@ -53,12 +61,13 @@ async def sell_menu(callback: CallbackQuery, state: FSMContext) -> None:
                                         callback.from_user.username, callback.from_user.first_name)
         rates = await get_rates(session)
         address = await get_deposit_address(session)
+        desk_open = await get_desk_open(session)
         lang, footer = await _ctx(session, callback.from_user)
     if user.banned:
         await callback.answer(texts.BANNED, show_alert=True)
         return
-    if not rates or not address:
-        if not address:
+    if not desk_open or not rates or not address:
+        if not address and desk_open:
             await _warn_no_address_once(callback.bot)
         await callback.answer(texts.DESK_CLOSED, show_alert=True)
         return
@@ -103,6 +112,9 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
                                         message.from_user.username, message.from_user.first_name)
         if user.banned:
             await message.answer(texts.BANNED)
+            return
+        if not await get_desk_open(session):
+            await message.answer(texts.DESK_CLOSED)
             return
         if not address:
             await message.answer(texts.DESK_CLOSED)
