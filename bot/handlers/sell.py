@@ -1,10 +1,9 @@
 import re
-from datetime import timedelta
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 
 from .. import texts
 from ..config import SERVICES, settings
@@ -43,7 +42,7 @@ from ..keyboards import (
     services_kb,
     start_fresh_kb,
 )
-from ..models import BankCard, Order, OrderStatus, SeenTx, User, utcnow
+from ..models import BankCard, Order, OrderStatus, SeenTx, User
 from ..states import BankForOrder, RefundFlow, SellFlow
 from .start import bank_details_error, make_bank_label
 
@@ -69,46 +68,27 @@ async def _ctx(session, tg_user) -> tuple[str, str]:
     return lang, texts.trust_footer(tg_user.first_name, tg_user.id, support, lang)
 
 
-async def _reserve_amount(session, requested: float) -> float:
-    """Give EVERY open order a unique, non-round deposit amount so the amount
-    alone identifies it to the scanner (unique cents). Returns the smallest
-    2-decimal value ≥ `requested` that (a) has non-zero cents — so it never looks
-    like a bare round number and never collides with a stray round-number deposit
-    — and (b) no other AWAITING_DEPOSIT order is currently using. A whole-dollar
-    request like $100 becomes 100.01, the next 100.02, and so on; a 0.01 gap sits
-    comfortably outside the scanner's ±0.005 match tolerance, so no two open
-    orders can be confused. Integer cents avoid float-equality pitfalls.
+def _tag_amount(order_id: int, requested: float) -> float:
+    """Give the order a unique, non-round deposit amount derived from its OWN
+    order id (unique cents) — so the amount alone identifies it to the scanner,
+    with no cross-order bookkeeping and no way to conflict with anyone else.
 
-    The user isn't charged the extra cents — they send that exact amount and
-    receive the matching INR (inr = usd × rate), so it's a slightly larger trade,
-    not a fee. Deviation from the requested amount is at most a few cents.
+    A whole-dollar request like $100 becomes 100.01, 100.02, 100.03… as the id
+    advances; consecutive orders always get different cents, so two open orders
+    can never share a tag. Expired orders are simply gone — we never look at them.
 
-    Best-effort on races: two orders committed in the exact same instant could
-    still land on the same amount, but the scanner then simply holds that deposit
-    for manual assignment (2+ candidates) rather than crediting the wrong user."""
+    The user isn't charged the cents — they send that exact amount and receive the
+    matching INR (inr = usd × rate), so it's a fractionally larger trade, not a
+    fee. Deviation from the requested amount is at most a couple of cents."""
     base = round(requested, 2)
     if not settings.unique_cents:
         return base
-    # amounts we must not hand out: every open (awaiting) order, PLUS orders that
-    # expired within the grace window — a late deposit could still arrive for one
-    # of those, and if a new order reused that amount the two would be
-    # indistinguishable on-chain.
-    grace_cutoff = utcnow() - timedelta(
-        minutes=settings.deposit_ttl_min + settings.deposit_grace_min)
-    rows = (await session.scalars(
-        select(Order.usd_amount).where(or_(
-            Order.status == OrderStatus.AWAITING_DEPOSIT.value,
-            and_(Order.status == OrderStatus.EXPIRED.value,
-                 Order.created_at > grace_cutoff))))).all()
-    taken = {round((a or 0) * 100) for a in rows}
-    cents = round(base * 100)
-    if cents % 100 == 0:          # whole dollar → give it a .01–.99 tag
-        cents += 1
-    for _ in range(2000):         # bounded; never loops forever
-        if cents % 100 != 0 and cents not in taken:
-            return round(cents / 100, 2)
-        cents += 1                # skip taken amounts AND any whole-dollar value
-    return round(cents / 100, 2)
+    whole = int(base)
+    cents = (order_id % 99) + 1          # 1..99 — never a round .00
+    amt = round(whole + cents / 100, 2)
+    if amt < base:                       # user typed finer decimals than our tag
+        amt = round(whole + 1 + cents / 100, 2)
+    return amt
 
 
 @router.callback_query(F.data == "menu:sell")
@@ -174,14 +154,13 @@ async def sell_amount(message: Message, state: FSMContext) -> None:
                              reply_markup=hide_kb())
         return
     service_label = SERVICES.get(data.get("service"), data.get("service"))
+    await state.update_data(usd=usd)
     async with Session() as session:
-        usd = await _reserve_amount(session, usd)
         cards = (await session.scalars(
             select(BankCard).where(BankCard.user_id == message.from_user.id)
             .order_by(BankCard.id)
         )).all()
         lang, footer = await _ctx(session, message.from_user)
-    await state.update_data(usd=usd)
     if cards:
         await state.set_state(SellFlow.choose_bank)
         await message.answer(
@@ -247,9 +226,6 @@ async def _create_order(message_target, state: FSMContext, tg_user,
         if rates[service] != rate:
             rate = rates[service]
             rate_note = texts.rate_updated_note(rate, lang)
-        # re-claim a unique amount at the money moment: another order may have
-        # taken the one we quoted while this user was choosing a bank
-        usd = await _reserve_amount(session, usd)
         order = Order(
             user_id=user.id,
             side="sell",
@@ -261,6 +237,9 @@ async def _create_order(message_target, state: FSMContext, tg_user,
             deposit_address=address,
         )
         session.add(order)
+        await session.flush()          # assigns order.id, which seeds the tag
+        order.usd_amount = _tag_amount(order.id, usd)
+        order.inr_amount = order.usd_amount * rate
         await session.commit()
         await message_target.answer(f"🏦 {card.label} ✅", reply_markup=hide_kb())
         await message_target.answer(
