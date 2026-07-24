@@ -163,10 +163,22 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
         await session.commit()
 
     if not candidates:
-        await notify_admins(bot,
-                            f"⚠️ Unmatched deposit: <b>{amount:g} USDT</b> "
-                            f"(tx <code>{txid}</code>) — no awaiting order for this "
-                            f"amount. Assign with /received &lt;id&gt; {txid}")
+        # show the open orders so the admin has context (typo? overpay? no order?)
+        async with Session() as session:
+            opens = (await session.scalars(
+                select(Order).where(
+                    Order.status == OrderStatus.AWAITING_DEPOSIT.value)
+                .order_by(Order.id))).all()
+        ctx = "\n".join(f"• {texts.tag(o.id)} expects <b>{o.usd_amount:g}$</b>"
+                        for o in opens[:8]) or "• (no orders waiting)"
+        await notify_admins(
+            bot,
+            f"⚠️ <b>Unmatched deposit: {amount:g} USDT</b> (tx <code>{txid}</code>)\n"
+            f"No open order expects exactly {amount:g}$.\n\n"
+            f"<b>Open orders:</b>\n{ctx}\n\n"
+            f"If it's for one of them, assign it:\n"
+            f"<code>/received &lt;id&gt; {txid}</code>\n"
+            f"Otherwise refund the sender.")
     else:
         ids = ", ".join(texts.tag(o.id) for o in candidates)
         await notify_admins(bot,
