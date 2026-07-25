@@ -84,7 +84,7 @@ def start_fresh_kb() -> InlineKeyboardMarkup:
 
 def _claim_btn(order_id: int) -> InlineKeyboardButton:
     return InlineKeyboardButton(
-        text="🧾 I've sent it — submit TXID",
+        text="🧾 Yes, I've paid — submit TXID",
         callback_data=ClaimReqCb(order_id=order_id).pack())
 
 
@@ -106,12 +106,14 @@ def cancelled_kb(order_id: int) -> InlineKeyboardMarkup:
 
 
 def not_detected_kb(order_id: int) -> InlineKeyboardMarkup:
-    """After a check finds nothing: re-check, claim with a TXID, or cancel."""
+    """After a check finds nothing, a clear paid / not-paid fork: re-check, submit
+    a TXID if you DID pay (verified on-chain), or — if you haven't paid — cancel
+    outright (no TXID needed; the order is just dropped)."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Check again",
                               callback_data=OrderCb(action="check", order_id=order_id).pack())],
         [_claim_btn(order_id)],
-        [InlineKeyboardButton(text="❌ Cancel order",
+        [InlineKeyboardButton(text="🚫 No, I haven't paid — cancel",
                               callback_data=OrderCb(action="cancel", order_id=order_id).pack())],
     ])
 
