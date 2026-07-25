@@ -135,6 +135,7 @@ async def sell_menu(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer(texts.ask_network(lang) + footer,
                                       reply_markup=network_kb())
     else:
+        await state.set_state(SellFlow.service)
         await callback.message.answer(texts.services_header(rates, lang) + footer,
                                       reply_markup=services_kb(rates))
     await callback.answer()
@@ -155,7 +156,7 @@ async def sell_network(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer(texts.DESK_CLOSED, show_alert=True)
         return
     await state.update_data(network=net)
-    await state.set_state(None)              # keep data; the svc:* pick isn't state-gated
+    await state.set_state(SellFlow.service)  # gate the service pick to this step
     await strip_kb(callback.message)
     await callback.message.answer(texts.services_header(rates, lang) + footer,
                                   reply_markup=services_kb(rates))
@@ -167,7 +168,7 @@ async def sell_network_not_tap(message: Message) -> None:
     await message.answer("Tap 🔷 <b>TRC20</b> or 🟡 <b>BEP20</b> above to pick your network.")
 
 
-@router.callback_query(F.data.startswith("svc:"))
+@router.callback_query(SellFlow.service, F.data.startswith("svc:"))
 async def sell_service(callback: CallbackQuery, state: FSMContext) -> None:
     key = callback.data.split(":", 1)[1]
     async with Session() as session:

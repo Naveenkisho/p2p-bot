@@ -3,6 +3,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 class SellFlow(StatesGroup):
     network = State()        # picking TRC20 / BEP20 (only when BEP20 is enabled)
+    service = State()        # picking the payout method (UPI/IMPS/…) — state-gated so
+                             # a stale service button from before /start stops working
     amount = State()
     choose_bank = State()    # picking a saved bank right after the amount
     bank_details = State()   # typing a new bank to continue the order
