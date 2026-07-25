@@ -512,6 +512,56 @@ def claim_submitted(order_id: int, lang: str = "en") -> str:
     )
 
 
+def _short_addr(addr: str) -> str:
+    a = addr or ""
+    return f"{a[:10]}…{a[-6:]}" if len(a) > 20 else a
+
+
+def tx_wrong_address(to: str, our: str, lang: str = "en") -> str:
+    """Declined on the spot: the submitted tx did NOT pay our deposit address."""
+    if lang == "hi":
+        return (
+            "🚫 <b>Ye transaction hamare deposit address par nahi bheja gaya.</b>\n\n"
+            f"➡️ Bheja gaya: <code>{html.escape(_short_addr(to))}</code>\n"
+            f"✅ Hamara address: <code>{html.escape(_short_addr(our))}</code>\n\n"
+            "Hum sirf usi USDT transfer ko verify/refund kar sakte hain jo aapke order "
+            "ke deposit address par aaya ho. Sahi TXID check karke dobara bhejein."
+        )
+    return (
+        "🚫 <b>This transaction was NOT sent to our deposit address.</b>\n\n"
+        f"➡️ It was sent to: <code>{html.escape(_short_addr(to))}</code>\n"
+        f"✅ Our address is: <code>{html.escape(_short_addr(our))}</code>\n\n"
+        "We can only verify or refund a USDT transfer made to your order's deposit "
+        "address. Double-check the TXID and try again."
+    )
+
+
+def tx_not_found(lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            "🚫 <b>Ye transaction on-chain nahi mila.</b>\n\n"
+            "Abhi bheja hai? ~1 min ruk kar dobara try karein. Warna TXID check karein — "
+            "wo hamare address par ek confirmed USDT transfer hona chahiye."
+        )
+    return (
+        "🚫 <b>We couldn't find that transaction on-chain.</b>\n\n"
+        "Just sent it? Wait ~1 min and try again. Otherwise check the TXID — it must be "
+        "a confirmed USDT transfer to your order's deposit address."
+    )
+
+
+def tx_too_old(days: int, lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"🚫 <b>Ye transaction {days} din purana hai</b> — ye is order ka payment "
+            "nahi ho sakta. Is order ke liye jo transfer kiya hai uska TXID bhejein."
+        )
+    return (
+        f"🚫 <b>That transaction is {days} days old</b> — it can't be the payment for "
+        "this order. Please submit the TXID of the transfer you made for THIS order."
+    )
+
+
 def claim_rejected(order_id: int, support: str, lang: str = "en") -> str:
     if lang == "hi":
         return (

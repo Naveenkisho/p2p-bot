@@ -488,6 +488,52 @@ async def lookup_claim_tx(txid: str, address: str, since_ms: int) -> dict:
     return {"found": False, "error": False}
 
 
+async def lookup_tx_global(txid: str, our_address: str) -> dict:
+    """Global per-tx lookup BY HASH (any destination), so a claim/refund can be
+    declined on the user's face when the tx wasn't actually sent to us. Unlike
+    lookup_claim_tx (which only searches OUR address's transfers), this reports
+    the tx's REAL destination. Returns {found, error, to, to_ok, amount, timestamp(ms)}."""
+    from .helpers import is_bsc_txid
+    blank = {"found": False, "error": False, "to": "", "to_ok": False,
+             "amount": 0.0, "timestamp": 0}
+    if is_bsc_txid(txid):
+        # BEP20: address-scoped lookup (a BscScan global receipt parse is heavier);
+        # a BEP20 hash sent elsewhere simply reads as not-found here.
+        r = await lookup_bsc_tx(txid, 0)
+        return {**blank, **(r or {})}
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
+            async with http.get(f"{settings.tronscan_api}/transaction-info",
+                                params={"hash": txid}) as resp:
+                if resp.status != 200:
+                    return {**blank, "error": True}
+                data = await resp.json()
+    except Exception as e:
+        log.warning("tron global lookup failed: %s", type(e).__name__)
+        return {**blank, "error": True}
+    if not data or not data.get("hash"):
+        return blank                       # genuinely not on-chain
+    ts = int(data.get("timestamp", 0) or 0)     # ms
+    best = None
+    for tr in (data.get("trc20TransferInfo") or []):
+        if (tr.get("contract_address") or "") != settings.usdt_contract:
+            continue
+        to = tr.get("to_address") or ""
+        try:
+            amt = int(tr.get("amount_str", "0") or 0) / (10 ** int(tr.get("decimals", 6) or 6))
+        except (TypeError, ValueError):
+            amt = 0.0
+        if to == our_address:
+            best = {"to": to, "amount": amt}
+            break
+        best = best or {"to": to, "amount": amt}
+    if best is None:                       # tx exists but no USDT transfer in it
+        return {**blank, "found": True, "timestamp": ts}
+    return {"found": True, "error": False, "to": best["to"],
+            "to_ok": best["to"] == our_address, "amount": best["amount"], "timestamp": ts}
+
+
 CHECK_ROUNDS = 5        # scans spread across the wait window
 CHECK_INTERVAL = 15     # seconds between scans (≈60s total)
 

@@ -21,7 +21,7 @@ from ..db import (
     get_support,
 )
 from ..flow import notify_deposit_received
-from ..scanner import _ms, launch_order_check, lookup_claim_tx
+from ..scanner import _ms, launch_order_check
 from ..helpers import (
     TXID_RE,
     _txid_variants,
@@ -54,7 +54,7 @@ from ..keyboards import (
     services_kb,
     start_fresh_kb,
 )
-from ..models import BankCard, Order, OrderMsg, OrderStatus, SeenTx, User
+from ..models import BankCard, Order, OrderMsg, OrderStatus, SeenTx, User, utcnow
 from ..states import BankForOrder, ClaimFlow, RefundFlow, SellFlow
 from .start import bank_details_error, make_bank_label
 
@@ -527,6 +527,8 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
         if order is None or order.user_id != message.from_user.id:
             await message.answer("Order not found — contact support.", reply_markup=hide_kb())
             return
+        lang, footer = await _ctx(session, message.from_user)
+        address = order.deposit_address
         # a TXID can only ever back ONE refund
         dup = await session.scalar(
             select(Order).where(Order.refund_txid.in_(_txid_variants(txid)),
@@ -538,22 +540,31 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
                                  "Contact support if this is a mistake.",
                                  reply_markup=hide_kb())
             return
-        updated = await try_transition(session, order.id, (OrderStatus.CANCELLED,),
+
+    # verify on-chain BEFORE accepting — a refund TXID that never reached our address
+    # (or is far too old) is declined on the user's face, with proof
+    ok, reject, _info = await _verify_deposit_tx(txid, address, order, lang)
+    if not ok:
+        await message.answer(reject + footer, reply_markup=hide_kb(),
+                             disable_web_page_preview=True)
+        return
+
+    async with Session() as session:
+        updated = await try_transition(session, order_id, (OrderStatus.CANCELLED,),
                                        OrderStatus.REFUND_REQUESTED, refund_txid=txid)
         if updated is None:
             await message.answer("This order's refund is already being processed.",
                                  reply_markup=hide_kb())
             return
-        user = await session.get(User, order.user_id)
-        card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
-        lang, footer = await _ctx(session, message.from_user)
+        user = await session.get(User, updated.user_id)
+        card = await session.get(BankCard, updated.bank_card_id) if updated.bank_card_id else None
         seen = await session.get(SeenTx, txid)
-        await message.answer(texts.refund_submitted(order.id, lang) + footer,
+        await message.answer(texts.refund_submitted(order_id, lang) + footer,
                              reply_markup=hide_kb())
         await post_order_card(message.bot, session, updated, user, card,
-                              admin_order_kb(order.id, "refund_requested"))
+                              admin_order_kb(order_id, "refund_requested"))
         await update_order_cards(message.bot, session, updated, user, card,
-                                 admin_order_kb(order.id, "refund_requested"))
+                                 admin_order_kb(order_id, "refund_requested"))
     if seen is not None:
         await notify_admins(message.bot,
                             f"↩️ Refund {texts.tag(order_id)}: ✅ TXID matches a deposit "
@@ -598,6 +609,28 @@ async def request_claim(callback: CallbackQuery, callback_data: ClaimReqCb,
     await callback.message.answer(texts.ask_claim_txid(order.id, lang),
                                   reply_markup=cancel_kb())
     await callback.answer()
+
+
+async def _verify_deposit_tx(txid: str, address: str, order: Order,
+                             lang: str = "en") -> tuple[bool, str, dict]:
+    """On-chain gate for a user-submitted claim/refund TXID. Looks the tx up BY HASH
+    (any destination) and, if it clearly wasn't a USDT transfer to our address (or is
+    far too old), returns (False, reject_message, info) so we decline on the user's face
+    and never bother the admin. A transient API error passes through (ok=True) for the
+    admin to verify manually. `info` is the on-chain result for the admin card."""
+    from ..scanner import lookup_tx_global
+    info = await lookup_tx_global(txid, address)
+    if info.get("error"):
+        return True, "", info
+    if not info.get("found"):
+        return False, texts.tx_not_found(lang), info
+    if not info.get("to_ok"):
+        return False, texts.tx_wrong_address(info.get("to", ""), address, lang), info
+    ts = info.get("timestamp") or 0
+    if ts and ts < _ms(order.created_at) - 6 * 3600 * 1000:   # >6h before the order
+        age_days = max(1, int((_ms(utcnow()) - ts) / 86_400_000))
+        return False, texts.tx_too_old(age_days, lang), info
+    return True, "", info
 
 
 async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
@@ -681,12 +714,26 @@ async def claim_txid(message: Message, state: FSMContext) -> None:
                 "an on-chain transfer can only be cashed out once. If you think "
                 "this is a mistake, contact support.", reply_markup=hide_kb())
             return
-        order.claim_txid = txid
-        await session.commit()
         lang, footer = await _ctx(session, message.from_user)
         address = order.deposit_address
-        since_ms = _ms(order.created_at)
-    verify = await lookup_claim_tx(txid, address, since_ms)
+
+    # verify on-chain BEFORE accepting — decline a tx that didn't reach us (wrong
+    # address / not found / far too old) on the user's face, with proof, and never
+    # create an admin claim card for it
+    ok, reject, verify = await _verify_deposit_tx(txid, address, order, lang)
+    if not ok:
+        await message.answer(reject + footer, reply_markup=hide_kb(),
+                             disable_web_page_preview=True)
+        return
+
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None or order.status not in _CLAIMABLE:
+            await message.answer("This order can't be confirmed by TXID anymore — "
+                                 "contact support.", reply_markup=hide_kb())
+            return
+        order.claim_txid = txid
+        await session.commit()
     await message.answer(texts.claim_submitted(order_id, lang) + footer,
                          reply_markup=hide_kb())
     await _post_claim_card(message.bot, order_id, txid, verify)

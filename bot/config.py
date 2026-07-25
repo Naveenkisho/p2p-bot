@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     scan_max_pages: int = 10           # page cap per address per tick
     trongrid_url: str = "https://api.trongrid.io"
     trongrid_key: str = ""             # optional TronGrid API key for higher limits
+    tronscan_api: str = "https://apilist.tronscanapi.com/api"  # per-tx global lookup (claims)
     usdt_contract: str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # mainnet USDT (TRC20)
 
     # BEP20 / BSC second chain (active once the BEP20 address + BscScan key are set)
