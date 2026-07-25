@@ -3,3 +3,4 @@ aiohttp>=3.9
 SQLAlchemy[asyncio]>=2.0,<3
 aiosqlite>=0.20
 pydantic-settings>=2.4
+qrcode[pil]>=7.4        # deposit-address QR (optional; the bot runs fine without it)

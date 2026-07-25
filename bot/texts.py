@@ -5,6 +5,7 @@ HERE, so callers pass them raw. Admin-side texts stay English by design.
 """
 
 import html
+from datetime import timedelta
 
 from .config import SERVICES, settings
 
@@ -135,6 +136,16 @@ def services_header(rates: dict[str, float], lang: str = "en") -> str:
     return "\n".join(lines)
 
 
+def ask_network(lang: str = "en") -> str:
+    if lang == "hi":
+        return ("🌐 <b>Kaunse network par USDT bhejenge?</b>\n\n"
+                "🔷 <b>TRC20</b> (TRON) · 🟡 <b>BEP20</b> (BSC)\n"
+                "Chun lein — hum usi ka address denge 👇")
+    return ("🌐 <b>Which network will you send USDT on?</b>\n\n"
+            "🔷 <b>TRC20</b> (TRON) · 🟡 <b>BEP20</b> (BSC)\n"
+            "Pick one — we'll show that network's address 👇")
+
+
 def ask_amount(service_label: str, rate: float, lo: float, hi: float,
                lang: str = "en") -> str:
     if lang == "hi":
@@ -191,48 +202,51 @@ def support_footer(support: str, lang: str = "en") -> str:
             f"🆘 <b>Need help?</b> Message {s} — we usually reply within minutes.")
 
 
-def _addr_block(address: str, bep20: str, lang: str) -> str:
-    """The address step. Inline <code> (not <pre>) so a long address wraps and
-    stays fully visible instead of scrolling off — still tap-to-copy."""
-    head = ("<b>①  Send to</b>  👇 <i>tap to copy</i>" if lang == "en"
-            else "<b>①  Yahan bhejein</b>  👇 <i>tap to copy</i>")
-    if bep20:
-        return (f"{head}\n"
-                f"🔷 <b>TRC20</b>\n<code>{html.escape(address)}</code>\n"
-                f"🟡 <b>BEP20</b>\n<code>{html.escape(bep20)}</code>\n")
-    return f"{head}\n<code>{html.escape(address)}</code>\n"
+def _ist_hm(dt) -> str:
+    """A naive-UTC datetime as IST HH:MM."""
+    return (dt + timedelta(hours=5, minutes=30)).strftime("%H:%M") if dt else ""
 
 
 def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
-                    address: str, rate: float, rate_note: str = "",
-                    bank_label: str = "", lang: str = "en", bep20: str = "") -> str:
+                    address: str, net_label: str, rate: float, created_at=None,
+                    rate_note: str = "", bank_label: str = "", lang: str = "en") -> str:
+    """Deposit screen for ONE chosen network — a single address (+ QR sent
+    alongside), the amount in the hero box, a firm 'match the decimals' warning,
+    and the created/expiry window."""
     bank = html.escape(bank_label) if bank_label else service_label
     amt = usd_str(usd)
     dec = f".{amt.split('.')[1]}" if "." in amt else ""
-    addr_block = _addr_block(address, bep20, lang)
-    net = "TRC20 or BEP20" if bep20 else "TRC20"
     amt_box = _amount_box(amt)
     ttl = settings.deposit_ttl_min
+    times = ""
+    if created_at is not None:
+        times = f"🕐 {_ist_hm(created_at)} → expires {_ist_hm(created_at + timedelta(minutes=ttl))} IST\n"
     if lang == "hi":
-        note = (f"🎯 <b>{dec} zaroor</b> — yahi decimals aapke order ka tag hain"
-                if dec else "🎯 bilkul exact amount")
+        warn = (f"❗ <b>{dec} ke saath bhejein</b> — bilkul exact amount, decimals samet. "
+                "Galat amount auto-detect nahi ho sakta." if dec else
+                "❗ <b>Bilkul exact amount</b> bhejein.")
         return (
             f"📥 <b>USDT Deposit</b> · <code>{tag(order_id)}</code>\n\n"
-            f"{addr_block}\n"
-            f"<b>②  Bhejein exactly</b>  {note}\n"
-            f"{amt_box}\n"
-            f"⏱ Seconds me auto-verify · {net} only · {ttl} min me expire\n"
+            f"<b>①  {html.escape(net_label)} par bhejein</b>  👇 <i>tap to copy</i>\n"
+            f"<code>{html.escape(address)}</code>\n\n"
+            f"<b>②  Exactly itna bhejein</b>\n{amt_box}\n"
+            f"{warn}\n\n"
+            f"{times}"
+            f"⏱ Confirm hote hi seconds me auto-verify\n"
             f"{rate_note}"
             f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}"
         )
-    note = (f"🎯 <b>with the {dec}</b> — those decimals are your order's tag"
-            if dec else "🎯 the exact amount")
+    warn = (f"❗ <b>Include the {dec}</b> — send the EXACT amount, decimals and all. "
+            "A wrong amount may not auto-detect." if dec else
+            "❗ <b>Send the exact amount.</b>")
     return (
         f"📥 <b>USDT Deposit</b> · <code>{tag(order_id)}</code>\n\n"
-        f"{addr_block}\n"
-        f"<b>②  Send exactly</b>  {note}\n"
-        f"{amt_box}\n"
-        f"⏱ Auto-verified in seconds · {net} only · expires in {ttl} min\n"
+        f"<b>①  Send on {html.escape(net_label)}</b>  👇 <i>tap to copy</i>\n"
+        f"<code>{html.escape(address)}</code>\n\n"
+        f"<b>②  Send exactly</b>\n{amt_box}\n"
+        f"{warn}\n\n"
+        f"{times}"
+        f"⏱ Auto-verified in seconds after it confirms\n"
         f"{rate_note}"
         f"💵 You'll receive <b>₹{inr:,.2f}</b> → {bank}"
     )

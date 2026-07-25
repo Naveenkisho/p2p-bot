@@ -247,12 +247,21 @@ def banks_menu_kb(cards: list[BankCard]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def network_kb() -> InlineKeyboardMarkup:
+    """Pick the deposit network (only shown when BEP20 is enabled)."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔷 TRC20 (TRON)", callback_data="net:TRC20"),
+        InlineKeyboardButton(text="🟡 BEP20 (BSC)", callback_data="net:BEP20"),
+    ]])
+
+
 def deposit_kb(order_id: int) -> InlineKeyboardMarkup:
+    # No Cancel here on purpose: while the customer is paying, the only action is
+    # "I've sent it". Cancel appears afterwards (on the not-detected screen), so a
+    # stray tap can't cancel a payment that's on its way.
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ I've sent it — check it",
                               callback_data=OrderCb(action="check", order_id=order_id).pack())],
-        [InlineKeyboardButton(text="❌ Cancel order",
-                              callback_data=OrderCb(action="cancel", order_id=order_id).pack())],
     ])
 
 
