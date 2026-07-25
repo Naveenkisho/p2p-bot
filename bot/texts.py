@@ -417,18 +417,21 @@ def refund_submitted(order_id: int, lang: str = "en") -> str:
 def payment_not_detected(order_id: int, support: str, lang: str = "en") -> str:
     if lang == "hi":
         return (
-            f"❌ <b>Order {tag(order_id)} — abhi tak payment nahi mila.</b>\n\n"
-            "Abhi tak nahi bheja? Upar diye address par <b>exact amount</b> bhejein.\n\n"
-            f"Bhej diya hai aur lagta hai ye hamari galti hai? Apna <b>payment "
-            f"screenshot + TXID</b> {html.escape(support)} ko bhejein — hum usually "
-            "<b>5 min</b> me reply karte hain."
+            f"❌ <b>Order {tag(order_id)} ka exact amount abhi tak nahi mila.</b>\n\n"
+            "🎯 Galti se <b>alag amount</b> bhej diya? (platform fee kat gayi ho sakti hai)\n"
+            "👉 Niche <b>“🧾 Bhej diya — TXID submit karein”</b> dabayein aur apna "
+            "transaction hash paste karein. Hum <b>manually verify</b> karke "
+            "<b>~10 min</b> me payout kar denge.\n\n"
+            "Abhi tak bheja hi nahi? Upar diye address par <b>exact amount</b> bhejein, "
+            "ya <b>❌ Cancel order</b> dabayein." + support_footer(support, lang)
         )
     return (
-        f"❌ <b>Order {tag(order_id)} — payment not received yet.</b>\n\n"
-        "Haven't sent it yet? Send the <b>exact amount</b> to the address above.\n\n"
-        f"Already sent and think it's an error on our side? Send your <b>payment "
-        f"screenshot + TXID</b> to {html.escape(support)} — we usually reply within "
-        "<b>5 minutes</b>."
+        f"❌ <b>We haven't received the exact amount for Order {tag(order_id)} yet.</b>\n\n"
+        "🎯 Sent a <b>different amount</b> by mistake? (a platform fee may have been deducted)\n"
+        "👉 Tap <b>“🧾 I've sent it — submit TXID”</b> below and paste your transaction "
+        "hash. We'll <b>verify it manually</b> and pay out within <b>~10 min</b>.\n\n"
+        "Haven't sent it yet? Send the <b>exact amount</b> to the address above, or tap "
+        "<b>❌ Cancel order</b>." + support_footer(support, lang)
     )
 
 

@@ -84,7 +84,7 @@ def start_fresh_kb() -> InlineKeyboardMarkup:
 
 def _claim_btn(order_id: int) -> InlineKeyboardButton:
     return InlineKeyboardButton(
-        text="✅ I already sent USDT — confirm it",
+        text="🧾 I've sent it — submit TXID",
         callback_data=ClaimReqCb(order_id=order_id).pack())
 
 
