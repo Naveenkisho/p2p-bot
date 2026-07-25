@@ -1,3 +1,5 @@
+import base64
+
 from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -106,6 +108,52 @@ async def get_bscscan_key(session: AsyncSession) -> str:
 async def bep20_active(session: AsyncSession) -> bool:
     """BEP20 is live only when both the deposit address and an API key are set."""
     return bool(await get_bep20_address(session)) and bool(await get_bscscan_key(session))
+
+
+# ── Per-network deposit QR (admin can upload a custom QR image per chain) ───────
+# Stored base64 in the Setting table alongside the exact address it encodes, so a
+# QR is only ever shown to a customer when it still matches the live address for
+# that network (an address change silently invalidates a stale QR).
+
+MAX_QR_BYTES = 400_000        # cap the stored image so the DB stays small
+
+
+async def set_network_qr(session: AsyncSession, network: str,
+                         png_bytes: bytes, address: str) -> None:
+    net = network.upper()
+    await set_setting(session, f"qr_png_b64:{net}", base64.b64encode(png_bytes).decode())
+    await set_setting(session, f"qr_png_addr:{net}", address or "")
+
+
+async def clear_network_qr(session: AsyncSession, network: str) -> None:
+    net = network.upper()
+    await set_setting(session, f"qr_png_b64:{net}", "")
+    await set_setting(session, f"qr_png_addr:{net}", "")
+
+
+async def get_network_qr_raw(session: AsyncSession,
+                             network: str) -> tuple[bytes | None, str]:
+    """(png_bytes, address_it_encodes) for an uploaded QR, or (None, "")."""
+    net = network.upper()
+    b64 = await get_setting(session, f"qr_png_b64:{net}")
+    if not b64:
+        return None, ""
+    addr = await get_setting(session, f"qr_png_addr:{net}") or ""
+    try:
+        return base64.b64decode(b64), addr
+    except Exception:
+        return None, ""
+
+
+async def get_network_qr(session: AsyncSession, network: str,
+                         current_address: str | None) -> bytes | None:
+    """The uploaded QR bytes ONLY when it still encodes the live address for the
+    network — otherwise None, so the caller falls back to an auto-generated QR
+    that is guaranteed to match the address the customer is told to pay."""
+    png, addr = await get_network_qr_raw(session, network)
+    if png and current_address and addr == current_address:
+        return png
+    return None
 
 
 async def get_service_limits(session: AsyncSession, service: str) -> tuple[float, float]:

@@ -36,19 +36,25 @@ from .actions import (
 )
 from .config import SERVICES, settings
 from .db import (
+    MAX_QR_BYTES,
     Session,
+    bep20_active,
+    clear_network_qr,
     desk_state,
     get_bep20_address,
     get_bscscan_key,
     get_deposit_address,
     get_desk_open,
+    get_network_qr_raw,
     get_rates,
     get_setting,
     get_support,
+    set_network_qr,
     set_setting,
 )
 from .helpers import is_bep20, is_trc20
 from .models import Order, OrderStatus, User
+from .qr import qr_png
 from sqlalchemy import func, select
 
 log = logging.getLogger(__name__)
@@ -127,32 +133,117 @@ def _esc(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
+_STYLE = """
+*{box-sizing:border-box}
+:root{
+ --bg:#eef1f5;--surface:#ffffff;--surface-2:#f7f9fc;--border:#e3e7ee;
+ --text:#131722;--muted:#5b6577;--faint:#8b95a6;
+ --accent:#4f46e5;--accent-ink:#ffffff;--accent-soft:#eceafe;
+ --ok:#15803d;--ok-soft:#e6f5ec;--warn:#b45309;--warn-soft:#fbefdd;
+ --danger:#b42318;--danger-soft:#fce9e6;--info:#1d4ed8;--info-soft:#e7eefe;
+ --shadow:0 1px 2px rgba(16,24,40,.05),0 4px 14px rgba(16,24,40,.06);
+ --radius:14px;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{
+ --bg:#0c0e13;--surface:#161a22;--surface-2:#1c212b;--border:#29303c;
+ --text:#e8ebf2;--muted:#98a1b2;--faint:#697487;
+ --accent:#8b8bff;--accent-ink:#0c0e13;--accent-soft:#20223a;
+ --ok:#57d98a;--ok-soft:#15251b;--warn:#f5b544;--warn-soft:#2a2212;
+ --danger:#f6837a;--danger-soft:#2a1716;--info:#66a6ff;--info-soft:#122036;
+ --shadow:0 1px 2px rgba(0,0,0,.5)}}
+html{-webkit-text-size-adjust:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+ margin:0;background:var(--bg);color:var(--text);line-height:1.5;
+ font-feature-settings:"tnum" 1;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:0 16px 40px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+h1{font-size:1.5rem;font-weight:700;letter-spacing:-.01em;margin:18px 0 6px}
+h2{font-size:1.02rem;font-weight:650;letter-spacing:-.005em;margin:22px 0 8px;color:var(--text)}
+.appbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:6px;
+ flex-wrap:wrap;background:color-mix(in srgb,var(--surface) 90%,transparent);
+ backdrop-filter:saturate(1.4) blur(8px);border-bottom:1px solid var(--border);
+ padding:11px 16px;margin:0 -16px 6px}
+.appbar .brand{font-weight:750;letter-spacing:-.02em;margin-right:8px;display:flex;
+ align-items:center;gap:8px}
+.appbar .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);
+ box-shadow:0 0 0 4px var(--accent-soft)}
+.appbar nav{display:flex;gap:2px;flex-wrap:wrap;align-items:center}
+.appbar nav a{color:var(--muted);padding:7px 11px;border-radius:9px;font-size:.92rem;
+ font-weight:550;transition:background .12s,color .12s}
+.appbar nav a:hover{background:var(--surface-2);text-decoration:none;color:var(--text)}
+.appbar nav a.on{background:var(--accent-soft);color:var(--accent)}
+.appbar .sp{flex:1}
+.appbar .out{color:var(--faint);font-size:.9rem}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+ padding:15px 16px;margin:12px 0;overflow-wrap:anywhere;box-shadow:var(--shadow)}
+.card.link{transition:border-color .12s,transform .06s}
+.card.link:hover{border-color:var(--accent)}
+.muted{color:var(--muted);font-size:.9em}
+.faint{color:var(--faint)}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:.72rem;font-weight:650;
+ letter-spacing:.02em;text-transform:uppercase;padding:3px 9px;border-radius:999px;
+ background:var(--surface-2);color:var(--muted);border:1px solid var(--border);white-space:nowrap}
+.badge.ok{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.badge.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.badge.danger{background:var(--danger-soft);color:var(--danger);border-color:transparent}
+.badge.info{background:var(--info-soft);color:var(--info);border-color:transparent}
+.badge.accent{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.amt{font-variant-numeric:tabular-nums;font-weight:700;font-size:1.12rem;letter-spacing:-.01em}
+.arrow{color:var(--faint);margin:0 6px}
+.banner{border:1px solid var(--border);border-left:4px solid var(--muted);
+ background:var(--surface);border-radius:12px;padding:11px 14px;margin:12px 0;box-shadow:var(--shadow)}
+.banner.ok{border-left-color:var(--ok)}
+.banner.warn{border-left-color:var(--warn)}
+.banner.danger{border-left-color:var(--danger)}
+label{display:block;font-size:.86rem;font-weight:550;color:var(--muted);margin:10px 0 4px}
+input,select,textarea{width:100%;padding:10px 12px;margin:0 0 4px;font-size:.98rem;
+ border-radius:10px;border:1px solid var(--border);background:var(--surface-2);
+ color:var(--text);font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
+ box-shadow:0 0 0 3px var(--accent-soft)}
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+ padding:10px 16px;border:0;border-radius:10px;background:var(--accent);color:var(--accent-ink);
+ font-size:.95rem;font-weight:600;cursor:pointer;font-family:inherit;transition:filter .12s}
+button:hover,.btn:hover{filter:brightness(1.06);text-decoration:none}
+button.warn{background:var(--warn)} button.danger{background:var(--danger)}
+button.ghost{background:var(--surface-2);color:var(--text);border:1px solid var(--border)}
+code{background:var(--surface-2);border:1px solid var(--border);padding:2px 6px;border-radius:6px;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em;word-break:break-all;overflow-wrap:anywhere}
+.bankwrap{margin:6px 0}
+.bankblk{background:var(--surface-2);border:1px solid var(--border);border-radius:10px;
+ padding:10px 12px;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+ font-size:.9em;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+.copybtn{margin-top:8px;padding:6px 12px;background:var(--surface-2);color:var(--text);
+ border:1px solid var(--border);font-size:.82em;font-weight:600;border-radius:8px;cursor:pointer}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px}
+.tabs a{padding:8px 14px;border-radius:10px;background:var(--surface);border:1px solid var(--border);
+ color:var(--muted);font-weight:600;font-size:.9rem}
+.tabs a:hover{text-decoration:none;border-color:var(--accent)}
+.tabs a.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.exportbar{font-size:.85rem;color:var(--muted);margin:8px 0}
+.exportbar a{color:var(--muted);font-weight:550}
+.qrbox{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.qrimg{width:132px;height:132px;border-radius:12px;border:1px solid var(--border);
+ background:#fff;padding:6px;object-fit:contain}
+.kbd{font-size:.82rem;color:var(--faint)}
+.authwrap{min-height:78vh;display:flex;align-items:center;justify-content:center}
+.authcard{width:100%;max-width:370px;background:var(--surface);border:1px solid var(--border);
+ border-radius:18px;padding:28px 26px;box-shadow:var(--shadow)}
+.authcard .brand{justify-content:center;font-size:1.18rem;margin:0 0 4px}
+.authcard h1{margin:2px 0 2px;font-size:1.2rem;text-align:center}
+.authcard p.sub{text-align:center;color:var(--muted);font-size:.9rem;margin:2px 0 6px}
+.authcard button{width:100%;margin-top:8px}
+.err{color:var(--danger);font-weight:600;font-size:.9rem;margin:10px 0 0}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+"""
+
+
 def _page(title: str, body: str) -> web.Response:
-    doc = f"""<!doctype html><html><head><meta charset=utf-8>
+    doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>{_esc(title)} · P2P Desk</title><style>
-:root{{color-scheme:light dark}}
-body{{font-family:system-ui,sans-serif;max-width:900px;margin:0 auto;padding:16px;
-background:#0d1117;color:#e6edf3}}
-a{{color:#58a6ff}} h1,h2{{font-weight:650}}
-.tabs a{{display:inline-block;padding:8px 14px;margin:2px;border-radius:8px;
-background:#161b22;text-decoration:none}}
-.tabs a.on{{background:#1f6feb;color:#fff}}
-.card{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:10px 0;overflow-wrap:anywhere}}
-.muted{{color:#8b949e;font-size:.9em}}
-input,select{{width:100%;box-sizing:border-box;padding:8px;margin:4px 0 12px;
-border-radius:8px;border:1px solid #30363d;background:#0d1117;color:#e6edf3}}
-button{{padding:9px 16px;border:0;border-radius:8px;background:#238636;color:#fff;
-font-size:1em;cursor:pointer}}
-button.warn{{background:#9e6a03}} button.danger{{background:#da3633}}
-code{{background:#0d1117;padding:1px 5px;border-radius:5px;word-break:break-all;overflow-wrap:anywhere}}
-.bankwrap{{margin:4px 0}}
-.bankblk{{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:10px 12px;margin:0;
-  font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}}
-.copybtn{{margin-top:6px;padding:6px 12px;background:#1f6feb;font-size:.85em;border:0;border-radius:6px;color:#fff;cursor:pointer}}
-.row{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}
-.nav{{display:flex;gap:14px;margin-bottom:14px}}
-</style></head><body>{body}
+<title>{_esc(title)} · P2P Desk</title><style>{_STYLE}</style></head>
+<body><div class=wrap>{body}</div>
 <script>function _cp(b){{var p=b.parentNode.querySelector('.bankblk');if(!p)return;
 navigator.clipboard.writeText(p.textContent).then(function(){{var t=b.textContent;
 b.textContent='✅ Copied';setTimeout(function(){{b.textContent=t}},1500)}},function(){{}});}}</script>
@@ -241,31 +332,135 @@ def _desk_toggle_btn(switch_on: bool, csrf: str, back: str) -> str:
             f"<button class='{cls}'>{label}</button></form>")
 
 
+# Order status → semantic badge class, so state reads at a glance in the panel.
+_BADGE_CLASS = {
+    OrderStatus.COMPLETED.value: "ok",
+    OrderStatus.PENDING_PAYOUT.value: "warn",
+    OrderStatus.DEPOSIT_RECEIVED.value: "info",
+    OrderStatus.AWAITING_DEPOSIT.value: "muted",
+    OrderStatus.REFUND_REQUESTED.value: "warn",
+    OrderStatus.REFUNDED.value: "accent",
+    OrderStatus.CANCELLED.value: "danger",
+    OrderStatus.EXPIRED.value: "muted",
+    OrderStatus.REFUND_REJECTED.value: "danger",
+}
+
+
+def _badge(status: str) -> str:
+    cls = _BADGE_CLASS.get(status, "muted")
+    label = status.replace("_", " ")
+    return (f"<span class='badge {cls}'>{texts.STATUS_EMOJI.get(status, '•')} "
+            f"{_esc(label)}</span>")
+
+
 def _nav(active: str) -> str:
     def link(href, label, key):
-        on = " style='font-weight:700'" if key == active else ""
-        return f"<a href='{href}'{on}>{label}</a>"
-    return ("<div class=nav>" + link("/", "📋 Orders", "orders")
-            + link("/pay", "💸 Manual pay", "pay")
-            + link("/broadcast", "📢 Broadcast", "broadcast")
-            + link("/settings", "⚙️ Settings", "settings")
-            + "<a href='/logout' style='margin-left:auto'>Logout</a></div>")
+        return f"<a href='{href}' class='{'on' if key == active else ''}'>{label}</a>"
+    return ("<header class=appbar>"
+            "<span class=brand><span class=dot></span>P2P Desk</span>"
+            "<nav>" + link("/", "Orders", "orders")
+            + link("/pay", "Manual pay", "pay")
+            + link("/broadcast", "Broadcast", "broadcast")
+            + link("/settings", "Settings", "settings")
+            + "</nav><span class=sp></span>"
+            "<a href='/logout' class=out>Logout</a></header>")
+
+
+def _qr_card(net_key: str, label: str, current_addr: str,
+             stored_png: bytes | None, stored_addr: str, csrf: str) -> str:
+    """One network's QR manager: live preview, status badge, upload + remove."""
+    if not current_addr:
+        status = ("<span class='badge muted'>address not set</span>"
+                  "<div class=muted style='margin-top:6px'>Set this network's address "
+                  "above and Save first.</div>")
+    elif stored_png and stored_addr == current_addr:
+        status = ("<span class='badge ok'>✓ custom QR live</span>"
+                  "<div class=muted style='margin-top:6px'>Customers scan your uploaded "
+                  "QR for this network.</div>")
+    elif stored_png:
+        status = ("<span class='badge warn'>⚠ stale — not shown</span>"
+                  "<div class=muted style='margin-top:6px'>This QR was uploaded for a "
+                  "different address, so customers get an auto-generated QR instead. "
+                  "Re-upload it for the current address to use it.</div>")
+    else:
+        status = ("<span class='badge muted'>auto-generated</span>"
+                  "<div class=muted style='margin-top:6px'>No custom QR — customers get a "
+                  "QR generated from the address above.</div>")
+    preview_ok = bool(stored_png) or bool(current_addr and qr_png(current_addr))
+    if preview_ok:
+        # token_hex cache-buster so the preview refreshes right after an upload/remove
+        img = (f"<img class=qrimg src='/qr/{net_key}.png?v={secrets.token_hex(3)}' "
+               f"alt='{_esc(label)} deposit QR'>")
+    else:
+        img = ("<div class=qrimg style='display:flex;align-items:center;"
+               "justify-content:center;color:var(--faint);font-size:.78rem;"
+               "text-align:center;padding:8px'>No preview<br>available</div>")
+    remove = ""
+    if stored_png:
+        remove = (f"<form method=post action=/settings/qr style='display:inline'>"
+                  f"<input type=hidden name=csrf value='{_esc(csrf)}'>"
+                  f"<input type=hidden name=net value='{net_key}'>"
+                  f"<input type=hidden name=act value='remove'>"
+                  f"<button class=ghost type=submit>Remove</button></form>")
+    disabled = "" if current_addr else " disabled"
+    upload = (f"<form method=post action=/settings/qr enctype=multipart/form-data>"
+              f"<input type=hidden name=csrf value='{_esc(csrf)}'>"
+              f"<input type=hidden name=net value='{net_key}'>"
+              f"<label>Upload a QR image (PNG/JPG, max {MAX_QR_BYTES // 1000} KB)</label>"
+              f"<input type=file name=qr accept='image/png,image/jpeg,image/webp'{disabled}>"
+              f"<div class=row style='margin-top:8px'>"
+              f"<button type=submit{disabled}>Upload QR</button>{remove}</div>"
+              f"</form>")
+    return (f"<div class=card><div class=row style='margin-bottom:10px'>"
+            f"<b>{_esc(label)}</b></div>"
+            f"<div class=qrbox><div>{img}</div>"
+            f"<div style='flex:1;min-width:210px'>{status}"
+            f"<div style='margin-top:12px'>{upload}</div></div></div></div>")
+
+
+def _to_png(raw: bytes) -> bytes | None:
+    """Validate an uploaded image and normalise it to PNG. Uses Pillow when it's
+    installed (which also downsizes a large phone photo); without Pillow it only
+    accepts a file that is already a real PNG."""
+    try:
+        from PIL import Image
+    except Exception:
+        return raw if raw[:8] == b"\x89PNG\r\n\x1a\n" else None
+    try:
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+        im = im.convert("RGB")
+        im.thumbnail((900, 900))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
+def _login_card(error: str = "") -> str:
+    err = f"<p class=err>{_esc(error)}</p>" if error else ""
+    return ("<div class=authwrap><div class=authcard>"
+            "<div class='brand'><span class=dot></span>P2P Desk</div>"
+            "<h1>Admin sign-in</h1>"
+            "<p class=sub>Enter your panel password to continue.</p>"
+            "<form method=post action=/login>"
+            "<label>Password</label>"
+            "<input type=password name=password autocomplete=current-password autofocus>"
+            f"<button>Sign in</button></form>{err}</div></div>")
+
+
 async def login_get(request: web.Request):
-    return _page("Login", "<h1>P2P Desk — Login</h1>"
-                 "<form method=post action=/login>"
-                 "<label>Password</label><input type=password name=password autofocus>"
-                 "<button>Sign in</button></form>")
+    return _page("Login", _login_card())
 
 
 async def login_post(request: web.Request):
     ip = request.headers.get("X-Forwarded-For", request.remote or "?").split(",")[0].strip()
     count, first = _login_fails.get(ip, (0, time.time()))
     if count >= 5 and time.time() - first < 300:
-        return _page("Login", "<h1>Too many attempts</h1><p>Try again in a few minutes.</p>")
+        return _page("Login", _login_card("Too many attempts — try again in a few minutes."))
     data = await request.post()
     expected = await _panel_password()
     if expected and hmac.compare_digest(str(data.get("password", "")), expected):
@@ -278,10 +473,7 @@ async def login_post(request: web.Request):
                         secure=secure, max_age=SESSION_TTL)
         return resp
     _login_fails[ip] = (count + 1, first if count else time.time())
-    return _page("Login", "<h1>P2P Desk — Login</h1><p style='color:#f85149'>"
-                 "Wrong password.</p><form method=post action=/login>"
-                 "<input type=password name=password autofocus>"
-                 "<button>Sign in</button></form>")
+    return _page("Login", _login_card("Wrong password."))
 
 
 async def logout(request: web.Request):
@@ -304,31 +496,40 @@ async def dashboard(request: web.Request):
         orders = (await s.scalars(q)).all()
     toggle = _desk_toggle_btn(switch_on, await _csrf_for(request), "/")
     if is_open:
-        desk_banner = ("<div class=card style='border-color:#238636'>"
-                       "🟢 <b>Desk is OPEN</b> — taking new sell orders.  "
-                       f"{toggle}</div>")
+        desk_banner = ("<div class='banner ok'><div class=row>"
+                       "<span>🟢 <b>Desk is OPEN</b> — taking new sell orders.</span>"
+                       f"<span class=sp></span>{toggle}</div></div>")
     else:
-        desk_banner = ("<div class=card style='border-color:#da3633'>"
-                       f"🔴 <b>Desk is CLOSED</b> — {_esc(reason)}.  {toggle}</div>")
+        desk_banner = ("<div class='banner danger'><div class=row>"
+                       f"<span>🔴 <b>Desk is CLOSED</b> — {_esc(reason)}.</span>"
+                       f"<span class=sp></span>{toggle}</div></div>")
     tabs_html = "<div class=tabs>" + "".join(
         f"<a class='{'on' if k == tab else ''}' href='/?tab={k}'>{lbl}</a>"
         for k, (lbl, _) in TABS.items()) + "</div>"
-    export = (f"<div class=row style='margin:6px 0 4px'>"
-              f"<a href='/orders/print?tab={tab}'>📄 Save this tab as PDF</a> · "
+    export = (f"<div class='exportbar row'>Export:&nbsp;"
+              f"<a href='/orders/print?tab={tab}'>📄 this tab (PDF)</a> · "
               f"<a href='/orders.csv?tab={tab}'>⬇️ CSV</a> · "
-              f"<a href='/orders/print?tab=all'>📄 All orders (every tab)</a> · "
-              f"<a href='/orders.csv?tab=all'>⬇️ All CSV</a></div>")
+              f"<a href='/orders/print?tab=all'>📄 all (PDF)</a> · "
+              f"<a href='/orders.csv?tab=all'>⬇️ all CSV</a></div>")
     rows = []
     for o in orders:
-        emoji = texts.STATUS_EMOJI.get(o.status, "•")
         rows.append(
-            f"<div class=card><div class=row><b>{emoji} {texts.tag(o.id)}</b>"
-            f"<span class=muted>{_esc(o.status)}</span></div>"
-            f"{o.usd_amount:g}$ · {_esc(SERVICES.get(o.service, o.service))} → "
-            f"₹{o.inr_amount:,.2f}<br>"
-            f"<a href='/order/{o.id}'>Open →</a></div>")
-    body = (_nav("orders") + desk_banner + f"<h1>Orders — {label} ({len(orders)})</h1>"
-            + tabs_html + export + ("".join(rows) or "<p class=muted>Nothing here.</p>"))
+            f"<a class='card link' href='/order/{o.id}' "
+            f"style='display:block;color:inherit'>"
+            f"<div class=row><b>{texts.tag(o.id)}</b>"
+            f"<span class=sp></span>{_badge(o.status)}</div>"
+            f"<div class=row style='margin-top:8px'>"
+            f"<span class=amt>{o.usd_amount:g}<span class=muted "
+            f"style='font-weight:500;font-size:.8rem'> USDT</span></span>"
+            f"<span class=arrow>→</span>"
+            f"<span class=amt>₹{o.inr_amount:,.2f}</span>"
+            f"<span class=sp></span>"
+            f"<span class=muted>{_esc(SERVICES.get(o.service, o.service))}</span></div>"
+            f"</a>")
+    body = (_nav("orders") + desk_banner + f"<h1>Orders — {_esc(label)} "
+            f"<span class=faint style='font-weight:500'>({len(orders)})</span></h1>"
+            + tabs_html + export + ("".join(rows)
+            or "<div class=card><span class=muted>Nothing here yet.</span></div>"))
     return _page("Orders", body)
 
 
@@ -345,13 +546,12 @@ async def order_detail(request: web.Request):
     csrf = await _csrf_for(request)
     uname = f"@{_esc(user.username)}" if user and user.username else "—"
     msg = request.query.get("msg", "")
-    banner = (f"<div class=card style='border-color:#238636'>{_esc(msg)}</div>"
-              if msg else "")
+    banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
     lines = [
         _nav("orders"),
-        f"<h1>{texts.STATUS_EMOJI.get(order.status,'•')} {texts.tag(order.id)}</h1>",
+        f"<h1>{texts.tag(order.id)}</h1>",
         banner,
-        f"<div class=card><b>Status:</b> {_esc(order.status)}<br>"
+        f"<div class=card><div class=row style='margin-bottom:8px'>{_badge(order.status)}</div>"
         f"<b>Sell:</b> {order.usd_amount:g}$ USDT via "
         f"{_esc(SERVICES.get(order.service, order.service))} @ 1$/₹{order.rate_inr:g}<br>"
         f"<b>Pay out:</b> ₹{order.inr_amount:,.2f}<br>"
@@ -524,22 +724,19 @@ async def broadcast_get(request: web.Request):
                            .where(User.banned.is_(False)))
     csrf = await _csrf_for(request)
     msg = request.query.get("msg", "")
-    banner = (f"<div class=card style='border-color:#238636'>{_esc(msg)}</div>"
-              if msg else "")
+    banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
     body = (_nav("broadcast") + "<h1>📢 Broadcast</h1>" + banner
             + f"<p class=muted>Sends a message to all <b>{n or 0}</b> bot users "
             "(skipping anyone who blocked the bot).</p>"
-            "<form method=post action=/broadcast>"
+            "<form method=post action=/broadcast><div class=card>"
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<label>Message</label>"
-            "<textarea name=text rows=5 style='width:100%;box-sizing:border-box;"
-            "padding:8px;border-radius:8px;border:1px solid #30363d;"
-            "background:#0d1117;color:#e6edf3'></textarea>"
+            "<textarea name=text rows=5></textarea>"
             "<label style='display:flex;gap:8px;align-items:center;margin:10px 0'>"
             "<input type=checkbox name=to_proof value='1' style='width:auto'> "
             "Also post to the proof channel</label>"
             "<div class=row><button>Send broadcast</button></div>"
-            "</form>")
+            "</div></form>")
     return _page("Broadcast", body)
 
 
@@ -569,8 +766,7 @@ async def pay_get(request: web.Request):
         rates = await get_rates(s)
     csrf = await _csrf_for(request)
     msg = request.query.get("msg", "")
-    banner = (f"<div class=card style='border-color:#238636'>{_esc(msg)}</div>"
-              if msg else "")
+    banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
     if rates:
         opts = "".join(f"<option value='{_esc(k)}'>{_esc(SERVICES.get(k, k))} "
                        f"— ₹{v:g}/$</option>" for k, v in rates.items())
@@ -586,13 +782,13 @@ async def pay_get(request: web.Request):
             "<b>Active</b> tab and DMs the customer it's confirmed. Tap <b>Done</b> "
             "on the order (here or in Telegram) once you've paid, to send the "
             "receipt + channel proof — so manual payments record just like auto ones.</p>"
-            "<form method=post action=/pay>"
+            "<form method=post action=/pay><div class=card>"
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<label>Customer Telegram ID</label>"
             "<input name=user_id inputmode=numeric placeholder='e.g. 123456789'>"
             "<label>Amount (USDT $)</label>"
             "<input name=usd inputmode=decimal placeholder='e.g. 100'>"
-            + method_field + submit + "</form>"
+            + method_field + submit + "</div></form>"
             "<p class=muted>The customer can get their ID by sending the bot "
             "<code>/whoami</code>; it's also shown on every order card.</p>")
     return _page("Manual pay", body)
@@ -637,7 +833,12 @@ async def settings_get(request: web.Request):
         admin_chat = await get_setting(s, "admin_chat_id") or ""
         proof = await get_setting(s, "proof_channel") or ""
         token_set = bool((await get_setting(s, "bot_token")) or settings.bot_token)
+        qr_trc_png, qr_trc_addr = await get_network_qr_raw(s, "TRC20")
+        qr_bep_png, qr_bep_addr = await get_network_qr_raw(s, "BEP20")
     csrf = await _csrf_for(request)
+    msg = request.query.get("msg", "")
+    msg_banner = (f"<div class='banner {'ok' if msg.startswith('✅') else 'warn'}'>"
+                  f"{_esc(msg)}</div>" if msg else "")
     rate_fields = "".join(
         f"<div class=card><b>{_esc(SERVICES[k])}</b>"
         f"<label>Rate (₹/$, blank hides the service)</label>"
@@ -650,18 +851,26 @@ async def settings_get(request: web.Request):
         f"{settings.max_usd:g})</label>"
         f"<input name='limit_max_{k}' value='{_esc(lims[k][1])}'></div>"
         f"</div></div>" for k in SERVICES)
-    status_line = ("🟢 Desk is OPEN" if is_open
-                   else f"🔴 Desk is CLOSED — {_esc(reason)}")
+    desk_banner_cls = "ok" if is_open else "danger"
+    status_line = ("🟢 <b>Desk is OPEN</b>" if is_open
+                   else f"🔴 <b>Desk is CLOSED</b> — {_esc(reason)}")
     desk_toggle_html = _desk_toggle_btn(desk_switch, csrf, "/settings")
-    body = (_nav("settings") + "<h1>Settings</h1>"
-            f"<div class=card>{status_line}<br>"
-            f"<div style='margin-top:8px'>{desk_toggle_html}</div>"
-            "<span class=muted>Toggles instantly — no Save needed. The desk also "
-            "needs a deposit address and at least one rate below.</span></div>"
+    # QR manager lives outside the main form (it has its own multipart upload forms)
+    qr_cards = _qr_card("TRC20", "🔷 TRC20 (TRON)", addr, qr_trc_png, qr_trc_addr, csrf)
+    if bep20:
+        qr_cards += _qr_card("BEP20", "🟡 BEP20 (BSC)", bep20, qr_bep_png, qr_bep_addr, csrf)
+    else:
+        qr_cards += ("<div class=card><span class=muted>Set a BEP20 address above "
+                     "(and Save) to add a QR for the BSC network.</span></div>")
+    body = (_nav("settings") + "<h1>Settings</h1>" + msg_banner
+            + f"<div class='banner {desk_banner_cls}'><div class=row>"
+            f"<span>{status_line}</span><span class=sp></span>{desk_toggle_html}</div>"
+            "<div class=muted style='margin-top:8px'>Toggles instantly — no Save needed. "
+            "The desk also needs a deposit address and at least one rate below.</div></div>"
             "<form method=post action=/settings>"
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<h2>Rates</h2>" + rate_fields
-            + "<h2>Deposit & payout</h2>"
+            + "<h2>Deposit &amp; payout</h2><div class=card>"
             "<label>🔷 TRC20 (TRON) deposit address</label>"
             f"<input name=addr value='{_esc(addr)}'>"
             "<label>🟡 BEP20 (BSC) deposit address — 0x… (blank = off)</label>"
@@ -673,24 +882,30 @@ async def settings_get(request: web.Request):
             f"<input name=support value='{_esc(support)}'>"
             "<label>Proof channel (@channel or -100… id, blank to disable)</label>"
             f"<input name=proof value='{_esc(proof)}'>"
-            "<h2>Admins</h2>"
+            "</div><h2>Admins</h2><div class=card>"
             "<label>Admin Telegram IDs (space/comma-separated)</label>"
             f"<input name=admin_ids value='{_esc(admin_ids)}'>"
             "<label>Admin group chat id (optional, -100…; blank = DM each admin)</label>"
             f"<input name=admin_chat value='{_esc(admin_chat)}'>"
-            "<h2>Bot token</h2>"
-            f"<p class=muted>{'A token is set.' if token_set else '⚠️ No token set.'} "
+            "</div><h2>Bot token</h2><div class=card>"
+            f"<p class=muted style='margin-top:0'>{'A token is set.' if token_set else '⚠️ No token set.'} "
             "Changing it restarts the bot.</p>"
             "<label>New bot token (leave blank to keep current)</label>"
             "<input type=password name=bot_token autocomplete=off placeholder='••••••'>"
-            "<h2>Panel password</h2>"
-            "<p class=muted>The panel is reachable from any device, so make this "
-            "long — a 4-word phrase plus numbers is ideal.</p>"
+            "</div><h2>Panel password</h2><div class=card>"
+            "<p class=muted style='margin-top:0'>The panel is reachable from any device, "
+            "so make this long — a 4-word phrase plus numbers is ideal.</p>"
             "<label>New panel password (blank = keep current)</label>"
             "<input type=password name=panel_password autocomplete=new-password "
             "placeholder='••••••'>"
-            "<div class=row><button>Save settings</button></div>"
-            "</form>")
+            "</div><div class=row style='margin-top:14px'><button>Save settings</button></div>"
+            "</form>"
+            "<h2>Deposit QR codes</h2>"
+            "<p class=muted>Customers see this QR on the deposit screen. Leave it "
+            "auto-generated (it always matches the address), or upload your own — an "
+            "uploaded QR is shown only while it still matches the saved address, so "
+            "changing an address never leaves a wrong QR live.</p>"
+            + qr_cards)
     return _page("Settings", body)
 
 
@@ -802,16 +1017,73 @@ async def settings_post(request: web.Request):
                 errors.append("bot token format looks wrong")
 
     if errors:
-        return _page("Settings", _nav("settings")
-                     + "<p style='color:#f85149'>Not saved: "
-                     + _esc("; ".join(errors)) + "</p><p><a href=/settings>Back</a></p>")
+        return _page("Settings", _nav("settings") + "<h1>Settings</h1>"
+                     + "<div class='banner danger'><b>Not saved:</b> "
+                     + _esc("; ".join(errors)) + "</div>"
+                     "<p><a href=/settings>← Back to settings</a></p>")
     if restart:
         # write is committed; exit so systemd restarts with the new token
         asyncio.get_running_loop().call_later(1.0, os._exit, 0)
-        return _page("Restarting", "<h1>✅ Saved — restarting the bot…</h1>"
-                     "<p>The new bot token is applied on restart. This page will be "
-                     "back in a few seconds.</p><p><a href=/settings>Back to settings</a></p>")
-    raise web.HTTPFound("/settings")
+        return _page("Restarting", "<h1>Restarting the bot…</h1>"
+                     "<div class='banner ok'>✅ Saved. The new bot token is applied on "
+                     "restart — this page will be back in a few seconds.</div>"
+                     "<p><a href=/settings>← Back to settings</a></p>")
+    raise web.HTTPFound("/settings?msg=" + quote("✅ Settings saved."))
+
+
+@_authed
+async def qr_preview(request: web.Request):
+    """Live QR image for a network — the uploaded one if present, otherwise an
+    auto-generated QR of the current address (so the panel always shows what the
+    customer would scan)."""
+    net = request.match_info["net"].upper()
+    if net not in ("TRC20", "BEP20"):
+        raise web.HTTPNotFound()
+    async with Session() as s:
+        stored_png, _ = await get_network_qr_raw(s, net)
+        current = (await get_bep20_address(s) if net == "BEP20"
+                   else await get_deposit_address(s)) or ""
+    png = stored_png or (qr_png(current) if current else None)
+    if not png:
+        raise web.HTTPNotFound()
+    return web.Response(body=png, content_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+
+@_authed
+async def qr_post(request: web.Request):
+    """Upload or remove a custom deposit QR for one network."""
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("settings") + "<p>Invalid CSRF token.</p>")
+    net = str(data.get("net", "")).upper()
+    if net not in ("TRC20", "BEP20"):
+        raise web.HTTPFound("/settings")
+    if str(data.get("act", "")) == "remove":
+        async with Session() as s:
+            await clear_network_qr(s, net)
+        raise web.HTTPFound("/settings?msg=" + quote(f"✅ {net} custom QR removed."))
+    async with Session() as s:
+        current = (await get_bep20_address(s) if net == "BEP20"
+                   else await get_deposit_address(s)) or ""
+    if not current:
+        raise web.HTTPFound("/settings?msg=" + quote(
+            f"Set the {net} address and Save it before uploading a QR."))
+    field = data.get("qr")
+    raw = field.file.read() if hasattr(field, "file") else b""
+    if not raw:
+        raise web.HTTPFound("/settings?msg=" + quote("No image selected."))
+    if len(raw) > MAX_QR_BYTES:
+        raise web.HTTPFound("/settings?msg=" + quote(
+            f"Image too large (max {MAX_QR_BYTES // 1000} KB) — try a smaller PNG."))
+    png = _to_png(raw)
+    if png is None:
+        raise web.HTTPFound("/settings?msg=" + quote(
+            "That file isn't a readable image (use a PNG or JPG)."))
+    async with Session() as s:
+        await set_network_qr(s, net, png, current)
+    raise web.HTTPFound("/settings?msg=" + quote(
+        f"✅ {net} custom QR uploaded and now live."))
 
 
 async def start_panel(bot):
@@ -834,6 +1106,8 @@ async def start_panel(bot):
         web.post("/broadcast", broadcast_post),
         web.get("/settings", settings_get),
         web.post("/settings", settings_post),
+        web.post("/settings/qr", qr_post),
+        web.get("/qr/{net}.png", qr_preview),
         web.get("/orders/print", orders_print),
         web.get("/orders.csv", orders_csv),
         web.get("/order/{id:\\d+}", order_detail),
