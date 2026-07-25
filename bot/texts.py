@@ -192,19 +192,15 @@ def support_footer(support: str, lang: str = "en") -> str:
 
 
 def _addr_block(address: str, bep20: str, lang: str) -> str:
-    """The address step — one address, or both networks when BEP20 is live. The
-    address(es) sit in a highlighted monospace box (tap to copy)."""
+    """The address step. Inline <code> (not <pre>) so a long address wraps and
+    stays fully visible instead of scrolling off — still tap-to-copy."""
+    head = ("<b>①  Send to</b>  👇 <i>tap to copy</i>" if lang == "en"
+            else "<b>①  Yahan bhejein</b>  👇 <i>tap to copy</i>")
     if bep20:
-        head = ("<b>①  In dono me se kisi bhi network par bhejein</b>  👇 <i>tap karein</i>"
-                if lang == "hi" else
-                "<b>①  Send on EITHER network</b>  👇 <i>tap to copy</i>")
         return (f"{head}\n"
-                f"🔷 <b>TRC20 (TRON)</b>\n<pre>{html.escape(address)}</pre>"
-                f"🟡 <b>BEP20 (BSC)</b>\n<pre>{html.escape(bep20)}</pre>\n")
-    head = ("<b>①  Is address par bhejein</b>  👇 <i>copy karne ke liye tap karein</i>"
-            if lang == "hi" else
-            "<b>①  Send to this address</b>  👇 <i>tap to copy</i>")
-    return f"{head}\n<pre>{html.escape(address)}</pre>\n"
+                f"🔷 <b>TRC20</b>\n<code>{html.escape(address)}</code>\n"
+                f"🟡 <b>BEP20</b>\n<code>{html.escape(bep20)}</code>\n")
+    return f"{head}\n<code>{html.escape(address)}</code>\n"
 
 
 def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
@@ -212,46 +208,33 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
                     bank_label: str = "", lang: str = "en", bep20: str = "") -> str:
     bank = html.escape(bank_label) if bank_label else service_label
     amt = usd_str(usd)
-    has_dec = "." in amt
+    dec = f".{amt.split('.')[1]}" if "." in amt else ""
     addr_block = _addr_block(address, bep20, lang)
     net = "TRC20 or BEP20" if bep20 else "TRC20"
     amt_box = _amount_box(amt)
+    ttl = settings.deposit_ttl_min
     if lang == "hi":
-        tag_note = (
-            f"🎯 <b>Decimals zaroor bhejein (.{amt.split('.')[1]})</b> — ye aapke order ka "
-            "tag hai, isse hum turant match karte hain.\n\n"
-            if has_dec else
-            "🎯 Bilkul yahi exact amount bhejein — turant match ho jayega.\n\n")
+        note = (f"🎯 <b>{dec} zaroor</b> — yahi decimals aapke order ka tag hain"
+                if dec else "🎯 bilkul exact amount")
         return (
-            f"📥 <b>USDT Deposit</b>\n\n"
+            f"📥 <b>USDT Deposit</b> · <code>{tag(order_id)}</code>\n\n"
             f"{addr_block}\n"
-            f"<b>②  Exactly itna bhejein</b> (dono network ke liye same)\n"
+            f"<b>②  Bhejein exactly</b>  {note}\n"
             f"{amt_box}\n"
-            f"{tag_note}"
-            f"━━━━━━━━━━━━━━\n"
-            f"⏱ Confirm hote hi ~<b>10–20 sec</b> me auto-verify (jo bhi network use karein)\n"
-            f"⚠️ Sirf {net} · exact amount decimals ke saath · {settings.deposit_ttl_min} min me expire\n"
+            f"⏱ Seconds me auto-verify · {net} only · {ttl} min me expire\n"
             f"{rate_note}"
-            f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}\n"
-            f"🧾 Ref: <code>{tag(order_id)}</code>"
+            f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}"
         )
-    tag_note = (
-        f"🎯 <b>Include the decimals (.{amt.split('.')[1]})</b> — they're your order's tag, "
-        "so we auto-match your deposit the moment it lands.\n\n"
-        if has_dec else
-        "🎯 Send this exact amount — it's how we match your deposit instantly.\n\n")
+    note = (f"🎯 <b>with the {dec}</b> — those decimals are your order's tag"
+            if dec else "🎯 the exact amount")
     return (
-        f"📥 <b>USDT Deposit</b>\n\n"
+        f"📥 <b>USDT Deposit</b> · <code>{tag(order_id)}</code>\n\n"
         f"{addr_block}\n"
-        f"<b>②  Send exactly this amount</b> (same on either network)\n"
+        f"<b>②  Send exactly</b>  {note}\n"
         f"{amt_box}\n"
-        f"{tag_note}"
-        f"━━━━━━━━━━━━━━\n"
-        f"⏱ Auto-verified ~<b>10–20 sec</b> after it confirms (whichever network you use)\n"
-        f"⚠️ {net} only · exact amount with decimals · expires in {settings.deposit_ttl_min} min\n"
+        f"⏱ Auto-verified in seconds · {net} only · expires in {ttl} min\n"
         f"{rate_note}"
-        f"💵 You'll receive <b>₹{inr:,.2f}</b> → {bank}\n"
-        f"🧾 Ref: <code>{tag(order_id)}</code>"
+        f"💵 You'll receive <b>₹{inr:,.2f}</b> → {bank}"
     )
 
 
