@@ -16,11 +16,28 @@ from .models import BankCard, Order, OrderMsg, OrderStatus, SeenTx, User
 log = logging.getLogger(__name__)
 
 TRC20_RE = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
+BEP20_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")   # EVM / BEP20 address
 TXID_RE = re.compile(r"^[0-9a-fA-F]{64}$")   # TRON transaction hash
+
+
+def is_bep20(addr: str) -> bool:
+    return bool(BEP20_RE.fullmatch((addr or "").strip()))
+
+
+def is_bsc_txid(txid: str) -> bool:
+    """BSC/EVM tx hashes are 0x + 64 hex; TRON hashes are bare 64 hex."""
+    return (txid or "").lower().startswith("0x")
 
 
 def tronscan_tx(txid: str) -> str:
     return f"https://tronscan.org/#/transaction/{txid}"
+
+
+def explorer_tx(txid: str) -> str:
+    """Block-explorer link for a deposit/refund tx, picking the chain by hash
+    shape: 0x… → BscScan (BEP20), bare 64-hex → Tronscan (TRC20)."""
+    t = (txid or "").strip()
+    return f"https://bscscan.com/tx/{t}" if is_bsc_txid(t) else tronscan_tx(t)
 
 
 async def txid_used_elsewhere(session: AsyncSession, txid: str,
@@ -162,7 +179,7 @@ def order_card(order: Order, user: User, bank: BankCard | None) -> str:
         lines.append("")
         lines.append("↩️ <b>REFUND REQUEST</b>")
         lines.append(f"TXID: <code>{esc(order.refund_txid)}</code>")
-        lines.append(f"🔎 Verify: {tronscan_tx(esc(order.refund_txid))}")
+        lines.append(f"🔎 Verify: {explorer_tx(esc(order.refund_txid))}")
         lines.append(f"⚠️ <b>Refund ONLY to the address this TX came FROM</b> "
                      f"(shown on Tronscan). Never to a typed address. "
                      f"Order was {order.usd_amount:g}$.")

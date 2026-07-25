@@ -21,7 +21,9 @@ from ..actions import (
 from ..config import SERVICES, settings
 from ..db import (
     Session,
+    bep20_active,
     desk_state,
+    get_bep20_address,
     get_deposit_address,
     get_rates,
     get_setting,
@@ -33,6 +35,7 @@ from ..helpers import (
     TXID_RE,
     age_str,
     esc,
+    is_bep20,
     is_trc20,
     ist_time_str,
     order_card,
@@ -56,6 +59,8 @@ async def admin_help(message: Message) -> None:
         "/setlimit UPI 10 5000 — per-service min/max $ per order\n"
         "/rates — show all live rates\n"
         "/setaddress T… — set the TRC20 deposit address\n"
+        "/setbep20 0x… — set the BEP20 (BSC) address (or 'off'); /setbsckey KEY — "
+        "BscScan/Etherscan key to detect BEP20\n"
         "/setsupport @help1 @help2 — set the support contact(s) users see\n"
         "/setchannel @channel — proof channel for completed orders (off = disable)\n"
         "/testproof — post a sample card to the proof channel\n"
@@ -123,11 +128,18 @@ async def cmd_rates(message: Message) -> None:
     async with Session() as session:
         rates = await get_rates(session)
         address = await get_deposit_address(session)
+        bep20 = await get_bep20_address(session)
+        bsc_on = await bep20_active(session)
     lines = ["<b>Live rates</b>"]
     for key, label in SERVICES.items():
         lines.append(f"{label}: " + (f"₹{rates[key]:g}/$" if key in rates else "—"))
-    lines.append(f"\nDeposit address: " +
-                 (f"<code>{esc(address)}</code>" if address else "⚠️ not set"))
+    lines.append("\n<b>Deposit addresses</b>")
+    lines.append("🔷 TRC20: " + (f"<code>{esc(address)}</code>" if address else "⚠️ not set"))
+    if bep20:
+        lines.append("🟡 BEP20: " + f"<code>{esc(bep20)}</code>"
+                     + ("" if bsc_on else " ⚠️ no BscScan key — not scanning"))
+    else:
+        lines.append("🟡 BEP20: — (off · /setbep20 0x… to enable)")
     await message.answer("\n".join(lines))
 
 
@@ -148,6 +160,57 @@ async def cmd_setaddress(message: Message, command: CommandObject) -> None:
     await message.answer(f"✅ Deposit address set:\n<code>{esc(address)}</code>\n\n"
                          "Only deposits from now on will be auto-detected on this "
                          "address (its past history is ignored).")
+
+
+@router.message(Command("setbep20"))
+async def cmd_setbep20(message: Message, command: CommandObject) -> None:
+    """Set the BEP20 (BSC) deposit address, or turn it off."""
+    arg = (command.args or "").strip()
+    if arg.lower() == "off":
+        async with Session() as session:
+            await set_setting(session, "addr_bep20", "")
+        await message.answer("✅ BEP20 turned off — only TRC20 is shown now.")
+        return
+    if not is_bep20(arg):
+        await message.answer("That's not a valid BEP20 address. Usage: "
+                             "<code>/setbep20 0x…</code> (42 chars) or "
+                             "<code>/setbep20 off</code>")
+        return
+    async with Session() as session:
+        await set_setting(session, "addr_bep20", arg)
+        # activation cutoff (unix seconds): only later transfers can credit
+        now_s = int(utcnow().replace(microsecond=0).timestamp())
+        await set_setting(session, f"bsc_since:{arg}", str(now_s))
+        active = await bep20_active(session)
+    msg = (f"✅ BEP20 deposit address set:\n<code>{esc(arg)}</code>\n\n"
+           "Only deposits from now on are auto-detected on it.")
+    if not active:
+        msg += ("\n\n⚠️ It won't scan yet — set a free BscScan/Etherscan key: "
+                "<code>/setbsckey YOUR_KEY</code>.")
+    else:
+        msg += "\n\n🟢 BEP20 is <b>LIVE</b> — customers now see both networks."
+    await message.answer(msg)
+
+
+@router.message(Command("setbsckey"))
+async def cmd_setbsckey(message: Message, command: CommandObject) -> None:
+    """Set the BscScan/Etherscan API key used to detect BEP20 deposits."""
+    key = (command.args or "").strip()
+    if not key:
+        await message.answer("Usage: <code>/setbsckey YOUR_KEY</code> — a free key "
+                             "from bscscan.com or etherscan.io (one key covers BSC). "
+                             "<code>/setbsckey off</code> clears it.")
+        return
+    off = key.lower() == "off"
+    async with Session() as session:
+        await set_setting(session, "bscscan_key", "" if off else key)
+        active = await bep20_active(session)
+    if off:
+        await message.answer("✅ BscScan key cleared — BEP20 scanning paused.")
+    else:
+        await message.answer("✅ BscScan key saved." + (
+            " 🟢 BEP20 is now <b>LIVE</b>." if active
+            else " Now set a BEP20 address too: <code>/setbep20 0x…</code>"))
 
 
 @router.message(Command("broadcast"))

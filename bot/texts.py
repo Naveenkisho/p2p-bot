@@ -168,13 +168,30 @@ def rate_updated_note(rate: float, lang: str = "en") -> str:
     return f"📈 Rate updated since your quote: <b>1$ / ₹{rate:g}</b>\n\n"
 
 
+def _addr_block(address: str, bep20: str, lang: str) -> str:
+    """The address step — one address, or both networks when BEP20 is live."""
+    if bep20:
+        head = ("<b>①  In dono me se kisi bhi network par bhejein</b>  👇 <i>tap karein</i>"
+                if lang == "hi" else
+                "<b>①  Send on EITHER network</b>  👇 <i>tap to copy</i>")
+        return (f"{head}\n"
+                f"🔷 <b>TRC20 (TRON):</b>\n<code>{address}</code>\n"
+                f"🟡 <b>BEP20 (BSC):</b>\n<code>{bep20}</code>\n\n")
+    head = ("<b>①  Is address par bhejein</b>  👇 <i>copy karne ke liye tap karein</i>"
+            if lang == "hi" else
+            "<b>①  Send to this address</b>  👇 <i>tap to copy</i>")
+    return f"{head}\n<code>{address}</code>\n\n"
+
+
 def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
                     address: str, rate: float, rate_note: str = "",
-                    bank_label: str = "", lang: str = "en") -> str:
+                    bank_label: str = "", lang: str = "en", bep20: str = "") -> str:
     bank = html.escape(bank_label) if bank_label else service_label
     amt = usd_str(usd)
     whole = f"{int(usd)}"
     has_dec = "." in amt
+    addr_block = _addr_block(address, bep20, lang)
+    net = "TRC20 or BEP20" if bep20 else "TRC20"
     if lang == "hi":
         amt_line = (
             f"💵 <b>{amt} USDT</b>  —  🎯 <b>decimals ke saath ({amt}, na ki {whole})</b>"
@@ -184,15 +201,14 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
             if has_dec else
             "Bilkul yahi exact amount bhejein — turant match ho jayega.\n\n")
         return (
-            f"📥 <b>USDT Deposit · TRC20 network</b>\n\n"
-            f"<b>①  Is address par bhejein</b>  👇 <i>copy karne ke liye tap karein</i>\n"
-            f"<code>{address}</code>\n\n"
-            f"<b>②  Exactly itna bhejein</b>\n"
+            f"📥 <b>USDT Deposit</b>\n\n"
+            f"{addr_block}"
+            f"<b>②  Exactly itna bhejein</b> (dono network ke liye same)\n"
             f"{amt_line}\n"
             f"{tag_note}"
             f"━━━━━━━━━━━━━━\n"
-            f"⏱ Confirm hote hi ~<b>10–20 sec</b> me auto-verify\n"
-            f"⚠️ Sirf TRC20 · exact amount decimals ke saath · {settings.deposit_ttl_min} min me expire\n"
+            f"⏱ Confirm hote hi ~<b>10–20 sec</b> me auto-verify (jo bhi network use karein)\n"
+            f"⚠️ Sirf {net} · exact amount decimals ke saath · {settings.deposit_ttl_min} min me expire\n"
             f"{rate_note}"
             f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}\n"
             f"🧾 Ref: <code>{tag(order_id)}</code>"
@@ -205,15 +221,14 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
         if has_dec else
         "Send this exact amount — it's how we match your deposit instantly.\n\n")
     return (
-        f"📥 <b>USDT Deposit · TRC20 network</b>\n\n"
-        f"<b>①  Send to this address</b>  👇 <i>tap to copy</i>\n"
-        f"<code>{address}</code>\n\n"
-        f"<b>②  Send exactly this amount</b>\n"
+        f"📥 <b>USDT Deposit</b>\n\n"
+        f"{addr_block}"
+        f"<b>②  Send exactly this amount</b> (same on either network)\n"
         f"{amt_line}\n"
         f"{tag_note}"
         f"━━━━━━━━━━━━━━\n"
-        f"⏱ Auto-verified ~<b>10–20 sec</b> after it confirms\n"
-        f"⚠️ TRC20 only · exact amount with decimals · expires in {settings.deposit_ttl_min} min\n"
+        f"⏱ Auto-verified ~<b>10–20 sec</b> after it confirms (whichever network you use)\n"
+        f"⚠️ {net} only · exact amount with decimals · expires in {settings.deposit_ttl_min} min\n"
         f"{rate_note}"
         f"💵 You'll receive <b>₹{inr:,.2f}</b> → {bank}\n"
         f"🧾 Ref: <code>{tag(order_id)}</code>"

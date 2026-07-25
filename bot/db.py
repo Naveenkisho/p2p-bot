@@ -90,6 +90,20 @@ async def get_deposit_address(session: AsyncSession) -> str | None:
     return await get_setting(session, "addr_trc20")
 
 
+async def get_bep20_address(session: AsyncSession) -> str | None:
+    return await get_setting(session, "addr_bep20")
+
+
+async def get_bscscan_key(session: AsyncSession) -> str:
+    raw = await get_setting(session, "bscscan_key")
+    return (raw or "").strip() or settings.bscscan_key
+
+
+async def bep20_active(session: AsyncSession) -> bool:
+    """BEP20 is live only when both the deposit address and an API key are set."""
+    return bool(await get_bep20_address(session)) and bool(await get_bscscan_key(session))
+
+
 async def get_service_limits(session: AsyncSession, service: str) -> tuple[float, float]:
     """Per-service min/max USD, panel-editable; falls back to the global env
     bounds when unset."""

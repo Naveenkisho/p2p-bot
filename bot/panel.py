@@ -38,6 +38,7 @@ from .config import SERVICES, settings
 from .db import (
     Session,
     desk_state,
+    get_bep20_address,
     get_deposit_address,
     get_desk_open,
     get_rates,
@@ -45,7 +46,7 @@ from .db import (
     get_support,
     set_setting,
 )
-from .helpers import is_trc20
+from .helpers import is_bep20, is_trc20
 from .models import Order, OrderStatus, User
 from sqlalchemy import func, select
 
@@ -627,6 +628,8 @@ async def settings_get(request: web.Request):
         lims = {k: ((await get_setting(s, f"limit_min_{k}") or ""),
                     (await get_setting(s, f"limit_max_{k}") or "")) for k in SERVICES}
         addr = await get_deposit_address(s) or ""
+        bep20 = await get_bep20_address(s) or ""
+        bsc_key_set = bool((await get_setting(s, "bscscan_key")) or settings.bscscan_key)
         support = await get_setting(s, "support") or ""
         admin_ids = await get_setting(s, "admin_ids")
         admin_ids = admin_ids if admin_ids is not None else settings.admin_ids
@@ -658,8 +661,13 @@ async def settings_get(request: web.Request):
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<h2>Rates</h2>" + rate_fields
             + "<h2>Deposit & payout</h2>"
-            "<label>TRC20 deposit address</label>"
+            "<label>🔷 TRC20 (TRON) deposit address</label>"
             f"<input name=addr value='{_esc(addr)}'>"
+            "<label>🟡 BEP20 (BSC) deposit address — 0x… (blank = off)</label>"
+            f"<input name=addr_bep20 value='{_esc(bep20)}'>"
+            "<label>BscScan / Etherscan API key "
+            f"({'set ✓ — blank keeps it' if bsc_key_set else 'needed to detect BEP20'})</label>"
+            "<input type=password name=bscscan_key autocomplete=off placeholder='••••••'>"
             "<label>Support usernames (space-separated, e.g. @a @b)</label>"
             f"<input name=support value='{_esc(support)}'>"
             "<label>Proof channel (@channel or -100… id, blank to disable)</label>"
@@ -737,6 +745,20 @@ async def settings_post(request: web.Request):
                     await set_setting(s, f"bootstrapped:{addr}", "1")
             else:
                 errors.append("deposit address is not a valid TRC20 address")
+
+        bep = str(data.get("addr_bep20", "")).strip()
+        if bep == "":
+            await set_setting(s, "addr_bep20", "")          # blank = turn BEP20 off
+        elif is_bep20(bep):
+            if bep != (await get_bep20_address(s) or ""):
+                await set_setting(s, "addr_bep20", bep)
+                await set_setting(s, f"bsc_since:{bep}", str(int(time.time())))
+        else:
+            errors.append("BEP20 address is not a valid 0x… address")
+
+        bkey = str(data.get("bscscan_key", "")).strip()
+        if bkey:
+            await set_setting(s, "bscscan_key", bkey)
 
         support = str(data.get("support", "")).strip()
         if support:

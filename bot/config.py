@@ -26,7 +26,13 @@ class Settings(BaseSettings):
     scan_max_pages: int = 10           # page cap per address per tick
     trongrid_url: str = "https://api.trongrid.io"
     trongrid_key: str = ""             # optional TronGrid API key for higher limits
-    usdt_contract: str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # mainnet USDT
+    usdt_contract: str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # mainnet USDT (TRC20)
+
+    # BEP20 / BSC second chain (active once the BEP20 address + BscScan key are set)
+    bscscan_url: str = "https://api.etherscan.io/v2/api"   # Etherscan v2 multichain
+    bsc_chainid: int = 56              # BNB Smart Chain
+    bscscan_key: str = ""              # BscScan/Etherscan API key (from env or panel)
+    bep20_usdt_contract: str = "0x55d398326f99059fF775485246999027B3197955"  # USDT BEP20, 18 dp
 
     # Max simultaneously-open orders per user (awaiting/received/pending)
     open_orders_max: int = 3

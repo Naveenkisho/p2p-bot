@@ -119,22 +119,21 @@ async def fetch_transfers(http: aiohttp.ClientSession, address: str,
     return out
 
 
-async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
-    """Match one confirmed transfer to an awaiting order on this address."""
-    txid = tx.get("transaction_id")
-    amount = transfer_amount(tx)
+async def _credit_amount(bot: Bot, txid: str, amount: float, address: str,
+                         chain: str) -> None:
+    """Credit one confirmed USDT deposit (TRC20 or BEP20) to the awaiting order
+    whose unique amount tag it matches. The AMOUNT alone identifies the order —
+    the chain/address is just where the money landed — so a deposit on either
+    chain lands on the right order with no cross-chain conflict (this is safe
+    precisely because unique-cents gives every open order a distinct amount)."""
     if not txid or amount is None or amount <= 0:
         return
-    if (tx.get("to") or "") != address:
-        return
-
     async with Session() as session:
         if await session.get(SeenTx, txid) is not None:
             return
         candidates = (await session.scalars(
             select(Order).where(
                 Order.status == OrderStatus.AWAITING_DEPOSIT.value,
-                Order.deposit_address == address,
                 Order.usd_amount >= amount - AMOUNT_TOLERANCE,
                 Order.usd_amount <= amount + AMOUNT_TOLERANCE,
             ).order_by(Order.id))).all()
@@ -162,9 +161,8 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
         session.add(SeenTx(txid=txid, amount=amount, order_id=None))
         await session.commit()
 
+    tag = f"({chain}, tx <code>{txid}</code>)"
     if not candidates:
-        # show the open orders so the admin has context (typo? overpay? late payer
-        # on an already-expired order? no order at all?)
         async with Session() as session:
             opens = (await session.scalars(
                 select(Order).where(
@@ -174,8 +172,7 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
                         for o in opens[:8]) or "• (no orders waiting)"
         await notify_admins(
             bot,
-            f"⚠️ <b>Unmatched deposit: {texts.usd_str(amount)} USDT</b> "
-            f"(tx <code>{txid}</code>)\n"
+            f"⚠️ <b>Unmatched deposit: {texts.usd_str(amount)} USDT</b> {tag}\n"
             f"No open order expects exactly {texts.usd_str(amount)}$ "
             f"(a sender's platform may have deducted a fee).\n\n"
             f"<b>Open orders:</b>\n{ctx}\n\n"
@@ -186,11 +183,118 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
     else:
         ids = ", ".join(texts.tag(o.id) for o in candidates)
         await notify_admins(bot,
-                            f"⚠️ <b>{texts.usd_str(amount)} USDT</b> deposit "
-                            f"(tx <code>{txid}</code>) "
+                            f"⚠️ <b>{texts.usd_str(amount)} USDT</b> deposit {tag} "
                             f"matches {len(candidates)} awaiting orders: {ids}.\n"
                             f"Confirm the correct one manually: "
                             f"/received &lt;id&gt; {txid}")
+
+
+async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
+    """TRON adapter: pull the fields off a TronGrid transfer and credit it."""
+    txid = tx.get("transaction_id")
+    amount = transfer_amount(tx)
+    if not txid or amount is None or amount <= 0:
+        return
+    if (tx.get("to") or "") != address:
+        return
+    await _credit_amount(bot, txid, amount, address, "TRC20")
+
+
+# ── BEP20 / BSC (second chain) ─────────────────────────────────────────────────
+
+def bsc_transfer_amount(tx: dict) -> float | None:
+    if (tx.get("contractAddress") or "").lower() != settings.bep20_usdt_contract.lower():
+        return None
+    try:
+        return int(tx.get("value", "0")) / (10 ** int(tx.get("tokenDecimal", 18)))
+    except (TypeError, ValueError):
+        return None
+
+
+async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
+                              min_ts: int, key: str) -> list[dict]:
+    """Inbound USDT (BEP20) transfers to `address` with a block time after
+    `min_ts` (unix seconds), via BscScan/Etherscan-v2. Newest-first page."""
+    params = {
+        "chainid": str(settings.bsc_chainid), "module": "account", "action": "tokentx",
+        "contractaddress": settings.bep20_usdt_contract, "address": address,
+        "page": "1", "offset": str(settings.scan_page_limit), "sort": "desc",
+        "apikey": key,
+    }
+    async with http.get(settings.bscscan_url, params=params) as resp:
+        resp.raise_for_status()
+        payload = await resp.json()
+    if str(payload.get("status")) != "1":
+        return []   # "0" = no txns / rate-limited — nothing to credit this tick
+    out = []
+    for tx in payload.get("result") or []:
+        try:
+            ts = int(tx.get("timeStamp", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts > min_ts and (tx.get("to") or "").lower() == address.lower():
+            out.append(tx)
+    return out
+
+
+async def _credit_bsc(bot: Bot, tx: dict, address: str) -> None:
+    txid = tx.get("hash")
+    amount = bsc_transfer_amount(tx)
+    if not txid or amount is None or amount <= 0:
+        return
+    if (tx.get("to") or "").lower() != address.lower():
+        return
+    await _credit_amount(bot, txid, amount, address, "BEP20")
+
+
+async def bsc_watermark(session, address: str) -> int:
+    """Unix-seconds cutoff for the BEP20 address; transfers at/before it are
+    pre-activation history and never credited."""
+    raw = await get_setting(session, f"bsc_since:{address}")
+    return int(raw) if raw and raw.isdigit() else int(utcnow().timestamp())
+
+
+async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
+    from .db import bep20_active, get_bep20_address, get_bscscan_key
+    async with Session() as session:
+        if not await bep20_active(session):
+            return
+        address = await get_bep20_address(session)
+        key = await get_bscscan_key(session)
+        watermark = await bsc_watermark(session, address)
+    try:
+        transfers = await fetch_bsc_transfers(http, address, watermark, key)
+    except Exception:
+        log.exception("BSC scan fetch failed")
+        return
+    for tx in transfers:
+        await _credit_bsc(bot, tx, address)
+
+
+async def lookup_bsc_tx(txid: str, since_ms: int) -> dict:
+    """Look up a BEP20 TXID on-chain (BscScan) to verify a claim / reconcile the
+    actual amount. Returns the same shape as lookup_claim_tx (timestamp in ms)."""
+    from .db import bep20_active, get_bep20_address, get_bscscan_key
+    async with Session() as session:
+        if not await bep20_active(session):
+            return {"found": False, "error": False}
+        address = await get_bep20_address(session)
+        key = await get_bscscan_key(session)
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
+            transfers = await fetch_bsc_transfers(http, address, 0, key)
+    except Exception:
+        log.exception("BSC claim lookup failed for %s", txid)
+        return {"found": False, "error": True}
+    for tx in transfers:
+        if (tx.get("hash") or "").lower() == (txid or "").lower():
+            return {"found": True, "error": False,
+                    "amount": bsc_transfer_amount(tx),
+                    "to": tx.get("to") or "",
+                    "to_ok": (tx.get("to") or "").lower() == address.lower(),
+                    "timestamp": int(tx.get("timeStamp", 0) or 0) * 1000}
+    return {"found": False, "error": False}
 
 
 async def expire_stale_orders(bot: Bot) -> None:
@@ -293,6 +397,7 @@ async def scan_once(bot: Bot, http: aiohttp.ClientSession) -> None:
             if int(tx.get("block_timestamp", 0) or 0) <= watermark:
                 continue
             await _credit_or_hold(bot, tx, address)
+    await scan_bsc_once(bot, http)          # BEP20, if configured
     await remind_pending_orders(bot)
     await expire_stale_orders(bot)
 
@@ -318,6 +423,8 @@ async def check_order_now(bot: Bot, order_id: int) -> str | None:
             if int(tx.get("block_timestamp", 0) or 0) <= watermark:
                 continue
             await _credit_or_hold(bot, tx, address)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
+            await scan_bsc_once(bot, http)   # also sweep BEP20 on demand (once)
     except Exception:
         log.exception("on-demand check failed for order %s", order_id)
     async with Session() as session:
@@ -327,8 +434,12 @@ async def check_order_now(bot: Bot, order_id: int) -> str | None:
 
 async def lookup_claim_tx(txid: str, address: str, since_ms: int) -> dict:
     """Look up a user-submitted TXID on-chain to help the admin verify a
-    late/missed payment: is it a confirmed USDT transfer TO `address`, for how
-    much, and when? Returns {found, error, amount, to, to_ok, timestamp}."""
+    late/missed payment: is it a confirmed USDT transfer TO our address, for how
+    much, and when? Routes by hash shape (0x… → BEP20/BscScan, else TRC20).
+    Returns {found, error, amount, to, to_ok, timestamp}."""
+    from .helpers import is_bsc_txid
+    if is_bsc_txid(txid):
+        return await lookup_bsc_tx(txid, since_ms)
     timeout = aiohttp.ClientTimeout(total=15)
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:

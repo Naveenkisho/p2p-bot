@@ -9,7 +9,9 @@ from .. import texts
 from ..config import SERVICES, settings
 from ..db import (
     Session,
+    bep20_active,
     get_admin_targets,
+    get_bep20_address,
     get_deposit_address,
     get_desk_open,
     get_lang,
@@ -23,11 +25,11 @@ from ..scanner import _ms, launch_order_check, lookup_claim_tx
 from ..helpers import (
     TXID_RE,
     esc,
+    explorer_tx,
     notify_admins,
     post_order_card,
     queue_position,
     strip_kb,
-    tronscan_tx,
     try_transition,
     txid_used_elsewhere,
     update_order_cards,
@@ -249,11 +251,12 @@ async def _create_order(message_target, state: FSMContext, tg_user,
         order.usd_amount = _tag_amount(order.id, usd)
         order.inr_amount = order.usd_amount * rate
         await session.commit()
+        bep20 = await get_bep20_address(session) if await bep20_active(session) else ""
         await message_target.answer(f"🏦 {card.label} ✅", reply_markup=hide_kb())
         await message_target.answer(
             texts.deposit_request(order.id, order.usd_amount, order.inr_amount,
                                   SERVICES[service], address, rate, rate_note,
-                                  card.label, lang) + footer,
+                                  card.label, lang, bep20=bep20) + footer,
             reply_markup=deposit_kb(order.id),
         )
 
@@ -628,7 +631,7 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
             f"({texts.usd_str(order.usd_amount)}$ × ₹{order.rate_inr:g})\n"
             f"{bank}"
             f"🔗 TXID: <code>{esc(txid)}</code>\n"
-            f"🔎 {tronscan_tx(esc(txid))}\n\n"
+            f"🔎 {explorer_tx(esc(txid))}\n\n"
             f"<b>On-chain check:</b> {vsum}\n\n"
             "Confirm credits the <b>actual amount received</b> (above), converted at "
             "this order's rate, and moves it to your payout queue.")
