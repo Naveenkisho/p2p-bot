@@ -540,6 +540,14 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
                                  "Contact support if this is a mistake.",
                                  reply_markup=hide_kb())
             return
+        # a TXID already credited to / claimed by another order can't be refunded here
+        used = await txid_used_elsewhere(session, txid, order.id)
+        if used is not None:
+            await message.answer(
+                f"🚫 That TXID is already tied to order {texts.tag(used)} — an on-chain "
+                "transfer can only be used once. Contact support if this is a mistake.",
+                reply_markup=hide_kb())
+            return
 
     # verify on-chain BEFORE accepting — a refund TXID that never reached our address
     # (or is far too old) is declined on the user's face, with proof
@@ -626,6 +634,14 @@ async def _verify_deposit_tx(txid: str, address: str, order: Order,
         return False, texts.tx_not_found(lang), info
     if not info.get("to_ok"):
         return False, texts.tx_wrong_address(info.get("to", ""), address, lang), info
+    # the amount must be THIS order's own deposit (within a fee band) — otherwise a
+    # customer could claim another customer's mismatched deposit that merely landed at
+    # our shared address
+    amount = info.get("amount") or 0.0
+    expected = order.usd_amount or 0.0
+    band = max(settings.claim_fee_band_abs, settings.claim_fee_band_pct * expected)
+    if expected and abs(amount - expected) > band:
+        return False, texts.tx_amount_mismatch(amount, expected, lang), info
     ts = info.get("timestamp") or 0
     if ts and ts < _ms(order.created_at) - 6 * 3600 * 1000:   # >6h before the order
         age_days = max(1, int((_ms(utcnow()) - ts) / 86_400_000))

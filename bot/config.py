@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # scanner matches instantly with no amount collisions.
     unique_cents: bool = True
 
+    # A claimed/refunded TXID's on-chain amount must be within this fee band of the
+    # order's own amount (max of abs USDT and a fraction of it) — so one customer can't
+    # claim another customer's mismatched deposit that merely landed at our address.
+    claim_fee_band_abs: float = 3.0
+    claim_fee_band_pct: float = 0.02
+
     # Web admin panel (optional; disabled unless a password is set)
     panel_password: str = ""           # required to enable the web panel
     panel_secret: str = ""             # cookie-signing secret (auto-derived if blank)

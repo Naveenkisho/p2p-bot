@@ -550,6 +550,24 @@ def tx_not_found(lang: str = "en") -> str:
     )
 
 
+def tx_amount_mismatch(actual: float, expected: float, lang: str = "en") -> str:
+    """Declined: the tx amount doesn't match THIS order's amount — so it can't be this
+    order's payment (blocks claiming another customer's mismatched deposit)."""
+    if lang == "hi":
+        return (
+            f"🚫 <b>Ye transaction {usd_str(actual)} USDT ka hai, par ye order "
+            f"{usd_str(expected)} USDT ka hai.</b>\n\n"
+            "Ise is order ka payment nahi maana ja sakta. Jo transfer aapne <b>is order</b> "
+            "ke liye kiya hai uska TXID bhejein — ya support se baat karein."
+        )
+    return (
+        f"🚫 <b>That transaction is for {usd_str(actual)} USDT, but this order is for "
+        f"{usd_str(expected)} USDT.</b>\n\n"
+        "It can't be the payment for this order. Please submit the TXID of the transfer you "
+        "made for <b>this</b> order — or contact support."
+    )
+
+
 def tx_too_old(days: int, lang: str = "en") -> str:
     if lang == "hi":
         return (
