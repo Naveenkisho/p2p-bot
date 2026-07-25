@@ -48,14 +48,12 @@ from ..keyboards import (
     RefundReqCb,
     admin_order_kb,
     cancel_kb,
-    cancelled_kb,
     claim_review_kb,
     deposit_kb,
     expired_kb,
     hide_kb,
     network_kb,
     pre_bank_chooser_kb,
-    request_refund_kb,
     services_kb,
     start_fresh_kb,
 )
@@ -472,11 +470,14 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             lang, footer = await _ctx(session, callback.from_user)
             await strip_kb(callback.message)
             await state.clear()
+            # Cancel is now an explicit "I'm not paid" — so end cleanly with just a
+            # "start fresh" option. No claim/refund buttons: the customer declared
+            # they didn't pay (if they actually did, the support footer points them there).
             await callback.message.answer(texts.order_cancelled(order.id, lang) + footer,
-                                          reply_markup=cancelled_kb(order.id))
+                                          reply_markup=start_fresh_kb())
             # No admin ping: a user-cancel is always on an UNPAID awaiting order, so
-            # it's just abandonment. Only a submitted TXID (claim/refund) — which the
-            # bot verifies on-chain — reaches the admin. Strip any card, silently.
+            # it's just abandonment. Only a submitted TXID (claim) — which the bot
+            # verifies on-chain — reaches the admin. Strip any card, silently.
             card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
             db_user = await session.get(User, order.user_id)
             await update_order_cards(callback.bot, session, updated, db_user, card,
