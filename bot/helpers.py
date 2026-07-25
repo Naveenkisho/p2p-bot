@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 TRC20_RE = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
 BEP20_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")   # EVM / BEP20 address
-TXID_RE = re.compile(r"^[0-9a-fA-F]{64}$")   # TRON transaction hash
+TXID_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]{64}$")   # TRON (bare) or EVM (0x) tx hash
 
 
 def is_bep20(addr: str) -> bool:
@@ -27,6 +27,20 @@ def is_bep20(addr: str) -> bool:
 def is_bsc_txid(txid: str) -> bool:
     """BSC/EVM tx hashes are 0x + 64 hex; TRON hashes are bare 64 hex."""
     return (txid or "").lower().startswith("0x")
+
+
+def norm_txid(txid: str | None) -> str:
+    """Canonical form for storing/comparing a hash: lower-cased, 0x prefix kept
+    (so a BEP20 hash still routes to BscScan and TRON stays bare)."""
+    return (txid or "").strip().lower()
+
+
+def _txid_variants(txid: str) -> set[str]:
+    """Both spellings of a hash — bare and 0x-prefixed — so a stored TRC20 hash
+    and a submitted 0x-flipped copy of it can never slip past the reuse guard."""
+    t = norm_txid(txid)
+    bare = t[2:] if t.startswith("0x") else t
+    return {bare, "0x" + bare}
 
 
 def tronscan_tx(txid: str) -> str:
@@ -49,16 +63,21 @@ async def txid_used_elsewhere(session: AsyncSession, txid: str,
     `exclude_order_id`. This is what stops one on-chain transfer from ever
     being cashed out twice — e.g. a user cancelling a fresh order and pasting a
     TXID that already paid out an earlier one."""
+    variants = _txid_variants(txid)
     row = await session.scalar(
         select(Order.id).where(
-            or_(Order.txid == txid, Order.claim_txid == txid, Order.refund_txid == txid),
+            or_(Order.txid.in_(variants),
+                Order.claim_txid.in_(variants),
+                Order.refund_txid.in_(variants)),
             Order.id != exclude_order_id).limit(1))
     if row is not None:
         return row
-    seen = await session.get(SeenTx, txid)
-    if seen is not None and seen.order_id is not None and seen.order_id != exclude_order_id:
-        return seen.order_id
-    return None
+    seen = await session.scalar(
+        select(SeenTx.order_id).where(
+            SeenTx.txid.in_(variants),
+            SeenTx.order_id.is_not(None),
+            SeenTx.order_id != exclude_order_id).limit(1))
+    return seen
 
 
 class IsAdmin(BaseFilter):

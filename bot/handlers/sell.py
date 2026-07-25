@@ -24,8 +24,10 @@ from ..flow import notify_deposit_received
 from ..scanner import _ms, launch_order_check, lookup_claim_tx
 from ..helpers import (
     TXID_RE,
+    _txid_variants,
     esc,
     explorer_tx,
+    norm_txid,
     notify_admins,
     post_order_card,
     queue_position,
@@ -512,7 +514,7 @@ async def request_refund(callback: CallbackQuery, callback_data: RefundReqCb,
 
 @router.message(RefundFlow.txid, F.text)
 async def refund_txid(message: Message, state: FSMContext) -> None:
-    txid = message.text.strip().lower().removeprefix("0x")
+    txid = norm_txid(message.text)
     if not TXID_RE.fullmatch(txid):
         await message.answer("That doesn't look like a TXID — it's 64 letters/numbers "
                              "(the transaction hash). Paste it again, or tap ❌ Cancel.")
@@ -527,7 +529,8 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
             return
         # a TXID can only ever back ONE refund
         dup = await session.scalar(
-            select(Order).where(Order.refund_txid == txid, Order.id != order.id,
+            select(Order).where(Order.refund_txid.in_(_txid_variants(txid)),
+                                Order.id != order.id,
                                 Order.status.in_([OrderStatus.REFUND_REQUESTED.value,
                                                   OrderStatus.REFUNDED.value])).limit(1))
         if dup is not None:
@@ -633,6 +636,9 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
             f"🔗 TXID: <code>{esc(txid)}</code>\n"
             f"🔎 {explorer_tx(esc(txid))}\n\n"
             f"<b>On-chain check:</b> {vsum}\n\n"
+            "⚠️ This proves the tx <b>reached our address</b> — <b>not who sent it</b>. "
+            "Deposit hashes are public, so confirm this customer really made this "
+            "transfer (not a hash copied off the explorer) before paying.\n\n"
             "Confirm credits the <b>actual amount received</b> (above), converted at "
             "this order's rate, and moves it to your payout queue.")
         targets = await get_admin_targets(session)
@@ -649,7 +655,7 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
 
 @router.message(ClaimFlow.txid, F.text)
 async def claim_txid(message: Message, state: FSMContext) -> None:
-    txid = message.text.strip().lower().removeprefix("0x")
+    txid = norm_txid(message.text)
     if not TXID_RE.fullmatch(txid):
         await message.answer("That doesn't look like a TXID — it's 64 letters/numbers "
                              "(the transaction hash). Paste it again, or tap ❌ Cancel.")

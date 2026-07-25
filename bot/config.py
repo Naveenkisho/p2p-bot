@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     eta_text: str = "15-30 minutes"
     support_handle: str = "@support"
 
-    # TRON auto-scan
-    scan_interval_sec: int = 10
+    # TRON auto-scan (5s ≈ 17,280 calls/day per chain — within BscScan's free 100k/day)
+    scan_interval_sec: int = 5
     deposit_ttl_min: int = 15          # the deposit "session": the quote expires this
                                        # many minutes after creation, then the user must
                                        # start a fresh payout (expired = gone; late payers
