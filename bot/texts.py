@@ -220,6 +220,7 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
     amt_box = _amount_box(amt)
     ttl = ttl_min or settings.deposit_ttl_min
     net = html.escape(net_label)
+    net_emoji = "🟡" if "BEP20" in net_label else "🔷"
     addr = html.escape(address)
     times = ""
     if created_at is not None:
@@ -236,9 +237,9 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
             f"⏱ Confirm hote hi seconds me auto-verify\n"
             f"{sup}{rate_note}"
             "━━━━━━━━━━━━━━\n"
-            f"<b>Exactly itna bhejein</b>  👇\n{amt_box}\n"
+            f"{net_emoji} <b>{net}</b> par — exactly itna bhejein 👇\n{amt_box}\n"
             f"{warn}\n\n"
-            f"<b>{net} par bhejein</b> — 👇 <i>tap to copy</i>\n"
+            f"{net_emoji} <b>{net}</b> address — 👇 <i>tap to copy</i>\n"
             f"<code>{addr}</code>"
         )
     sup = f"🆘 <b>Need help?</b> {html.escape(support)}\n" if support else ""
@@ -252,9 +253,9 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
         f"⏱ Auto-verified in seconds after it confirms\n"
         f"{sup}{rate_note}"
         "━━━━━━━━━━━━━━\n"
-        f"<b>Send exactly</b>  👇\n{amt_box}\n"
+        f"{net_emoji} On <b>{net}</b> — send exactly 👇\n{amt_box}\n"
         f"{warn}\n\n"
-        f"<b>Send on {net}</b> — 👇 <i>tap to copy</i>\n"
+        f"{net_emoji} <b>{net}</b> address — 👇 <i>tap to copy</i>\n"
         f"<code>{addr}</code>"
     )
 
