@@ -2,10 +2,11 @@ import re
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy import func, select
 
 from .. import texts
+from ..qr import qr_png
 from ..config import SERVICES, settings
 from ..db import (
     Session,
@@ -49,6 +50,7 @@ from ..keyboards import (
     deposit_kb,
     expired_kb,
     hide_kb,
+    network_kb,
     pre_bank_chooser_kb,
     request_refund_kb,
     services_kb,
@@ -137,13 +139,49 @@ async def sell_service(callback: CallbackQuery, state: FSMContext) -> None:
         return
     async with Session() as session:
         lo, hi = await get_service_limits(session, key)
+        two_chains = await bep20_active(session)
     await state.clear()
-    await state.update_data(service=key, rate=rates[key], lo=lo, hi=hi)
+    await state.update_data(service=key, rate=rates[key], lo=lo, hi=hi, network="TRC20")
+    if two_chains:
+        # both chains live → let the customer pick before we show an address
+        await state.set_state(SellFlow.network)
+        await callback.message.answer(texts.ask_network(lang) + footer,
+                                      reply_markup=network_kb())
+    else:
+        await state.set_state(SellFlow.amount)
+        await callback.message.answer(
+            texts.ask_amount(SERVICES[key], rates[key], lo, hi, lang) + footer,
+            reply_markup=cancel_kb())
+    await callback.answer()
+
+
+@router.callback_query(SellFlow.network, F.data.startswith("net:"))
+async def sell_network(callback: CallbackQuery, state: FSMContext) -> None:
+    net = callback.data.split(":", 1)[1]
+    if net not in ("TRC20", "BEP20"):
+        await callback.answer("Pick a network.", show_alert=True)
+        return
+    data = await state.get_data()
+    key, rate, lo, hi = (data.get("service"), data.get("rate"),
+                         data.get("lo"), data.get("hi"))
+    if key is None:
+        await callback.answer("Session expired — tap 💵 USDT Sell to start over.",
+                              show_alert=True)
+        return
+    async with Session() as session:
+        lang, footer = await _ctx(session, callback.from_user)
+    await state.update_data(network=net)
     await state.set_state(SellFlow.amount)
+    await strip_kb(callback.message)
     await callback.message.answer(
-        texts.ask_amount(SERVICES[key], rates[key], lo, hi, lang) + footer,
+        texts.ask_amount(SERVICES[key], rate, lo, hi, lang) + footer,
         reply_markup=cancel_kb())
     await callback.answer()
+
+
+@router.message(SellFlow.network)
+async def sell_network_not_tap(message: Message) -> None:
+    await message.answer("Tap 🔷 <b>TRC20</b> or 🟡 <b>BEP20</b> above to pick your network.")
 
 
 @router.message(SellFlow.amount, F.text)
@@ -200,6 +238,7 @@ async def _create_order(message_target, state: FSMContext, tg_user,
     await state.clear()
     usd = data.get("usd")
     service = data.get("service")
+    network = data.get("network", "TRC20")
     if usd is None or service is None:
         await message_target.answer("That session expired — tap 💵 USDT Sell "
                                     "to start over.", reply_markup=hide_kb())
@@ -253,14 +292,36 @@ async def _create_order(message_target, state: FSMContext, tg_user,
         order.usd_amount = _tag_amount(order.id, usd)
         order.inr_amount = order.usd_amount * rate
         await session.commit()
+        order_id, usd_amount, inr_amount = order.id, order.usd_amount, order.inr_amount
+        created_at = order.created_at
         bep20 = await get_bep20_address(session) if await bep20_active(session) else ""
-        await message_target.answer(f"🏦 {card.label} ✅", reply_markup=hide_kb())
-        await message_target.answer(
-            texts.deposit_request(order.id, order.usd_amount, order.inr_amount,
-                                  SERVICES[service], address, rate, rate_note,
-                                  card.label, lang, bep20=bep20) + footer,
-            reply_markup=deposit_kb(order.id),
-        )
+
+    # Which address to SHOW (display only). deposit_address stays the TRC20 desk
+    # address, so the scanner and on-chain verification are unaffected; a BEP20
+    # payment is still matched by amount on the BSC side.
+    if network == "BEP20" and bep20:
+        show_addr, net_label = bep20, "BEP20 (BSC)"
+    else:
+        show_addr, net_label = address, "TRC20 (TRON)"
+
+    await message_target.answer(f"🏦 {card.label} ✅", reply_markup=hide_kb())
+    msg = texts.deposit_request(order_id, usd_amount, inr_amount, SERVICES[service],
+                                show_addr, net_label, rate, created_at=created_at,
+                                rate_note=rate_note, bank_label=card.label, lang=lang) + footer
+    png = qr_png(show_addr)
+    if png and len(msg) <= 1024:
+        await message_target.answer_photo(
+            BufferedInputFile(png, "deposit-qr.png"), caption=msg,
+            reply_markup=deposit_kb(order_id))
+    elif png:
+        await message_target.answer_photo(
+            BufferedInputFile(png, "deposit-qr.png"),
+            caption=f"📷 Scan to pay on {net_label}")
+        await message_target.answer(msg, reply_markup=deposit_kb(order_id),
+                                    disable_web_page_preview=True)
+    else:
+        await message_target.answer(msg, reply_markup=deposit_kb(order_id),
+                                    disable_web_page_preview=True)
 
 
 @router.callback_query(SellFlow.choose_bank, PreBankCb.filter())
