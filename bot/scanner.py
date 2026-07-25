@@ -391,11 +391,14 @@ async def remind_pending_orders(bot: Bot) -> None:
     from .keyboards import deposit_kb
     from .models import User
 
+    from .db import get_support
+
     now = utcnow()
     due = now - timedelta(minutes=settings.remind_min)
     not_expired = now - timedelta(minutes=settings.deposit_ttl_min)
     pending: list[tuple[int, int, float, str, str]] = []
     async with Session() as session:
+        support = await get_support(session)
         rows = (await session.scalars(
             select(Order).where(
                 Order.status == OrderStatus.AWAITING_DEPOSIT.value,
@@ -409,7 +412,7 @@ async def remind_pending_orders(bot: Bot) -> None:
             pending.append((o.user_id, o.id, o.usd_amount, o.deposit_address, lang))
         await session.commit()
     for uid, oid, usd, addr, lang in pending:
-        await notify_user(bot, uid, texts.deposit_reminder(oid, usd, addr, lang),
+        await notify_user(bot, uid, texts.deposit_reminder(oid, usd, addr, lang, support),
                           reply_markup=deposit_kb(oid))
 
 
