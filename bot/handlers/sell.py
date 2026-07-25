@@ -14,6 +14,7 @@ from ..db import (
     get_admin_targets,
     get_bep20_address,
     get_deposit_address,
+    get_network_qr,
     get_desk_open,
     get_lang,
     get_or_create_user,
@@ -300,15 +301,19 @@ async def _create_order(message_target, state: FSMContext, tg_user,
     # address, so the scanner and on-chain verification are unaffected; a BEP20
     # payment is still matched by amount on the BSC side.
     if network == "BEP20" and bep20:
-        show_addr, net_label = bep20, "BEP20 (BSC)"
+        show_addr, net_label, net_key = bep20, "BEP20 (BSC)", "BEP20"
     else:
-        show_addr, net_label = address, "TRC20 (TRON)"
+        show_addr, net_label, net_key = address, "TRC20 (TRON)", "TRC20"
 
     await message_target.answer(f"🏦 {card.label} ✅", reply_markup=hide_kb())
     msg = texts.deposit_request(order_id, usd_amount, inr_amount, SERVICES[service],
                                 show_addr, net_label, rate, created_at=created_at,
                                 rate_note=rate_note, bank_label=card.label, lang=lang) + footer
-    png = qr_png(show_addr)
+    # Prefer an admin-uploaded QR for this network, but only when it still encodes
+    # the live address (get_network_qr enforces that); otherwise auto-generate one.
+    async with Session() as session:
+        png = await get_network_qr(session, net_key, show_addr)
+    png = png or qr_png(show_addr)
     if png and len(msg) <= 1024:
         await message_target.answer_photo(
             BufferedInputFile(png, "deposit-qr.png"), caption=msg,
