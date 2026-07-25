@@ -506,16 +506,17 @@ def ask_claim_txid(order_id: int, lang: str = "en") -> str:
     if lang == "hi":
         return (
             f"✅ <b>Payment confirm karein — Order {tag(order_id)}</b>\n\n"
-            "USDT bhej diya hai? Apna <b>TXID</b> (64-character transaction hash) "
-            "paste karein — hum use on-chain verify karke aapka payout confirm "
-            "karenge.\n\n"
+            "USDT bhej diya hai? Apna <b>TXID</b> (transaction hash — BEP20 par "
+            "<code>0x…</code> se shuru hota hai) paste karein — hum use on-chain "
+            "verify karke aapka payout confirm karenge.\n\n"
             "TXID aapko apne wallet ki transaction history me milega. "
             "Ya ❌ Cancel dabayein."
         )
     return (
         f"✅ <b>Confirm your payment — Order {tag(order_id)}</b>\n\n"
-        "Already sent the USDT? Paste your <b>TXID</b> (the 64-character "
-        "transaction hash) — we'll verify it on-chain and confirm your payout.\n\n"
+        "Already sent the USDT? Paste your <b>TXID</b> (the transaction hash — it "
+        "starts with <code>0x…</code> on BEP20) — we'll verify it on-chain and "
+        "confirm your payout.\n\n"
         "You'll find the TXID in your wallet's transaction history. "
         "Or tap ❌ Cancel."
     )

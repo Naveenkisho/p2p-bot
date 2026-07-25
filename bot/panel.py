@@ -56,7 +56,7 @@ from .db import (
 from .helpers import is_bep20, is_trc20
 from .models import Order, OrderStatus, User
 from .qr import qr_png
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,29 @@ TABS = {
                          OrderStatus.EXPIRED.value, OrderStatus.REFUND_REJECTED.value)),
 }
 _login_fails: dict[str, tuple[int, float]] = {}
+
+# A cancelled order only needs the admin if the customer submitted a TXID (claiming
+# they paid, or requesting a refund). A bare cancel — the customer just backed out
+# before paying — is a dead order and should NOT clutter the actionable lists.
+_HAS_CLAIM = or_(and_(Order.claim_txid.is_not(None), Order.claim_txid != ""),
+                 and_(Order.refund_txid.is_not(None), Order.refund_txid != ""))
+
+
+def _tab_filter(tab: str):
+    """WHERE clause for a panel tab. 'refunds' shows only ACTIONABLE cancels (a TXID
+    was submitted) plus refund requests; a bare cancel falls through to 'done'."""
+    S = OrderStatus
+    if tab == "pending":
+        return Order.status == S.AWAITING_DEPOSIT.value
+    if tab == "active":
+        return Order.status.in_((S.DEPOSIT_RECEIVED.value, S.PENDING_PAYOUT.value))
+    if tab == "refunds":
+        return or_(Order.status == S.REFUND_REQUESTED.value,
+                   and_(Order.status == S.CANCELLED.value, _HAS_CLAIM))
+    # done / closed — including bare cancels (cancelled, no TXID submitted)
+    closed = (S.COMPLETED.value, S.REFUNDED.value, S.EXPIRED.value, S.REFUND_REJECTED.value)
+    return or_(Order.status.in_(closed),
+               and_(Order.status == S.CANCELLED.value, ~_HAS_CLAIM))
 
 
 # ── secrets / auth ────────────────────────────────────────────────────────────
@@ -312,8 +335,8 @@ async def _export_rows(tab: str):
         if tab == "all":
             orders = (await s.scalars(select(Order).order_by(Order.id.desc()))).all()
         else:
-            _, statuses = TABS.get(tab, TABS["active"])
-            orders = (await s.scalars(select(Order).where(Order.status.in_(statuses))
+            ftab = tab if tab in TABS else "active"
+            orders = (await s.scalars(select(Order).where(_tab_filter(ftab))
                                       .order_by(Order.id.desc()))).all()
         uids = list({o.user_id for o in orders})
         cids = list({o.bank_card_id for o in orders if o.bank_card_id})
@@ -488,11 +511,11 @@ async def dashboard(request: web.Request):
     tab = request.query.get("tab", "active")
     if tab not in TABS:
         tab = "active"
-    label, statuses = TABS[tab]
+    label = TABS[tab][0]
     async with Session() as s:
         is_open, reason = await desk_state(s)
         switch_on = await get_desk_open(s)
-        q = select(Order).where(Order.status.in_(statuses))
+        q = select(Order).where(_tab_filter(tab))
         q = q.order_by(Order.id.desc()).limit(30) if tab == "done" else q.order_by(Order.id)
         orders = (await s.scalars(q)).all()
     toggle = _desk_toggle_btn(switch_on, await _csrf_for(request), "/")

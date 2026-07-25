@@ -685,7 +685,7 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
 
 @router.message(RefundFlow.txid)
 async def refund_txid_not_text(message: Message) -> None:
-    await message.answer("Please paste the <b>TXID</b> as text (64 characters), "
+    await message.answer("Please paste the <b>TXID</b> (transaction hash) as text — "
                          "not a photo — or tap ❌ Cancel.")
 
 
@@ -859,5 +859,5 @@ async def claim_txid(message: Message, state: FSMContext) -> None:
 
 @router.message(ClaimFlow.txid)
 async def claim_txid_not_text(message: Message) -> None:
-    await message.answer("Please paste the <b>TXID</b> as text (64 characters), "
+    await message.answer("Please paste the <b>TXID</b> (transaction hash) as text — "
                          "not a photo — or tap ❌ Cancel.")
