@@ -375,15 +375,17 @@ def order_cancelled(order_id: int, lang: str = "en") -> str:
     if lang == "hi":
         return (
             f"❌ <b>Order {tag(order_id)} cancel ho gaya.</b>\n\n"
-            "Kuch nahi bheja? Done — kabhi bhi naya order shuru karein.\n\n"
-            "USDT <b>bhej chuke hain</b>? Niche <b>Request refund</b> dabayein — "
-            "refund usi wallet me wapas aayega jahan se aapne bheja tha."
+            "Aapne bataya aapne pay nahi kiya — kuch pending nahi hai. Kabhi bhi "
+            "naya order shuru karein.\n\n"
+            "<i>Galti se USDT bhej diya tha? Niche support ko apna order ID aur "
+            "TXID bhejein — hum sort kar denge.</i>"
         )
     return (
         f"❌ <b>Order {tag(order_id)} cancelled.</b>\n\n"
-        "Didn't send anything? You're done — start a fresh order anytime.\n\n"
-        "<b>Already sent</b> the USDT? Tap <b>Request refund</b> below — it goes back "
-        "to the same wallet you sent from."
+        "You said you haven't paid — so nothing's pending. Start a fresh order "
+        "anytime.\n\n"
+        "<i>Sent the USDT by mistake? Message support (below) with your order ID and "
+        "TXID and we'll sort it out.</i>"
     )
 
 

@@ -258,12 +258,15 @@ def network_kb() -> InlineKeyboardMarkup:
 
 
 def deposit_kb(order_id: int) -> InlineKeyboardMarkup:
-    # No Cancel here on purpose: while the customer is paying, the only action is
-    # "I've sent it". Cancel appears afterwards (on the not-detected screen), so a
-    # stray tap can't cancel a payment that's on its way.
+    # A clear fork: "I've sent it" (paid → we check / verify), and below it an
+    # explicit "No, I'm not paid" that just drops the order. The label is explicit
+    # on purpose — a customer who IS paying won't tap "not paid", so it doesn't act
+    # like a stray Cancel during a payment in flight.
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ I've sent it — check it",
                               callback_data=OrderCb(action="check", order_id=order_id).pack())],
+        [InlineKeyboardButton(text="🚫 No, I'm not paid — cancel",
+                              callback_data=OrderCb(action="cancel", order_id=order_id).pack())],
     ])
 
 
