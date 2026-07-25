@@ -42,8 +42,11 @@ AMOUNT_TOLERANCE = 0.005  # USDT — exact match with float slack
 
 
 def _ms(dt) -> int:
-    # naive UTC datetime (see models.utcnow) → epoch ms
-    return int(dt.replace(microsecond=0).timestamp() * 1000)
+    # naive UTC datetime (see models.utcnow) → epoch ms. Pin it to UTC before
+    # converting so .timestamp() never reinterprets it in the server's local zone
+    # (that would skew every on-chain time comparison on a non-UTC host, e.g. IST).
+    from datetime import timezone
+    return int(dt.replace(microsecond=0, tzinfo=timezone.utc).timestamp() * 1000)
 
 
 async def address_watermark(session, address: str) -> int:
@@ -214,31 +217,45 @@ def bsc_transfer_amount(tx: dict) -> float | None:
 async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
                               min_ts: int, key: str) -> list[dict]:
     """Inbound USDT (BEP20) transfers to `address` with a block time after
-    `min_ts` (unix seconds), via BscScan/Etherscan-v2. Newest-first page."""
-    params = {
+    `min_ts` (unix seconds), via BscScan/Etherscan-v2, oldest-first across pages
+    (so a burst larger than one page is never dropped). Never lets the key-bearing
+    request URL reach the logs."""
+    base = {
         "chainid": str(settings.bsc_chainid), "module": "account", "action": "tokentx",
         "contractaddress": settings.bep20_usdt_contract, "address": address,
-        "page": "1", "offset": str(settings.scan_page_limit), "sort": "desc",
-        "apikey": key,
+        "sort": "desc", "offset": str(settings.scan_page_limit), "apikey": key,
     }
-    async with http.get(settings.bscscan_url, params=params) as resp:
-        resp.raise_for_status()
-        payload = await resp.json()
-    if str(payload.get("status")) != "1":
-        return []   # "0" = no txns / rate-limited — nothing to credit this tick
-    out = []
-    for tx in payload.get("result") or []:
+    out: list[dict] = []
+    for page in range(1, settings.scan_max_pages + 1):
+        params = {**base, "page": str(page)}
         try:
-            ts = int(tx.get("timeStamp", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        if ts > min_ts and (tx.get("to") or "").lower() == address.lower():
-            out.append(tx)
+            async with http.get(settings.bscscan_url, params=params) as resp:
+                resp.raise_for_status()
+                payload = await resp.json()
+        except Exception as e:                     # never log the URL (carries the apikey)
+            log.warning("BSC fetch failed: %s", type(e).__name__)
+            break
+        if str(payload.get("status")) != "1":
+            break   # "0" = no (more) txns / rate-limited — nothing to credit this tick
+        rows = payload.get("result") or []
+        reached_old = False
+        for tx in rows:                            # newest-first
+            try:
+                ts = int(tx.get("timeStamp", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts <= min_ts:
+                reached_old = True                 # everything past here is older too
+                break
+            if (tx.get("to") or "").lower() == address.lower():
+                out.append(tx)
+        if reached_old or len(rows) < settings.scan_page_limit:
+            break
     return out
 
 
 async def _credit_bsc(bot: Bot, tx: dict, address: str) -> None:
-    txid = tx.get("hash")
+    txid = (tx.get("hash") or "").lower()      # store 0x-hashes lower-cased & consistent
     amount = bsc_transfer_amount(tx)
     if not txid or amount is None or amount <= 0:
         return
@@ -264,11 +281,21 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
         watermark = await bsc_watermark(session, address)
     try:
         transfers = await fetch_bsc_transfers(http, address, watermark, key)
-    except Exception:
-        log.exception("BSC scan fetch failed")
+    except Exception as e:
+        log.warning("BSC scan fetch failed: %s", type(e).__name__)   # no key in logs
         return
+    newest = watermark
     for tx in transfers:
         await _credit_bsc(bot, tx, address)
+        try:
+            newest = max(newest, int(tx.get("timeStamp", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+    if newest > watermark:
+        # advance the watermark (2-min look-back for same-second stragglers) so the
+        # next tick fetches a small window — page 1 then covers any burst.
+        async with Session() as session:
+            await set_setting(session, f"bsc_since:{address}", str(newest - 120))
 
 
 async def lookup_bsc_tx(txid: str, since_ms: int) -> dict:
@@ -284,8 +311,8 @@ async def lookup_bsc_tx(txid: str, since_ms: int) -> dict:
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
             transfers = await fetch_bsc_transfers(http, address, 0, key)
-    except Exception:
-        log.exception("BSC claim lookup failed for %s", txid)
+    except Exception as e:
+        log.warning("BSC claim lookup failed: %s", type(e).__name__)   # no key in logs
         return {"found": False, "error": True}
     for tx in transfers:
         if (tx.get("hash") or "").lower() == (txid or "").lower():
@@ -364,11 +391,14 @@ async def remind_pending_orders(bot: Bot) -> None:
     from .keyboards import deposit_kb
     from .models import User
 
+    from .db import get_support
+
     now = utcnow()
     due = now - timedelta(minutes=settings.remind_min)
     not_expired = now - timedelta(minutes=settings.deposit_ttl_min)
     pending: list[tuple[int, int, float, str, str]] = []
     async with Session() as session:
+        support = await get_support(session)
         rows = (await session.scalars(
             select(Order).where(
                 Order.status == OrderStatus.AWAITING_DEPOSIT.value,
@@ -382,7 +412,7 @@ async def remind_pending_orders(bot: Bot) -> None:
             pending.append((o.user_id, o.id, o.usd_amount, o.deposit_address, lang))
         await session.commit()
     for uid, oid, usd, addr, lang in pending:
-        await notify_user(bot, uid, texts.deposit_reminder(oid, usd, addr, lang),
+        await notify_user(bot, uid, texts.deposit_reminder(oid, usd, addr, lang, support),
                           reply_markup=deposit_kb(oid))
 
 
@@ -456,6 +486,52 @@ async def lookup_claim_tx(txid: str, address: str, since_ms: int) -> dict:
                 "to_ok": (tx.get("to") or "") == address,
                 "timestamp": int(tx.get("block_timestamp", 0) or 0)}
     return {"found": False, "error": False}
+
+
+async def lookup_tx_global(txid: str, our_address: str) -> dict:
+    """Global per-tx lookup BY HASH (any destination), so a claim/refund can be
+    declined on the user's face when the tx wasn't actually sent to us. Unlike
+    lookup_claim_tx (which only searches OUR address's transfers), this reports
+    the tx's REAL destination. Returns {found, error, to, to_ok, amount, timestamp(ms)}."""
+    from .helpers import is_bsc_txid
+    blank = {"found": False, "error": False, "to": "", "to_ok": False,
+             "amount": 0.0, "timestamp": 0}
+    if is_bsc_txid(txid):
+        # BEP20: address-scoped lookup (a BscScan global receipt parse is heavier);
+        # a BEP20 hash sent elsewhere simply reads as not-found here.
+        r = await lookup_bsc_tx(txid, 0)
+        return {**blank, **(r or {})}
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
+            async with http.get(f"{settings.tronscan_api}/transaction-info",
+                                params={"hash": txid}) as resp:
+                if resp.status != 200:
+                    return {**blank, "error": True}
+                data = await resp.json()
+    except Exception as e:
+        log.warning("tron global lookup failed: %s", type(e).__name__)
+        return {**blank, "error": True}
+    if not data or not data.get("hash"):
+        return blank                       # genuinely not on-chain
+    ts = int(data.get("timestamp", 0) or 0)     # ms
+    best = None
+    for tr in (data.get("trc20TransferInfo") or []):
+        if (tr.get("contract_address") or "") != settings.usdt_contract:
+            continue
+        to = tr.get("to_address") or ""
+        try:
+            amt = int(tr.get("amount_str", "0") or 0) / (10 ** int(tr.get("decimals", 6) or 6))
+        except (TypeError, ValueError):
+            amt = 0.0
+        if to == our_address:
+            best = {"to": to, "amount": amt}
+            break
+        best = best or {"to": to, "amount": amt}
+    if best is None:                       # tx exists but no USDT transfer in it
+        return {**blank, "found": True, "timestamp": ts}
+    return {"found": True, "error": False, "to": best["to"],
+            "to_ok": best["to"] == our_address, "amount": best["amount"], "timestamp": ts}
 
 
 CHECK_ROUNDS = 5        # scans spread across the wait window

@@ -38,6 +38,7 @@ from ..helpers import (
     is_bep20,
     is_trc20,
     ist_time_str,
+    norm_txid,
     order_card,
     strip_kb,
 )
@@ -438,7 +439,7 @@ async def cmd_received(message: Message, command: CommandObject) -> None:
             "so a fee shortfall (e.g. 30.13 sent → 28.63 received) pays out "
             "<b>28.63</b>, not 30.13. Without a TXID it credits the ordered amount.")
         return
-    txid = parts[1] if len(parts) > 1 else "manual"
+    txid = norm_txid(parts[1]) if len(parts) > 1 else "manual"
     ok, msg = await confirm_deposit(message.bot, int(raw), txid)
     if not ok:
         await message.answer(f"{msg} Check /order {raw} first.")
@@ -482,7 +483,7 @@ async def cmd_setrefund(message: Message, command: CommandObject) -> None:
     Usage: /setrefund <order_id> <txid>"""
     parts = (command.args or "").split()
     order_raw = parts[0].lstrip("#").upper().removeprefix("ORD") if parts else ""
-    txid = parts[1].lower().removeprefix("0x") if len(parts) > 1 else ""
+    txid = norm_txid(parts[1]) if len(parts) > 1 else ""
     if len(parts) != 2 or not order_raw.isdigit() or not TXID_RE.fullmatch(txid):
         await message.answer("Usage: <code>/setrefund 12 &lt;txid&gt;</code> "
                              "(64-char transaction hash)")

@@ -95,8 +95,12 @@ async def get_bep20_address(session: AsyncSession) -> str | None:
 
 
 async def get_bscscan_key(session: AsyncSession) -> str:
-    raw = await get_setting(session, "bscscan_key")
-    return (raw or "").strip() or settings.bscscan_key
+    """A saved row (even blank) is authoritative and can disable BSC via
+    /setbsckey off; only fall back to the env key when no row was ever set."""
+    row = await session.get(Setting, "bscscan_key")
+    if row is not None:
+        return (row.value or "").strip()
+    return settings.bscscan_key.strip()
 
 
 async def bep20_active(session: AsyncSession) -> bool:

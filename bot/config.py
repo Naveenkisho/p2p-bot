@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     eta_text: str = "15-30 minutes"
     support_handle: str = "@support"
 
-    # TRON auto-scan
-    scan_interval_sec: int = 10
+    # TRON auto-scan (5s ≈ 17,280 calls/day per chain — within BscScan's free 100k/day)
+    scan_interval_sec: int = 5
     deposit_ttl_min: int = 15          # the deposit "session": the quote expires this
                                        # many minutes after creation, then the user must
                                        # start a fresh payout (expired = gone; late payers
@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     scan_max_pages: int = 10           # page cap per address per tick
     trongrid_url: str = "https://api.trongrid.io"
     trongrid_key: str = ""             # optional TronGrid API key for higher limits
+    tronscan_api: str = "https://apilist.tronscanapi.com/api"  # per-tx global lookup (claims)
     usdt_contract: str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # mainnet USDT (TRC20)
 
     # BEP20 / BSC second chain (active once the BEP20 address + BscScan key are set)
@@ -40,6 +41,12 @@ class Settings(BaseSettings):
     # Give every open order a unique deposit amount (unique cents) so the
     # scanner matches instantly with no amount collisions.
     unique_cents: bool = True
+
+    # A claimed/refunded TXID's on-chain amount must be within this fee band of the
+    # order's own amount (max of abs USDT and a fraction of it) — so one customer can't
+    # claim another customer's mismatched deposit that merely landed at our address.
+    claim_fee_band_abs: float = 3.0
+    claim_fee_band_pct: float = 0.02
 
     # Web admin panel (optional; disabled unless a password is set)
     panel_password: str = ""           # required to enable the web panel

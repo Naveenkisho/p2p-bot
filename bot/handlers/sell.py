@@ -21,11 +21,13 @@ from ..db import (
     get_support,
 )
 from ..flow import notify_deposit_received
-from ..scanner import _ms, launch_order_check, lookup_claim_tx
+from ..scanner import _ms, launch_order_check
 from ..helpers import (
     TXID_RE,
+    _txid_variants,
     esc,
     explorer_tx,
+    norm_txid,
     notify_admins,
     post_order_card,
     queue_position,
@@ -52,7 +54,7 @@ from ..keyboards import (
     services_kb,
     start_fresh_kb,
 )
-from ..models import BankCard, Order, OrderMsg, OrderStatus, SeenTx, User
+from ..models import BankCard, Order, OrderMsg, OrderStatus, SeenTx, User, utcnow
 from ..states import BankForOrder, ClaimFlow, RefundFlow, SellFlow
 from .start import bank_details_error, make_bank_label
 
@@ -512,7 +514,7 @@ async def request_refund(callback: CallbackQuery, callback_data: RefundReqCb,
 
 @router.message(RefundFlow.txid, F.text)
 async def refund_txid(message: Message, state: FSMContext) -> None:
-    txid = message.text.strip().lower().removeprefix("0x")
+    txid = norm_txid(message.text)
     if not TXID_RE.fullmatch(txid):
         await message.answer("That doesn't look like a TXID — it's 64 letters/numbers "
                              "(the transaction hash). Paste it again, or tap ❌ Cancel.")
@@ -525,9 +527,12 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
         if order is None or order.user_id != message.from_user.id:
             await message.answer("Order not found — contact support.", reply_markup=hide_kb())
             return
+        lang, footer = await _ctx(session, message.from_user)
+        address = order.deposit_address
         # a TXID can only ever back ONE refund
         dup = await session.scalar(
-            select(Order).where(Order.refund_txid == txid, Order.id != order.id,
+            select(Order).where(Order.refund_txid.in_(_txid_variants(txid)),
+                                Order.id != order.id,
                                 Order.status.in_([OrderStatus.REFUND_REQUESTED.value,
                                                   OrderStatus.REFUNDED.value])).limit(1))
         if dup is not None:
@@ -535,22 +540,39 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
                                  "Contact support if this is a mistake.",
                                  reply_markup=hide_kb())
             return
-        updated = await try_transition(session, order.id, (OrderStatus.CANCELLED,),
+        # a TXID already credited to / claimed by another order can't be refunded here
+        used = await txid_used_elsewhere(session, txid, order.id)
+        if used is not None:
+            await message.answer(
+                f"🚫 That TXID is already tied to order {texts.tag(used)} — an on-chain "
+                "transfer can only be used once. Contact support if this is a mistake.",
+                reply_markup=hide_kb())
+            return
+
+    # verify on-chain BEFORE accepting — a refund TXID that never reached our address
+    # (or is far too old) is declined on the user's face, with proof
+    ok, reject, _info = await _verify_deposit_tx(txid, address, order, lang)
+    if not ok:
+        await message.answer(reject + footer, reply_markup=hide_kb(),
+                             disable_web_page_preview=True)
+        return
+
+    async with Session() as session:
+        updated = await try_transition(session, order_id, (OrderStatus.CANCELLED,),
                                        OrderStatus.REFUND_REQUESTED, refund_txid=txid)
         if updated is None:
             await message.answer("This order's refund is already being processed.",
                                  reply_markup=hide_kb())
             return
-        user = await session.get(User, order.user_id)
-        card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
-        lang, footer = await _ctx(session, message.from_user)
+        user = await session.get(User, updated.user_id)
+        card = await session.get(BankCard, updated.bank_card_id) if updated.bank_card_id else None
         seen = await session.get(SeenTx, txid)
-        await message.answer(texts.refund_submitted(order.id, lang) + footer,
+        await message.answer(texts.refund_submitted(order_id, lang) + footer,
                              reply_markup=hide_kb())
         await post_order_card(message.bot, session, updated, user, card,
-                              admin_order_kb(order.id, "refund_requested"))
+                              admin_order_kb(order_id, "refund_requested"))
         await update_order_cards(message.bot, session, updated, user, card,
-                                 admin_order_kb(order.id, "refund_requested"))
+                                 admin_order_kb(order_id, "refund_requested"))
     if seen is not None:
         await notify_admins(message.bot,
                             f"↩️ Refund {texts.tag(order_id)}: ✅ TXID matches a deposit "
@@ -597,6 +619,36 @@ async def request_claim(callback: CallbackQuery, callback_data: ClaimReqCb,
     await callback.answer()
 
 
+async def _verify_deposit_tx(txid: str, address: str, order: Order,
+                             lang: str = "en") -> tuple[bool, str, dict]:
+    """On-chain gate for a user-submitted claim/refund TXID. Looks the tx up BY HASH
+    (any destination) and, if it clearly wasn't a USDT transfer to our address (or is
+    far too old), returns (False, reject_message, info) so we decline on the user's face
+    and never bother the admin. A transient API error passes through (ok=True) for the
+    admin to verify manually. `info` is the on-chain result for the admin card."""
+    from ..scanner import lookup_tx_global
+    info = await lookup_tx_global(txid, address)
+    if info.get("error"):
+        return True, "", info
+    if not info.get("found"):
+        return False, texts.tx_not_found(lang), info
+    if not info.get("to_ok"):
+        return False, texts.tx_wrong_address(info.get("to", ""), address, lang), info
+    # the amount must be THIS order's own deposit (within a fee band) — otherwise a
+    # customer could claim another customer's mismatched deposit that merely landed at
+    # our shared address
+    amount = info.get("amount") or 0.0
+    expected = order.usd_amount or 0.0
+    band = max(settings.claim_fee_band_abs, settings.claim_fee_band_pct * expected)
+    if expected and abs(amount - expected) > band:
+        return False, texts.tx_amount_mismatch(amount, expected, lang), info
+    ts = info.get("timestamp") or 0
+    if ts and ts < _ms(order.created_at) - 6 * 3600 * 1000:   # >6h before the order
+        age_days = max(1, int((_ms(utcnow()) - ts) / 86_400_000))
+        return False, texts.tx_too_old(age_days, lang), info
+    return True, "", info
+
+
 async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
     """Post the admin review card for a payment claim: bank details, the TXID
     with a Tronscan link, the on-chain auto-check result, and Confirm/Reject."""
@@ -633,6 +685,9 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
             f"🔗 TXID: <code>{esc(txid)}</code>\n"
             f"🔎 {explorer_tx(esc(txid))}\n\n"
             f"<b>On-chain check:</b> {vsum}\n\n"
+            "⚠️ This proves the tx <b>reached our address</b> — <b>not who sent it</b>. "
+            "Deposit hashes are public, so confirm this customer really made this "
+            "transfer (not a hash copied off the explorer) before paying.\n\n"
             "Confirm credits the <b>actual amount received</b> (above), converted at "
             "this order's rate, and moves it to your payout queue.")
         targets = await get_admin_targets(session)
@@ -649,7 +704,7 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
 
 @router.message(ClaimFlow.txid, F.text)
 async def claim_txid(message: Message, state: FSMContext) -> None:
-    txid = message.text.strip().lower().removeprefix("0x")
+    txid = norm_txid(message.text)
     if not TXID_RE.fullmatch(txid):
         await message.answer("That doesn't look like a TXID — it's 64 letters/numbers "
                              "(the transaction hash). Paste it again, or tap ❌ Cancel.")
@@ -675,12 +730,26 @@ async def claim_txid(message: Message, state: FSMContext) -> None:
                 "an on-chain transfer can only be cashed out once. If you think "
                 "this is a mistake, contact support.", reply_markup=hide_kb())
             return
-        order.claim_txid = txid
-        await session.commit()
         lang, footer = await _ctx(session, message.from_user)
         address = order.deposit_address
-        since_ms = _ms(order.created_at)
-    verify = await lookup_claim_tx(txid, address, since_ms)
+
+    # verify on-chain BEFORE accepting — decline a tx that didn't reach us (wrong
+    # address / not found / far too old) on the user's face, with proof, and never
+    # create an admin claim card for it
+    ok, reject, verify = await _verify_deposit_tx(txid, address, order, lang)
+    if not ok:
+        await message.answer(reject + footer, reply_markup=hide_kb(),
+                             disable_web_page_preview=True)
+        return
+
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None or order.status not in _CLAIMABLE:
+            await message.answer("This order can't be confirmed by TXID anymore — "
+                                 "contact support.", reply_markup=hide_kb())
+            return
+        order.claim_txid = txid
+        await session.commit()
     await message.answer(texts.claim_submitted(order_id, lang) + footer,
                          reply_markup=hide_kb())
     await _post_claim_card(message.bot, order_id, txid, verify)

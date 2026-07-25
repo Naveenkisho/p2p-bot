@@ -39,6 +39,7 @@ from .db import (
     Session,
     desk_state,
     get_bep20_address,
+    get_bscscan_key,
     get_deposit_address,
     get_desk_open,
     get_rates,
@@ -629,7 +630,7 @@ async def settings_get(request: web.Request):
                     (await get_setting(s, f"limit_max_{k}") or "")) for k in SERVICES}
         addr = await get_deposit_address(s) or ""
         bep20 = await get_bep20_address(s) or ""
-        bsc_key_set = bool((await get_setting(s, "bscscan_key")) or settings.bscscan_key)
+        bsc_key_set = bool(await get_bscscan_key(s))   # honors /setbsckey off over an env key
         support = await get_setting(s, "support") or ""
         admin_ids = await get_setting(s, "admin_ids")
         admin_ids = admin_ids if admin_ids is not None else settings.admin_ids

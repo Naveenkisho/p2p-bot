@@ -168,19 +168,43 @@ def rate_updated_note(rate: float, lang: str = "en") -> str:
     return f"📈 Rate updated since your quote: <b>1$ / ₹{rate:g}</b>\n\n"
 
 
+def _amount_box(amt: str) -> str:
+    """The exact deposit amount as a centered monospace box — the hero of the
+    deposit screen, so the decimals can't be missed."""
+    label = f"{amt} USDT"
+    inner = max(17, len(label) + 6)
+    return ("<pre>"
+            "┏" + "━" * inner + "┓\n"
+            "┃" + label.center(inner) + "┃\n"
+            "┗" + "━" * inner + "┛"
+            "</pre>")
+
+
+def support_footer(support: str, lang: str = "en") -> str:
+    """A one-line 'need help?' footer, shown on every customer status message so
+    support is always one tap away."""
+    s = html.escape(support)
+    if lang == "hi":
+        return ("\n\n━━━━━━━━━━━━━━\n"
+                f"🆘 <b>Koi dikkat?</b> {s} ko message karein — minutes me reply.")
+    return ("\n\n━━━━━━━━━━━━━━\n"
+            f"🆘 <b>Need help?</b> Message {s} — we usually reply within minutes.")
+
+
 def _addr_block(address: str, bep20: str, lang: str) -> str:
-    """The address step — one address, or both networks when BEP20 is live."""
+    """The address step — one address, or both networks when BEP20 is live. The
+    address(es) sit in a highlighted monospace box (tap to copy)."""
     if bep20:
         head = ("<b>①  In dono me se kisi bhi network par bhejein</b>  👇 <i>tap karein</i>"
                 if lang == "hi" else
                 "<b>①  Send on EITHER network</b>  👇 <i>tap to copy</i>")
         return (f"{head}\n"
-                f"🔷 <b>TRC20 (TRON):</b>\n<code>{address}</code>\n"
-                f"🟡 <b>BEP20 (BSC):</b>\n<code>{bep20}</code>\n\n")
+                f"🔷 <b>TRC20 (TRON)</b>\n<pre>{html.escape(address)}</pre>"
+                f"🟡 <b>BEP20 (BSC)</b>\n<pre>{html.escape(bep20)}</pre>\n")
     head = ("<b>①  Is address par bhejein</b>  👇 <i>copy karne ke liye tap karein</i>"
             if lang == "hi" else
             "<b>①  Send to this address</b>  👇 <i>tap to copy</i>")
-    return f"{head}\n<code>{address}</code>\n\n"
+    return f"{head}\n<pre>{html.escape(address)}</pre>\n"
 
 
 def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
@@ -188,23 +212,21 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
                     bank_label: str = "", lang: str = "en", bep20: str = "") -> str:
     bank = html.escape(bank_label) if bank_label else service_label
     amt = usd_str(usd)
-    whole = f"{int(usd)}"
     has_dec = "." in amt
     addr_block = _addr_block(address, bep20, lang)
     net = "TRC20 or BEP20" if bep20 else "TRC20"
+    amt_box = _amount_box(amt)
     if lang == "hi":
-        amt_line = (
-            f"💵 <b>{amt} USDT</b>  —  🎯 <b>decimals ke saath ({amt}, na ki {whole})</b>"
-            if has_dec else f"💵 <b>{amt} USDT</b>")
         tag_note = (
-            "Ye decimals aapke order ka tag hain — hum turant match kar lete hain.\n\n"
+            f"🎯 <b>Decimals zaroor bhejein (.{amt.split('.')[1]})</b> — ye aapke order ka "
+            "tag hai, isse hum turant match karte hain.\n\n"
             if has_dec else
-            "Bilkul yahi exact amount bhejein — turant match ho jayega.\n\n")
+            "🎯 Bilkul yahi exact amount bhejein — turant match ho jayega.\n\n")
         return (
             f"📥 <b>USDT Deposit</b>\n\n"
-            f"{addr_block}"
+            f"{addr_block}\n"
             f"<b>②  Exactly itna bhejein</b> (dono network ke liye same)\n"
-            f"{amt_line}\n"
+            f"{amt_box}\n"
             f"{tag_note}"
             f"━━━━━━━━━━━━━━\n"
             f"⏱ Confirm hote hi ~<b>10–20 sec</b> me auto-verify (jo bhi network use karein)\n"
@@ -213,18 +235,16 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
             f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}\n"
             f"🧾 Ref: <code>{tag(order_id)}</code>"
         )
-    amt_line = (
-        f"💵 <b>{amt} USDT</b>  —  🎯 <b>with the decimals ({amt}, not {whole})</b>"
-        if has_dec else f"💵 <b>{amt} USDT</b>")
     tag_note = (
-        "Those decimals are your order's tag — we auto-match your deposit to it.\n\n"
+        f"🎯 <b>Include the decimals (.{amt.split('.')[1]})</b> — they're your order's tag, "
+        "so we auto-match your deposit the moment it lands.\n\n"
         if has_dec else
-        "Send this exact amount — it's how we match your deposit instantly.\n\n")
+        "🎯 Send this exact amount — it's how we match your deposit instantly.\n\n")
     return (
         f"📥 <b>USDT Deposit</b>\n\n"
-        f"{addr_block}"
+        f"{addr_block}\n"
         f"<b>②  Send exactly this amount</b> (same on either network)\n"
-        f"{amt_line}\n"
+        f"{amt_box}\n"
         f"{tag_note}"
         f"━━━━━━━━━━━━━━\n"
         f"⏱ Auto-verified ~<b>10–20 sec</b> after it confirms (whichever network you use)\n"
@@ -397,18 +417,21 @@ def refund_submitted(order_id: int, lang: str = "en") -> str:
 def payment_not_detected(order_id: int, support: str, lang: str = "en") -> str:
     if lang == "hi":
         return (
-            f"❌ <b>Order {tag(order_id)} — abhi tak payment nahi mila.</b>\n\n"
-            "Abhi tak nahi bheja? Upar diye address par <b>exact amount</b> bhejein.\n\n"
-            f"Bhej diya hai aur lagta hai ye hamari galti hai? Apna <b>payment "
-            f"screenshot + TXID</b> {html.escape(support)} ko bhejein — hum usually "
-            "<b>5 min</b> me reply karte hain."
+            f"❌ <b>Order {tag(order_id)} ka exact amount abhi tak nahi mila.</b>\n\n"
+            "🎯 Galti se <b>alag amount</b> bhej diya? (platform fee kat gayi ho sakti hai)\n"
+            "👉 Niche <b>“🧾 Bhej diya — TXID submit karein”</b> dabayein aur apna "
+            "transaction hash paste karein. Hum <b>manually verify</b> karke "
+            "<b>~10 min</b> me payout kar denge.\n\n"
+            "Abhi tak bheja hi nahi? Upar diye address par <b>exact amount</b> bhejein, "
+            "ya <b>❌ Cancel order</b> dabayein." + support_footer(support, lang)
         )
     return (
-        f"❌ <b>Order {tag(order_id)} — payment not received yet.</b>\n\n"
-        "Haven't sent it yet? Send the <b>exact amount</b> to the address above.\n\n"
-        f"Already sent and think it's an error on our side? Send your <b>payment "
-        f"screenshot + TXID</b> to {html.escape(support)} — we usually reply within "
-        "<b>5 minutes</b>."
+        f"❌ <b>We haven't received the exact amount for Order {tag(order_id)} yet.</b>\n\n"
+        "🎯 Sent a <b>different amount</b> by mistake? (a platform fee may have been deducted)\n"
+        "👉 Tap <b>“🧾 I've sent it — submit TXID”</b> below and paste your transaction "
+        "hash. We'll <b>verify it manually</b> and pay out within <b>~10 min</b>.\n\n"
+        "Haven't sent it yet? Send the <b>exact amount</b> to the address above, or tap "
+        "<b>❌ Cancel order</b>." + support_footer(support, lang)
     )
 
 
@@ -432,25 +455,27 @@ def checking_wait(lang: str = "en") -> str:
 
 
 def deposit_reminder(order_id: int, usd: float, address: str,
-                     lang: str = "en") -> str:
+                     lang: str = "en", support: str = "") -> str:
     amt = usd_str(usd)
-    dec_hi = " — decimals ke saath" if "." in amt else ""
-    dec_en = ", including the decimals" if "." in amt else ""
+    amt_box = _amount_box(amt)
+    dec = f"🎯 decimals bhi (.{amt.split('.')[1]})\n" if "." in amt else ""
+    dec_en = f"🎯 include the decimals (.{amt.split('.')[1]})\n" if "." in amt else ""
     left = max(1, settings.deposit_ttl_min - settings.remind_min)
+    foot = support_footer(support, lang) if support else ""
     if lang == "hi":
         return (
             f"⏳ <b>Order {tag(order_id)} abhi pending hai</b>\n"
             f"⚠️ <b>Ye quote ~{left} min me expire ho jayega — abhi bhejein.</b>\n\n"
-            f"Complete karne ke liye bhejein <b>exactly {amt} USDT</b> (TRC20){dec_hi}:\n"
-            f"<code>{address}</code>\n\n"
-            "⚡ Auto-verify seconds me. Bhej diya? Niche <b>🔍 Check status</b> dabayein."
+            f"Address (TRC20):\n<pre>{html.escape(address)}</pre>\n"
+            f"Send <b>exactly</b> 👇\n{amt_box}\n{dec}"
+            "⚡ Auto-verify seconds me. Bhej diya? Niche <b>✅ I've sent it — check it</b> dabayein." + foot
         )
     return (
         f"⏳ <b>Order {tag(order_id)} is still pending</b>\n"
         f"⚠️ <b>This quote expires in ~{left} min — please send now.</b>\n\n"
-        f"To complete it, send <b>exactly {amt} USDT</b> (TRC20){dec_en} to:\n"
-        f"<code>{address}</code>\n\n"
-        "⚡ Auto-verified in seconds. Already sent? Tap <b>🔍 Check status</b> below."
+        f"Address (TRC20):\n<pre>{html.escape(address)}</pre>\n"
+        f"Send <b>exactly</b> 👇\n{amt_box}\n{dec_en}"
+        "⚡ Auto-verified in seconds. Already sent? Tap <b>✅ I've sent it — check it</b> below." + foot
     )
 
 
@@ -484,6 +509,74 @@ def claim_submitted(order_id: int, lang: str = "en") -> str:
         f"🔎 <b>Got it — Order {tag(order_id)} is under review.</b>\n\n"
         "We're checking your TXID. As soon as it's verified you'll get the "
         "payout confirmation right here — usually within minutes. 🟢"
+    )
+
+
+def _short_addr(addr: str) -> str:
+    a = addr or ""
+    return f"{a[:10]}…{a[-6:]}" if len(a) > 20 else a
+
+
+def tx_wrong_address(to: str, our: str, lang: str = "en") -> str:
+    """Declined on the spot: the submitted tx did NOT pay our deposit address."""
+    if lang == "hi":
+        return (
+            "🚫 <b>Ye transaction hamare deposit address par nahi bheja gaya.</b>\n\n"
+            f"➡️ Bheja gaya: <code>{html.escape(_short_addr(to))}</code>\n"
+            f"✅ Hamara address: <code>{html.escape(_short_addr(our))}</code>\n\n"
+            "Hum sirf usi USDT transfer ko verify/refund kar sakte hain jo aapke order "
+            "ke deposit address par aaya ho. Sahi TXID check karke dobara bhejein."
+        )
+    return (
+        "🚫 <b>This transaction was NOT sent to our deposit address.</b>\n\n"
+        f"➡️ It was sent to: <code>{html.escape(_short_addr(to))}</code>\n"
+        f"✅ Our address is: <code>{html.escape(_short_addr(our))}</code>\n\n"
+        "We can only verify or refund a USDT transfer made to your order's deposit "
+        "address. Double-check the TXID and try again."
+    )
+
+
+def tx_not_found(lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            "🚫 <b>Ye transaction on-chain nahi mila.</b>\n\n"
+            "Abhi bheja hai? ~1 min ruk kar dobara try karein. Warna TXID check karein — "
+            "wo hamare address par ek confirmed USDT transfer hona chahiye."
+        )
+    return (
+        "🚫 <b>We couldn't find that transaction on-chain.</b>\n\n"
+        "Just sent it? Wait ~1 min and try again. Otherwise check the TXID — it must be "
+        "a confirmed USDT transfer to your order's deposit address."
+    )
+
+
+def tx_amount_mismatch(actual: float, expected: float, lang: str = "en") -> str:
+    """Declined: the tx amount doesn't match THIS order's amount — so it can't be this
+    order's payment (blocks claiming another customer's mismatched deposit)."""
+    if lang == "hi":
+        return (
+            f"🚫 <b>Ye transaction {usd_str(actual)} USDT ka hai, par ye order "
+            f"{usd_str(expected)} USDT ka hai.</b>\n\n"
+            "Ise is order ka payment nahi maana ja sakta. Jo transfer aapne <b>is order</b> "
+            "ke liye kiya hai uska TXID bhejein — ya support se baat karein."
+        )
+    return (
+        f"🚫 <b>That transaction is for {usd_str(actual)} USDT, but this order is for "
+        f"{usd_str(expected)} USDT.</b>\n\n"
+        "It can't be the payment for this order. Please submit the TXID of the transfer you "
+        "made for <b>this</b> order — or contact support."
+    )
+
+
+def tx_too_old(days: int, lang: str = "en") -> str:
+    if lang == "hi":
+        return (
+            f"🚫 <b>Ye transaction {days} din purana hai</b> — ye is order ka payment "
+            "nahi ho sakta. Is order ke liye jo transfer kiya hai uska TXID bhejein."
+        )
+    return (
+        f"🚫 <b>That transaction is {days} days old</b> — it can't be the payment for "
+        "this order. Please submit the TXID of the transfer you made for THIS order."
     )
 
 
