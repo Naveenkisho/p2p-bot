@@ -327,11 +327,14 @@ async def lookup_bsc_tx(txid: str, since_ms: int) -> dict:
 async def expire_stale_orders(bot: Bot) -> None:
     from datetime import timedelta
 
+    from .db import get_deposit_ttl
     from .helpers import try_transition, update_order_cards
     from .keyboards import admin_order_kb
     from .models import BankCard, User
 
-    cutoff = utcnow() - timedelta(minutes=settings.deposit_ttl_min)
+    async with Session() as session:
+        ttl_min = await get_deposit_ttl(session)
+    cutoff = utcnow() - timedelta(minutes=ttl_min)
     expired: list[tuple[int, int, str]] = []
     async with Session() as session:
         stale = (await session.scalars(
@@ -356,7 +359,7 @@ async def expire_stale_orders(bot: Bot) -> None:
             support = await get_support(session)
         for user_id, lang, order_id in expired:
             await notify_user(bot, user_id,
-                              texts.order_expired(order_id, support, lang),
+                              texts.order_expired(order_id, support, lang, ttl_min=ttl_min),
                               reply_markup=expired_kb(order_id))
 
 
@@ -391,11 +394,13 @@ async def remind_pending_orders(bot: Bot) -> None:
     from .keyboards import deposit_kb
     from .models import User
 
-    from .db import get_support
+    from .db import get_deposit_ttl, get_support
 
     now = utcnow()
+    async with Session() as session:
+        ttl_min = await get_deposit_ttl(session)
     due = now - timedelta(minutes=settings.remind_min)
-    not_expired = now - timedelta(minutes=settings.deposit_ttl_min)
+    not_expired = now - timedelta(minutes=ttl_min)
     pending: list[tuple[int, int, float, str, str, str]] = []
     async with Session() as session:
         support = await get_support(session)
@@ -416,7 +421,8 @@ async def remind_pending_orders(bot: Bot) -> None:
         await session.commit()
     for uid, oid, usd, addr, net_label, lang in pending:
         await notify_user(bot, uid,
-                          texts.deposit_reminder(oid, usd, addr, net_label, lang, support),
+                          texts.deposit_reminder(oid, usd, addr, net_label, lang,
+                                                 support, ttl_min=ttl_min),
                           reply_markup=deposit_kb(oid))
 
 

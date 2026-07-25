@@ -209,46 +209,53 @@ def _ist_hm(dt) -> str:
 
 def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
                     address: str, net_label: str, rate: float, created_at=None,
-                    rate_note: str = "", bank_label: str = "", lang: str = "en") -> str:
-    """Deposit screen for ONE chosen network — a single address (+ QR sent
-    alongside), the amount in the hero box, a firm 'match the decimals' warning,
-    and the created/expiry window."""
+                    rate_note: str = "", bank_label: str = "", support: str = "",
+                    ttl_min: int | None = None, lang: str = "en") -> str:
+    """Deposit screen for ONE chosen network. The payout/expiry info sits at the
+    TOP and the pay block (amount box + address) at the BOTTOM — the address is the
+    LAST line so it stays visible above the keyboard, and a QR is sent alongside."""
     bank = html.escape(bank_label) if bank_label else service_label
     amt = usd_str(usd)
     dec = f".{amt.split('.')[1]}" if "." in amt else ""
     amt_box = _amount_box(amt)
-    ttl = settings.deposit_ttl_min
+    ttl = ttl_min or settings.deposit_ttl_min
+    net = html.escape(net_label)
+    addr = html.escape(address)
     times = ""
     if created_at is not None:
         times = f"🕐 {_ist_hm(created_at)} → expires {_ist_hm(created_at + timedelta(minutes=ttl))} IST\n"
     if lang == "hi":
+        sup = f"🆘 <b>Koi dikkat?</b> {html.escape(support)}\n" if support else ""
         warn = (f"❗ <b>{dec} ke saath bhejein</b> — bilkul exact amount, decimals samet. "
                 "Galat amount auto-detect nahi ho sakta." if dec else
                 "❗ <b>Bilkul exact amount</b> bhejein.")
         return (
             f"📥 <b>USDT Deposit</b> · <code>{tag(order_id)}</code>\n\n"
-            f"<b>①  {html.escape(net_label)} par bhejein</b>  👇 <i>tap to copy</i>\n"
-            f"<code>{html.escape(address)}</code>\n\n"
-            f"<b>②  Exactly itna bhejein</b>\n{amt_box}\n"
-            f"{warn}\n\n"
+            f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}\n"
             f"{times}"
             f"⏱ Confirm hote hi seconds me auto-verify\n"
-            f"{rate_note}"
-            f"💵 Aapko milenge <b>₹{inr:,.2f}</b> → {bank}"
+            f"{sup}{rate_note}"
+            "━━━━━━━━━━━━━━\n"
+            f"<b>Exactly itna bhejein</b>  👇\n{amt_box}\n"
+            f"{warn}\n\n"
+            f"<b>{net} par bhejein</b> — 👇 <i>tap to copy</i>\n"
+            f"<code>{addr}</code>"
         )
+    sup = f"🆘 <b>Need help?</b> {html.escape(support)}\n" if support else ""
     warn = (f"❗ <b>Include the {dec}</b> — send the EXACT amount, decimals and all. "
             "A wrong amount may not auto-detect." if dec else
             "❗ <b>Send the exact amount.</b>")
     return (
         f"📥 <b>USDT Deposit</b> · <code>{tag(order_id)}</code>\n\n"
-        f"<b>①  Send on {html.escape(net_label)}</b>  👇 <i>tap to copy</i>\n"
-        f"<code>{html.escape(address)}</code>\n\n"
-        f"<b>②  Send exactly</b>\n{amt_box}\n"
-        f"{warn}\n\n"
+        f"💵 You'll receive <b>₹{inr:,.2f}</b> → {bank}\n"
         f"{times}"
         f"⏱ Auto-verified in seconds after it confirms\n"
-        f"{rate_note}"
-        f"💵 You'll receive <b>₹{inr:,.2f}</b> → {bank}"
+        f"{sup}{rate_note}"
+        "━━━━━━━━━━━━━━\n"
+        f"<b>Send exactly</b>  👇\n{amt_box}\n"
+        f"{warn}\n\n"
+        f"<b>Send on {net}</b> — 👇 <i>tap to copy</i>\n"
+        f"<code>{addr}</code>"
     )
 
 
@@ -453,13 +460,13 @@ def checking_wait(lang: str = "en") -> str:
 
 def deposit_reminder(order_id: int, usd: float, address: str,
                      net_label: str = "TRC20 (TRON)", lang: str = "en",
-                     support: str = "") -> str:
+                     support: str = "", ttl_min: int | None = None) -> str:
     amt = usd_str(usd)
     amt_box = _amount_box(amt)
     net = html.escape(net_label)
     dec = f"🎯 decimals bhi (.{amt.split('.')[1]})\n" if "." in amt else ""
     dec_en = f"🎯 include the decimals (.{amt.split('.')[1]})\n" if "." in amt else ""
-    left = max(1, settings.deposit_ttl_min - settings.remind_min)
+    left = max(1, (ttl_min or settings.deposit_ttl_min) - settings.remind_min)
     foot = support_footer(support, lang) if support else ""
     if lang == "hi":
         return (
@@ -614,10 +621,12 @@ def claim_rejected(order_id: int, support: str, lang: str = "en") -> str:
     )
 
 
-def order_expired(order_id: int, support: str = "@support", lang: str = "en") -> str:
+def order_expired(order_id: int, support: str = "@support", lang: str = "en",
+                  ttl_min: int | None = None) -> str:
+    ttl = ttl_min or settings.deposit_ttl_min
     if lang == "hi":
         return (
-            f"⌛ <b>Order {tag(order_id)} ka {settings.deposit_ttl_min}-minute window "
+            f"⌛ <b>Order {tag(order_id)} ka {ttl}-minute window "
             f"khatam ho gaya</b> — time par deposit nahi mila.\n\n"
             f"⚠️ <b>Ab us purane address/amount par kuch mat bhejein.</b>\n"
             f"Naya payout shuru karein 👇 — fresh address aur amount milega "
@@ -626,7 +635,7 @@ def order_expired(order_id: int, support: str = "@support", lang: str = "en") ->
             f"{tag(order_id)} aur apna TXID bhejein — hum sort kar denge."
         )
     return (
-        f"⌛ <b>Order {tag(order_id)}'s {settings.deposit_ttl_min}-minute window has "
+        f"⌛ <b>Order {tag(order_id)}'s {ttl}-minute window has "
         f"closed</b> — no deposit arrived in time.\n\n"
         f"⚠️ <b>Don't send anything to that old address/amount now.</b>\n"
         f"Start a fresh payout 👇 — you'll get a new address and amount "
