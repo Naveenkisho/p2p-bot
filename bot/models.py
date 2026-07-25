@@ -69,6 +69,13 @@ class Order(Base):
     inr_amount: Mapped[float] = mapped_column(Float)
     bank_card_id: Mapped[int | None] = mapped_column(ForeignKey("bank_cards.id"))
     deposit_address: Mapped[str] = mapped_column(String(64))
+    # The chain the customer chose to pay on ("TRC20" / "BEP20"). deposit_address
+    # always stays the TRC20 desk address (the amount-based scanner matches there),
+    # so these two tell every LATER screen which address/QR to re-show. display_address
+    # pins the EXACT address the customer first saw (so rotating the BEP20 desk address
+    # later can't make a reminder show a different address than the first message).
+    network: Mapped[str] = mapped_column(String(8), default="TRC20")
+    display_address: Mapped[str | None] = mapped_column(String(64))
     refund_address: Mapped[str | None] = mapped_column(String(64))
     txid: Mapped[str | None] = mapped_column(String(80))
     deposit_detected_at: Mapped[datetime | None] = mapped_column(DateTime)

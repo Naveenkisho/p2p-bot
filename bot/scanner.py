@@ -387,7 +387,7 @@ async def remind_pending_orders(bot: Bot) -> None:
     (once per order), before it eventually expires."""
     from datetime import timedelta
 
-    from .helpers import notify_user
+    from .helpers import notify_user, order_display_address
     from .keyboards import deposit_kb
     from .models import User
 
@@ -396,7 +396,7 @@ async def remind_pending_orders(bot: Bot) -> None:
     now = utcnow()
     due = now - timedelta(minutes=settings.remind_min)
     not_expired = now - timedelta(minutes=settings.deposit_ttl_min)
-    pending: list[tuple[int, int, float, str, str]] = []
+    pending: list[tuple[int, int, float, str, str, str]] = []
     async with Session() as session:
         support = await get_support(session)
         rows = (await session.scalars(
@@ -409,10 +409,14 @@ async def remind_pending_orders(bot: Bot) -> None:
             o.reminded = True
             user = await session.get(User, o.user_id)
             lang = user.lang if user and user.lang else "en"
-            pending.append((o.user_id, o.id, o.usd_amount, o.deposit_address, lang))
+            # Re-show the address for the network the customer PICKED (never the raw
+            # TRC20 deposit_address) so a BEP20 order isn't reminded with a TRON one.
+            show_addr, net_label, _ = order_display_address(o)
+            pending.append((o.user_id, o.id, o.usd_amount, show_addr, net_label, lang))
         await session.commit()
-    for uid, oid, usd, addr, lang in pending:
-        await notify_user(bot, uid, texts.deposit_reminder(oid, usd, addr, lang, support),
+    for uid, oid, usd, addr, net_label, lang in pending:
+        await notify_user(bot, uid,
+                          texts.deposit_reminder(oid, usd, addr, net_label, lang, support),
                           reply_markup=deposit_kb(oid))
 
 

@@ -24,6 +24,18 @@ def is_bep20(addr: str) -> bool:
     return bool(BEP20_RE.fullmatch((addr or "").strip()))
 
 
+def order_display_address(order) -> tuple[str, str, str]:
+    """(address, net_label, net_key) to SHOW for an order, honoring the network the
+    customer picked. order.deposit_address stays the TRC20 desk address for the
+    amount-based scanner, so any customer-facing RE-display (reminder, recovery)
+    must go through here — never read deposit_address directly. The
+    `or deposit_address` fallback keeps pre-migration rows safe."""
+    addr = getattr(order, "display_address", None) or getattr(order, "deposit_address", None)
+    if (getattr(order, "network", None) or "TRC20") == "BEP20":
+        return (addr, "BEP20 (BSC)", "BEP20")
+    return (addr, "TRC20 (TRON)", "TRC20")
+
+
 def is_bsc_txid(txid: str) -> bool:
     """BSC/EVM tx hashes are 0x + 64 hex; TRON hashes are bare 64 hex."""
     return (txid or "").lower().startswith("0x")
