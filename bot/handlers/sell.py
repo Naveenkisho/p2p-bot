@@ -124,10 +124,46 @@ async def sell_menu(callback: CallbackQuery, state: FSMContext) -> None:
             await _warn_no_address_once(callback.bot)
         await callback.answer(texts.DESK_CLOSED, show_alert=True)
         return
+    async with Session() as session:
+        two_chains = await bep20_active(session)
     await state.clear()
+    if two_chains:
+        # both chains live → pick the network FIRST (right after USDT Sell), then the
+        # payout method; the address we later show follows this choice.
+        await state.set_state(SellFlow.network)
+        await callback.message.answer(texts.ask_network(lang) + footer,
+                                      reply_markup=network_kb())
+    else:
+        await callback.message.answer(texts.services_header(rates, lang) + footer,
+                                      reply_markup=services_kb(rates))
+    await callback.answer()
+
+
+@router.callback_query(SellFlow.network, F.data.startswith("net:"))
+async def sell_network(callback: CallbackQuery, state: FSMContext) -> None:
+    """Network picked (only reached when BEP20 is live). Store it, then show the
+    payout methods — the service pick continues into the amount step."""
+    net = callback.data.split(":", 1)[1]
+    if net not in ("TRC20", "BEP20"):
+        await callback.answer("Pick a network.", show_alert=True)
+        return
+    async with Session() as session:
+        rates = await get_rates(session)
+        lang, footer = await _ctx(session, callback.from_user)
+    if not rates:
+        await callback.answer(texts.DESK_CLOSED, show_alert=True)
+        return
+    await state.update_data(network=net)
+    await state.set_state(None)              # keep data; the svc:* pick isn't state-gated
+    await strip_kb(callback.message)
     await callback.message.answer(texts.services_header(rates, lang) + footer,
                                   reply_markup=services_kb(rates))
     await callback.answer()
+
+
+@router.message(SellFlow.network)
+async def sell_network_not_tap(message: Message) -> None:
+    await message.answer("Tap 🔷 <b>TRC20</b> or 🟡 <b>BEP20</b> above to pick your network.")
 
 
 @router.callback_query(F.data.startswith("svc:"))
@@ -141,49 +177,15 @@ async def sell_service(callback: CallbackQuery, state: FSMContext) -> None:
         return
     async with Session() as session:
         lo, hi = await get_service_limits(session, key)
-        two_chains = await bep20_active(session)
-    await state.clear()
-    await state.update_data(service=key, rate=rates[key], lo=lo, hi=hi, network="TRC20")
-    if two_chains:
-        # both chains live → let the customer pick before we show an address
-        await state.set_state(SellFlow.network)
-        await callback.message.answer(texts.ask_network(lang) + footer,
-                                      reply_markup=network_kb())
-    else:
-        await state.set_state(SellFlow.amount)
-        await callback.message.answer(
-            texts.ask_amount(SERVICES[key], rates[key], lo, hi, lang) + footer,
-            reply_markup=cancel_kb())
-    await callback.answer()
-
-
-@router.callback_query(SellFlow.network, F.data.startswith("net:"))
-async def sell_network(callback: CallbackQuery, state: FSMContext) -> None:
-    net = callback.data.split(":", 1)[1]
-    if net not in ("TRC20", "BEP20"):
-        await callback.answer("Pick a network.", show_alert=True)
-        return
+    # network was chosen first (BEP20 live) or defaults to TRC20 (single chain)
     data = await state.get_data()
-    key, rate, lo, hi = (data.get("service"), data.get("rate"),
-                         data.get("lo"), data.get("hi"))
-    if key is None:
-        await callback.answer("Session expired — tap 💵 USDT Sell to start over.",
-                              show_alert=True)
-        return
-    async with Session() as session:
-        lang, footer = await _ctx(session, callback.from_user)
-    await state.update_data(network=net)
+    network = data.get("network", "TRC20")
+    await state.update_data(service=key, rate=rates[key], lo=lo, hi=hi, network=network)
     await state.set_state(SellFlow.amount)
-    await strip_kb(callback.message)
     await callback.message.answer(
-        texts.ask_amount(SERVICES[key], rate, lo, hi, lang) + footer,
+        texts.ask_amount(SERVICES[key], rates[key], lo, hi, lang) + footer,
         reply_markup=cancel_kb())
     await callback.answer()
-
-
-@router.message(SellFlow.network)
-async def sell_network_not_tap(message: Message) -> None:
-    await message.answer("Tap 🔷 <b>TRC20</b> or 🟡 <b>BEP20</b> above to pick your network.")
 
 
 @router.message(SellFlow.amount, F.text)
