@@ -11,9 +11,11 @@ cookie with a TTL, a CSRF token on every form, and a simple login throttle.
 """
 
 import asyncio
+import csv
 import hashlib
 import hmac
 import html
+import io
 import logging
 import os
 import secrets
@@ -134,18 +136,98 @@ a{{color:#58a6ff}} h1,h2{{font-weight:650}}
 .tabs a{{display:inline-block;padding:8px 14px;margin:2px;border-radius:8px;
 background:#161b22;text-decoration:none}}
 .tabs a.on{{background:#1f6feb;color:#fff}}
-.card{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:10px 0}}
+.card{{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:10px 0;overflow-wrap:anywhere}}
 .muted{{color:#8b949e;font-size:.9em}}
 input,select{{width:100%;box-sizing:border-box;padding:8px;margin:4px 0 12px;
 border-radius:8px;border:1px solid #30363d;background:#0d1117;color:#e6edf3}}
 button{{padding:9px 16px;border:0;border-radius:8px;background:#238636;color:#fff;
 font-size:1em;cursor:pointer}}
 button.warn{{background:#9e6a03}} button.danger{{background:#da3633}}
-code{{background:#0d1117;padding:1px 5px;border-radius:5px}}
+code{{background:#0d1117;padding:1px 5px;border-radius:5px;word-break:break-all;overflow-wrap:anywhere}}
+.bankwrap{{margin:4px 0}}
+.bankblk{{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:10px 12px;margin:0;
+  font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}}
+.copybtn{{margin-top:6px;padding:6px 12px;background:#1f6feb;font-size:.85em;border:0;border-radius:6px;color:#fff;cursor:pointer}}
 .row{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}
 .nav{{display:flex;gap:14px;margin-bottom:14px}}
-</style></head><body>{body}</body></html>"""
+</style></head><body>{body}
+<script>function _cp(b){{var p=b.parentNode.querySelector('.bankblk');if(!p)return;
+navigator.clipboard.writeText(p.textContent).then(function(){{var t=b.textContent;
+b.textContent='✅ Copied';setTimeout(function(){{b.textContent=t}},1500)}},function(){{}});}}</script>
+</body></html>"""
     return web.Response(text=doc, content_type="text/html")
+
+
+def _bank_lines(details: str | None) -> list[str]:
+    return [ln.strip() for ln in (details or "").splitlines() if ln.strip()]
+
+
+def _bank_block(details: str | None, copy: bool = True) -> str:
+    """Bank details as a clean vertical block — one field per line, kept exactly
+    as entered so the admin can select/paste it in one go. A Copy button lifts
+    the whole block to the clipboard."""
+    lines = _bank_lines(details)
+    if not lines:
+        return "<div class=bankwrap>—</div>"       # block-level so it always line-breaks
+    pre = f"<pre class=bankblk>{_esc(chr(10).join(lines))}</pre>"
+    if not copy:
+        return f"<div class=bankwrap>{pre}</div>"
+    return (f"<div class=bankwrap>{pre}"
+            f"<button type=button class=copybtn onclick=\"_cp(this)\">📋 Copy</button></div>")
+
+
+def _print_page(title: str, body: str) -> web.Response:
+    """A clean, light, print-optimised page with a Save-as-PDF button — on a
+    phone that's Share → Print → Save to Files, or the button's print dialog."""
+    doc = f"""<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>{_esc(title)}</title><style>
+body{{font-family:system-ui,sans-serif;max-width:820px;margin:0 auto;padding:16px;color:#111;background:#fff}}
+h1{{font-size:1.35em;margin:.2em 0}} h2{{font-size:1.05em}}
+table{{border-collapse:collapse;width:100%;font-size:.82em;margin-top:8px}}
+th,td{{border:1px solid #bbb;padding:6px 8px;text-align:left;vertical-align:top;word-break:break-word}}
+th{{background:#f0f0f0}}
+.mono{{font-family:ui-monospace,monospace;word-break:break-all}}
+.kv{{margin:3px 0}} .kv b{{display:inline-block;min-width:130px;color:#333;vertical-align:top}}
+.bankblk{{display:inline-block;background:#f4f4f4;border:1px solid #ccc;border-radius:6px;
+  padding:8px 11px;margin:0;font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word}}
+.pbtn{{position:sticky;top:8px;background:#0b7a55;color:#fff;border:0;border-radius:8px;
+  padding:11px 18px;font-size:1em;margin-bottom:14px;cursor:pointer}}
+@media print{{.pbtn{{display:none}} a{{color:#000;text-decoration:none}}}}
+</style></head><body>
+<button class=pbtn onclick="window.print()">🖨 Save as PDF / Print</button>
+{body}
+<script>setTimeout(function(){{try{{window.print()}}catch(e){{}}}},500)</script>
+</body></html>"""
+    return web.Response(text=doc, content_type="text/html")
+
+
+def _csv_safe(v) -> str:
+    """Neutralise CSV formula injection — a user-typed cell (bank details, name)
+    starting with = + - @ or a control char could run as a formula in Excel."""
+    s = "" if v is None else str(v)
+    return ("'" + s) if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
+async def _export_rows(tab: str):
+    """(order, user, card) tuples for a tab, or every order when tab == 'all'.
+    Users and cards are batch-fetched (3 queries total, no per-row N+1) so even a
+    full 'all' export can't flood the single shared SQLite connection."""
+    from .models import BankCard, User
+    async with Session() as s:
+        if tab == "all":
+            orders = (await s.scalars(select(Order).order_by(Order.id.desc()))).all()
+        else:
+            _, statuses = TABS.get(tab, TABS["active"])
+            orders = (await s.scalars(select(Order).where(Order.status.in_(statuses))
+                                      .order_by(Order.id.desc()))).all()
+        uids = list({o.user_id for o in orders})
+        cids = list({o.bank_card_id for o in orders if o.bank_card_id})
+        users = {u.id: u for u in (await s.scalars(
+            select(User).where(User.id.in_(uids)))).all()} if uids else {}
+        cards = {c.id: c for c in (await s.scalars(
+            select(BankCard).where(BankCard.id.in_(cids)))).all()} if cids else {}
+    return [(o, users.get(o.user_id), cards.get(o.bank_card_id)) for o in orders]
 
 
 def _desk_toggle_btn(switch_on: bool, csrf: str, back: str) -> str:
@@ -229,6 +311,11 @@ async def dashboard(request: web.Request):
     tabs_html = "<div class=tabs>" + "".join(
         f"<a class='{'on' if k == tab else ''}' href='/?tab={k}'>{lbl}</a>"
         for k, (lbl, _) in TABS.items()) + "</div>"
+    export = (f"<div class=row style='margin:6px 0 4px'>"
+              f"<a href='/orders/print?tab={tab}'>📄 Save this tab as PDF</a> · "
+              f"<a href='/orders.csv?tab={tab}'>⬇️ CSV</a> · "
+              f"<a href='/orders/print?tab=all'>📄 All orders (every tab)</a> · "
+              f"<a href='/orders.csv?tab=all'>⬇️ All CSV</a></div>")
     rows = []
     for o in orders:
         emoji = texts.STATUS_EMOJI.get(o.status, "•")
@@ -239,7 +326,7 @@ async def dashboard(request: web.Request):
             f"₹{o.inr_amount:,.2f}<br>"
             f"<a href='/order/{o.id}'>Open →</a></div>")
     body = (_nav("orders") + desk_banner + f"<h1>Orders — {label} ({len(orders)})</h1>"
-            + tabs_html + ("".join(rows) or "<p class=muted>Nothing here.</p>"))
+            + tabs_html + export + ("".join(rows) or "<p class=muted>Nothing here.</p>"))
     return _page("Orders", body)
 
 
@@ -268,7 +355,7 @@ async def order_detail(request: web.Request):
         f"<b>Pay out:</b> ₹{order.inr_amount:,.2f}<br>"
         f"<b>User:</b> {_esc(user.first_name) if user else '?'} {uname} "
         f"(id <code>{order.user_id}</code>)<br>"
-        f"<b>Bank:</b><br><code>{_esc(card.details) if card else '—'}</code><br>"
+        f"<b>Bank:</b> {_bank_block(card.details if card else None)}"
         f"<b>Deposit addr:</b> <code>{_esc(order.deposit_address)}</code><br>"
         f"<b>TX:</b> <code>{_esc(order.txid) or '—'}</code><br>"
         + (f"<b>↩️ Refund TXID:</b> <code>{_esc(order.refund_txid)}</code><br>"
@@ -298,7 +385,102 @@ async def order_detail(request: web.Request):
                 f"<button class=danger>🚫 Reject (fake / no deposit)</button></form>")
     act += "</div>"
     lines.append(act)
+    lines.append(f"<p style='margin-top:10px'><a href='/order/{order.id}/print'>"
+                 f"📄 Save this order as PDF</a></p>")
     return _page(f"Order {order.id}", "".join(lines))
+
+
+@_authed
+async def order_print(request: web.Request):
+    from .models import BankCard, User
+    oid = int(request.match_info["id"])
+    async with Session() as s:
+        order = await s.get(Order, oid)
+        if order is None:
+            return _print_page("Order", "<p>Order not found.</p>")
+        user = await s.get(User, order.user_id)
+        card = await s.get(BankCard, order.bank_card_id) if order.bank_card_id else None
+    uname = f"@{_esc(user.username)}" if user and user.username else "—"
+    def kv(k, v):
+        return f"<div class=kv><b>{k}</b>{v}</div>"
+    body = (
+        f"<h1>{texts.tag(order.id)}</h1>"
+        + kv("Status", _esc(order.status))
+        + kv("Sell", f"{order.usd_amount:g}$ USDT via "
+             f"{_esc(SERVICES.get(order.service, order.service))} @ 1$/₹{order.rate_inr:g}")
+        + kv("Payout", f"₹{order.inr_amount:,.2f}")
+        + kv("User", f"{_esc(user.first_name) if user else '?'} {uname} "
+             f"(id <span class=mono>{order.user_id}</span>)")
+        + kv("Bank", _bank_block(card.details if card else None, copy=False))
+        + kv("Deposit addr", f"<span class=mono>{_esc(order.deposit_address)}</span>")
+        + kv("TXID", f"<span class=mono>{_esc(order.txid) or '—'}</span>")
+        + (kv("Refund TXID", f"<span class=mono>{_esc(order.refund_txid)}</span>")
+           if order.refund_txid else "")
+        + kv("Created", _esc(str(order.created_at)))
+    )
+    return _print_page(f"Order {texts.tag(order.id)}", body)
+
+
+def _tab_arg(request: web.Request) -> str:
+    tab = request.query.get("tab", "all")
+    return tab if tab in TABS or tab == "all" else "all"
+
+
+@_authed
+async def orders_print(request: web.Request):
+    tab = _tab_arg(request)
+    rows = await _export_rows(tab)
+    CAP = 500          # a printable PDF table stays sane; CSV carries the full set
+    cap_note = ""
+    if len(rows) > CAP:
+        cap_note = (f"<p>Showing the latest {CAP} of {len(rows)}. "
+                    f"<a href='/orders.csv?tab={_esc(tab)}'>Download all {len(rows)} as CSV</a>.</p>")
+        rows = rows[:CAP]
+    head = ("<tr><th>Order</th><th>Status</th><th>USDT → ₹</th><th>User</th>"
+            "<th>Bank</th><th>TXID</th><th>Created</th></tr>")
+    trs = []
+    for o, user, card in rows:
+        bank = " · ".join(ln.strip() for ln in (card.details.splitlines() if card else [])
+                          if ln.strip()) or "—"
+        who = (f"{_esc(user.first_name) if user else '?'} "
+               f"(@{_esc(user.username)})" if user and user.username
+               else _esc(user.first_name) if user else "?")
+        trs.append(
+            f"<tr><td>{texts.tag(o.id)}</td><td>{_esc(o.status)}</td>"
+            f"<td>{o.usd_amount:g}$ → ₹{o.inr_amount:,.2f}<br>"
+            f"<span class=muted>@1$/₹{o.rate_inr:g} {_esc(SERVICES.get(o.service, o.service))}</span></td>"
+            f"<td>{who}<br><span class=mono>{o.user_id}</span></td>"
+            f"<td class=mono>{_esc(bank)}</td>"
+            f"<td class=mono>{_esc(o.txid) if o.txid and o.txid != 'manual' else '—'}</td>"
+            f"<td>{_esc(str(o.created_at)[:19])}</td></tr>")
+    label = "All orders" if tab == "all" else TABS[tab][0]
+    body = (f"<h1>{label} — {len(rows)} order(s)</h1>{cap_note}"
+            f"<table>{head}{''.join(trs) or '<tr><td colspan=7>None</td></tr>'}</table>")
+    return _print_page(f"Orders — {label}", body)
+
+
+@_authed
+async def orders_csv(request: web.Request):
+    tab = _tab_arg(request)
+    rows = await _export_rows(tab)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Order", "Status", "Side", "Service", "USDT", "Rate INR/$",
+                "Payout INR", "User ID", "Username", "Name", "Bank details",
+                "Deposit address", "TXID", "Created"])
+    for o, user, card in rows:
+        bank = " | ".join(ln.strip() for ln in (card.details.splitlines() if card else [])
+                          if ln.strip())
+        w.writerow([_csv_safe(x) for x in (
+            texts.tag(o.id), o.status, o.side, o.service, f"{o.usd_amount:g}",
+            f"{o.rate_inr:g}", f"{o.inr_amount:.2f}", o.user_id,
+            (user.username if user else ""), (user.first_name if user else ""),
+            bank, o.deposit_address, o.txid or "", str(o.created_at))])
+    # UTF-8 BOM + charset so Excel reads names / regional-script bank text correctly
+    return web.Response(
+        body=("﻿" + buf.getvalue()).encode("utf-8"),
+        content_type="text/csv", charset="utf-8",
+        headers={"Content-Disposition": f'attachment; filename="orders-{tab}.csv"'})
 
 
 def _order_action(fn, needs_txid=False):
@@ -629,7 +811,10 @@ async def start_panel(bot):
         web.post("/broadcast", broadcast_post),
         web.get("/settings", settings_get),
         web.post("/settings", settings_post),
+        web.get("/orders/print", orders_print),
+        web.get("/orders.csv", orders_csv),
         web.get("/order/{id:\\d+}", order_detail),
+        web.get("/order/{id:\\d+}/print", order_print),
         web.post("/order/{id:\\d+}/done", _order_action(complete_order)),
         web.post("/order/{id:\\d+}/refund", _order_action(refund_order)),
         web.post("/order/{id:\\d+}/reject", _order_action(reject_refund)),
