@@ -70,8 +70,17 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
+    was_in_task = await state.get_state() is not None
     await state.clear()
-    await message.answer("Cancelled — back to the menu.", reply_markup=main_menu())
+    async with Session() as session:
+        support = await get_support(session)
+        lang = await get_lang(session, message.from_user.id)
+    await message.answer("❌ Cancelled." if was_in_task else "✔️", reply_markup=hide_kb())
+    # land back on the full /start-style menu, greeting and data — same as the
+    # ❌ Cancel button, so /cancel never drops the user on a bare line
+    await message.answer(
+        texts.welcome(message.from_user.first_name, message.from_user.id, support, lang),
+        reply_markup=main_menu())
 
 
 @router.message(Command("whoami"))
