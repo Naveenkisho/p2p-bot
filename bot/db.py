@@ -158,6 +158,19 @@ async def get_network_qr(session: AsyncSession, network: str,
     return None
 
 
+async def get_deposit_ttl(session: AsyncSession) -> int:
+    """Minutes a deposit quote stays live before it expires — panel-editable,
+    falling back to the env/default. Clamped to a sane floor so the reminder
+    window never inverts."""
+    raw = await get_setting(session, "deposit_ttl_min")
+    try:
+        if raw and int(raw) > 0:
+            return max(2, int(raw))
+    except ValueError:
+        pass
+    return settings.deposit_ttl_min
+
+
 async def get_service_limits(session: AsyncSession, service: str) -> tuple[float, float]:
     """Per-service min/max USD, panel-editable; falls back to the global env
     bounds when unset."""

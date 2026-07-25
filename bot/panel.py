@@ -44,6 +44,7 @@ from .db import (
     get_bep20_address,
     get_bscscan_key,
     get_deposit_address,
+    get_deposit_ttl,
     get_desk_open,
     get_network_qr_raw,
     get_rates,
@@ -825,6 +826,7 @@ async def settings_get(request: web.Request):
         lims = {k: ((await get_setting(s, f"limit_min_{k}") or ""),
                     (await get_setting(s, f"limit_max_{k}") or "")) for k in SERVICES}
         addr = await get_deposit_address(s) or ""
+        ttl_min = await get_deposit_ttl(s)
         bep20 = await get_bep20_address(s) or ""
         bsc_key_set = bool(await get_bscscan_key(s))   # honors /setbsckey off over an env key
         support = await get_setting(s, "support") or ""
@@ -871,6 +873,8 @@ async def settings_get(request: web.Request):
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<h2>Rates</h2>" + rate_fields
             + "<h2>Deposit &amp; payout</h2><div class=card>"
+            "<label>⏳ Deposit window — minutes a quote stays live before it expires</label>"
+            f"<input name=deposit_ttl inputmode=numeric value='{_esc(ttl_min)}'>"
             "<label>🔷 TRC20 (TRON) deposit address</label>"
             f"<input name=addr value='{_esc(addr)}'>"
             "<label>🟡 BEP20 (BSC) deposit address — 0x… (blank = off)</label>"
@@ -950,6 +954,13 @@ async def settings_post(request: web.Request):
                 await set_setting(s, f"limit_max_{k}", str(hi_val) if hi_val else "")
             except ValueError:
                 errors.append(f"{SERVICES[k]} min/max invalid")
+
+        ttl_raw = str(data.get("deposit_ttl", "")).strip()
+        if ttl_raw:
+            if ttl_raw.isdigit() and 2 <= int(ttl_raw) <= 1440:
+                await set_setting(s, "deposit_ttl_min", str(int(ttl_raw)))
+            else:
+                errors.append("deposit window must be a number of minutes (2–1440)")
 
         addr = str(data.get("addr", "")).strip()
         if addr:

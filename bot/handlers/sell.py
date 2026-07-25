@@ -14,6 +14,7 @@ from ..db import (
     get_admin_targets,
     get_bep20_address,
     get_deposit_address,
+    get_deposit_ttl,
     get_network_qr,
     get_desk_open,
     get_lang,
@@ -328,13 +329,18 @@ async def _create_order(message_target, state: FSMContext, tg_user,
         await session.commit()
         order_id, usd_amount, inr_amount = order.id, order.usd_amount, order.inr_amount
         created_at = order.created_at
+        support = await get_support(session)
+        ttl_min = await get_deposit_ttl(session)
 
     await message_target.answer(f"🏦 {card.label} ✅", reply_markup=hide_kb())
     if voided:
         await message_target.answer(texts.quote_superseded(voided, lang))
+    # No trust footer appended here on purpose: the address is the LAST line of the
+    # deposit screen so it stays visible above the keyboard — support is inline instead.
     msg = texts.deposit_request(order_id, usd_amount, inr_amount, SERVICES[service],
                                 show_addr, net_label, rate, created_at=created_at,
-                                rate_note=rate_note, bank_label=card.label, lang=lang) + footer
+                                rate_note=rate_note, bank_label=card.label,
+                                support=support, ttl_min=ttl_min, lang=lang)
     # Prefer an admin-uploaded QR for this network, but only when it still encodes
     # the live address (get_network_qr enforces that); otherwise auto-generate one.
     async with Session() as session:
@@ -430,14 +436,15 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
                 await callback.answer("✅ Verified — your payout is in the queue.",
                                       show_alert=True)
             elif status == OrderStatus.EXPIRED:
+                ttl_min = await get_deposit_ttl(session)
                 await callback.answer(
-                    f"⌛ This {settings.deposit_ttl_min}-minute payment window "
+                    f"⌛ This {ttl_min}-minute payment window "
                     "expired — please start a fresh payout.", show_alert=True)
                 await strip_kb(callback.message)
                 lang, footer = await _ctx(session, callback.from_user)
                 support = await get_support(session)
                 await callback.message.answer(
-                    texts.order_expired(order.id, support, lang),
+                    texts.order_expired(order.id, support, lang, ttl_min=ttl_min),
                     reply_markup=expired_kb(order.id))
             else:
                 await callback.answer("This order is already in processing.", show_alert=True)
