@@ -31,6 +31,7 @@ from ..helpers import (
     explorer_tx,
     norm_txid,
     notify_admins,
+    order_display_address,
     post_order_card,
     queue_position,
     strip_kb,
@@ -257,17 +258,35 @@ async def _create_order(message_target, state: FSMContext, tg_user,
                 await _warn_no_address_once(message_target.bot)
             await message_target.answer(texts.DESK_CLOSED, reply_markup=hide_kb())
             return
-        open_count = await session.scalar(
+        # Cap PAID / in-flight settlements (deposit already detected, awaiting the
+        # INR payout) so a user can't stack unlimited orders. Unpaid awaiting quotes
+        # are NOT counted here — starting a new order simply voids the old one below.
+        inflight = await session.scalar(
             select(func.count()).select_from(Order).where(
                 Order.user_id == user.id,
-                Order.status.in_([OrderStatus.AWAITING_DEPOSIT.value,
-                                  OrderStatus.DEPOSIT_RECEIVED.value,
+                Order.status.in_([OrderStatus.DEPOSIT_RECEIVED.value,
                                   OrderStatus.PENDING_PAYOUT.value])))
-        if (open_count or 0) >= settings.open_orders_max:
+        if (inflight or 0) >= settings.open_orders_max:
             await message_target.answer(
-                f"⚠️ You already have {open_count} open order(s). Please finish or "
-                "cancel them before starting another.", reply_markup=hide_kb())
+                f"⚠️ You already have {inflight} order(s) being processed. Please wait "
+                "for those payouts before starting another.", reply_markup=hide_kb())
             return
+        # One live deposit session per user: instantly expire any earlier UNPAID
+        # quote, so there's never two "please send $X" screens live at once (a lone
+        # quote still expires on its own after the TTL).
+        voided: list[int] = []
+        for p in (await session.scalars(select(Order).where(
+                Order.user_id == user.id,
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value))).all():
+            gone = await try_transition(session, p.id,
+                                        (OrderStatus.AWAITING_DEPOSIT,),
+                                        OrderStatus.EXPIRED)
+            if gone is not None:
+                voided.append(gone.id)
+                pcard = (await session.get(BankCard, gone.bank_card_id)
+                         if gone.bank_card_id else None)
+                await update_order_cards(message_target.bot, session, gone,
+                                         user, pcard, None)
         # re-check the live rate at the money moment
         rates = await get_rates(session)
         rate = data.get("rate")
@@ -278,6 +297,16 @@ async def _create_order(message_target, state: FSMContext, tg_user,
         if rates[service] != rate:
             rate = rates[service]
             rate_note = texts.rate_updated_note(rate, lang)
+        # Which chain the customer actually gets an address for (BEP20 only when it's
+        # live) — decided BEFORE the order is saved so we can persist exactly what the
+        # customer is shown. deposit_address stays the TRC20 desk address (for the
+        # amount-based scanner); network + display_address let every LATER screen
+        # (reminder, recovery, admin card) re-show the same address/QR.
+        bep20 = await get_bep20_address(session) if await bep20_active(session) else ""
+        if network == "BEP20" and bep20:
+            show_addr, net_label, net_key = bep20, "BEP20 (BSC)", "BEP20"
+        else:
+            show_addr, net_label, net_key = address, "TRC20 (TRON)", "TRC20"
         order = Order(
             user_id=user.id,
             side="sell",
@@ -287,6 +316,8 @@ async def _create_order(message_target, state: FSMContext, tg_user,
             inr_amount=usd * rate,
             bank_card_id=card.id,
             deposit_address=address,
+            network=net_key,
+            display_address=show_addr,
         )
         session.add(order)
         await session.flush()          # assigns order.id, which seeds the tag
@@ -295,17 +326,10 @@ async def _create_order(message_target, state: FSMContext, tg_user,
         await session.commit()
         order_id, usd_amount, inr_amount = order.id, order.usd_amount, order.inr_amount
         created_at = order.created_at
-        bep20 = await get_bep20_address(session) if await bep20_active(session) else ""
-
-    # Which address to SHOW (display only). deposit_address stays the TRC20 desk
-    # address, so the scanner and on-chain verification are unaffected; a BEP20
-    # payment is still matched by amount on the BSC side.
-    if network == "BEP20" and bep20:
-        show_addr, net_label, net_key = bep20, "BEP20 (BSC)", "BEP20"
-    else:
-        show_addr, net_label, net_key = address, "TRC20 (TRON)", "TRC20"
 
     await message_target.answer(f"🏦 {card.label} ✅", reply_markup=hide_kb())
+    if voided:
+        await message_target.answer(texts.quote_superseded(voided, lang))
     msg = texts.deposit_request(order_id, usd_amount, inr_amount, SERVICES[service],
                                 show_addr, net_label, rate, created_at=created_at,
                                 rate_note=rate_note, bank_label=card.label, lang=lang) + footer
@@ -699,7 +723,10 @@ async def _verify_deposit_tx(txid: str, address: str, order: Order,
     if not info.get("found"):
         return False, texts.tx_not_found(lang), info
     if not info.get("to_ok"):
-        return False, texts.tx_wrong_address(info.get("to", ""), address, lang), info
+        # show the customer the address for THEIR network as the expected destination
+        # (deposit_address is always the TRC20 desk address, wrong for a BEP20 order)
+        expected = order_display_address(order)[0] or address
+        return False, texts.tx_wrong_address(info.get("to", ""), expected, lang), info
     # the amount must be THIS order's own deposit (within a fee band) — otherwise a
     # customer could claim another customer's mismatched deposit that merely landed at
     # our shared address

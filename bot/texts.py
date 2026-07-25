@@ -452,9 +452,11 @@ def checking_wait(lang: str = "en") -> str:
 
 
 def deposit_reminder(order_id: int, usd: float, address: str,
-                     lang: str = "en", support: str = "") -> str:
+                     net_label: str = "TRC20 (TRON)", lang: str = "en",
+                     support: str = "") -> str:
     amt = usd_str(usd)
     amt_box = _amount_box(amt)
+    net = html.escape(net_label)
     dec = f"🎯 decimals bhi (.{amt.split('.')[1]})\n" if "." in amt else ""
     dec_en = f"🎯 include the decimals (.{amt.split('.')[1]})\n" if "." in amt else ""
     left = max(1, settings.deposit_ttl_min - settings.remind_min)
@@ -463,16 +465,33 @@ def deposit_reminder(order_id: int, usd: float, address: str,
         return (
             f"⏳ <b>Order {tag(order_id)} abhi pending hai</b>\n"
             f"⚠️ <b>Ye quote ~{left} min me expire ho jayega — abhi bhejein.</b>\n\n"
-            f"Address (TRC20):\n<pre>{html.escape(address)}</pre>\n"
+            f"Address ({net}):\n<pre>{html.escape(address)}</pre>\n"
             f"Send <b>exactly</b> 👇\n{amt_box}\n{dec}"
             "⚡ Auto-verify seconds me. Bhej diya? Niche <b>✅ I've sent it — check it</b> dabayein." + foot
         )
     return (
         f"⏳ <b>Order {tag(order_id)} is still pending</b>\n"
         f"⚠️ <b>This quote expires in ~{left} min — please send now.</b>\n\n"
-        f"Address (TRC20):\n<pre>{html.escape(address)}</pre>\n"
+        f"Address ({net}):\n<pre>{html.escape(address)}</pre>\n"
         f"Send <b>exactly</b> 👇\n{amt_box}\n{dec_en}"
         "⚡ Auto-verified in seconds. Already sent? Tap <b>✅ I've sent it — check it</b> below." + foot
+    )
+
+
+def quote_superseded(order_ids: list[int], lang: str = "en") -> str:
+    """Shown when a customer starts a new order while an unpaid quote was live — the
+    old quote is expired instantly so only one deposit screen is ever active."""
+    tags = ", ".join(tag(o) for o in order_ids)
+    if lang == "hi":
+        return (
+            f"♻️ <b>Purana quote {tags} cancel ho gaya</b> — aapne naya order shuru kiya.\n"
+            f"Sirf niche wala <b>naya amount</b> hi bhejein.\n"
+            f"<i>(Purana amount already bhej diya? Us order par 🧾 I've sent it dabakar claim karein.)</i>"
+        )
+    return (
+        f"♻️ <b>Your earlier quote {tags} was cancelled</b> because you started a new order.\n"
+        f"Please pay only the <b>new amount</b> shown below.\n"
+        f"<i>(Already sent the old amount? Tap 🧾 I've sent it on that order to claim it.)</i>"
     )
 
 

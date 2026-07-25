@@ -20,6 +20,8 @@ _ADDED_COLUMNS = [
     ("orders", "reminded", "BOOLEAN DEFAULT 0"),
     ("orders", "refund_txid", "VARCHAR(80)"),
     ("orders", "claim_txid", "VARCHAR(80)"),
+    ("orders", "network", "VARCHAR(8) DEFAULT 'TRC20'"),
+    ("orders", "display_address", "VARCHAR(64)"),
 ]
 
 
