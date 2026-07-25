@@ -468,14 +468,14 @@ def deposit_reminder(order_id: int, usd: float, address: str,
             f"⚠️ <b>Ye quote ~{left} min me expire ho jayega — abhi bhejein.</b>\n\n"
             f"Address (TRC20):\n<pre>{html.escape(address)}</pre>\n"
             f"Send <b>exactly</b> 👇\n{amt_box}\n{dec}"
-            "⚡ Auto-verify seconds me. Bhej diya? Niche <b>🔍 Check status</b> dabayein." + foot
+            "⚡ Auto-verify seconds me. Bhej diya? Niche <b>✅ I've sent it — check it</b> dabayein." + foot
         )
     return (
         f"⏳ <b>Order {tag(order_id)} is still pending</b>\n"
         f"⚠️ <b>This quote expires in ~{left} min — please send now.</b>\n\n"
         f"Address (TRC20):\n<pre>{html.escape(address)}</pre>\n"
         f"Send <b>exactly</b> 👇\n{amt_box}\n{dec_en}"
-        "⚡ Auto-verified in seconds. Already sent? Tap <b>🔍 Check status</b> below." + foot
+        "⚡ Auto-verified in seconds. Already sent? Tap <b>✅ I've sent it — check it</b> below." + foot
     )
 
 

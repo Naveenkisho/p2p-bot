@@ -108,7 +108,7 @@ def cancelled_kb(order_id: int) -> InlineKeyboardMarkup:
 def not_detected_kb(order_id: int) -> InlineKeyboardMarkup:
     """After a check finds nothing: re-check, claim with a TXID, or cancel."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Check status",
+        [InlineKeyboardButton(text="🔄 Check again",
                               callback_data=OrderCb(action="check", order_id=order_id).pack())],
         [_claim_btn(order_id)],
         [InlineKeyboardButton(text="❌ Cancel order",
@@ -249,7 +249,7 @@ def banks_menu_kb(cards: list[BankCard]) -> InlineKeyboardMarkup:
 
 def deposit_kb(order_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Check status",
+        [InlineKeyboardButton(text="✅ I've sent it — check it",
                               callback_data=OrderCb(action="check", order_id=order_id).pack())],
         [InlineKeyboardButton(text="❌ Cancel order",
                               callback_data=OrderCb(action="cancel", order_id=order_id).pack())],
