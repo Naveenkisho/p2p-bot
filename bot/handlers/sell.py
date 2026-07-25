@@ -473,9 +473,9 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             await state.clear()
             await callback.message.answer(texts.order_cancelled(order.id, lang) + footer,
                                           reply_markup=cancelled_kb(order.id))
-            await notify_admins(callback.bot,
-                                f"🚫 Order {texts.tag(order.id)} cancelled by the user "
-                                f"(no deposit detected).")
+            # No admin ping: a user-cancel is always on an UNPAID awaiting order, so
+            # it's just abandonment. Only a submitted TXID (claim/refund) — which the
+            # bot verifies on-chain — reaches the admin. Strip any card, silently.
             card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
             db_user = await session.get(User, order.user_id)
             await update_order_cards(callback.bot, session, updated, db_user, card,
