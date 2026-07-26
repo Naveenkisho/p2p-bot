@@ -37,6 +37,7 @@ from ..helpers import (
     esc,
     is_bep20,
     is_trc20,
+    is_web_user,
     ist_time_str,
     norm_txid,
     order_card,
@@ -227,7 +228,8 @@ async def cmd_broadcast(message: Message, command: CommandObject) -> None:
         text = text[: -len("+proof")].strip()
     async with Session() as session:
         n = await session.scalar(select(func.count()).select_from(User)
-                                 .where(User.banned.is_(False)))
+                                 .where(User.banned.is_(False),
+                                        User.id > 0))  # skip web (negative-id) users
     launch_broadcast(message.bot, compose_announcement(text), to_proof)
     await message.answer(f"📢 Broadcasting to {n or 0} users"
                          + (" + proof channel" if to_proof else "")
@@ -561,6 +563,12 @@ async def relay_to_user(message: Message) -> None:
         order = await session.get(Order, link.order_id)
         user = await session.get(User, order.user_id) if order else None
     if order is None:
+        return
+    if is_web_user(order.user_id):
+        await message.reply(
+            f"🌐 Order {texts.tag(order.id)} came from the website — that customer "
+            "has no Telegram chat, so there's nowhere to relay this. They follow "
+            "the order live on their order page.")
         return
     try:
         if message.photo and not message.caption:

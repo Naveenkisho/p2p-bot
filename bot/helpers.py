@@ -268,13 +268,30 @@ async def notify_admins(bot: Bot, text: str) -> None:
             log.exception("failed to notify admin chat %s", chat_id)
 
 
+def is_web_user(user_id: int) -> bool:
+    """Website customers are stored with negative ids: they have no Telegram
+    chat, so notify_user always returns False for them. Callers use this to tell
+    "the DM failed" apart from "there was never a DM to send"."""
+    return user_id < 0
+
+
+def dm_note(user_id: int, delivered: bool, warning: str) -> str:
+    """The admin-facing tail after a notify_user attempt — a warning only when a
+    real Telegram DM failed, and a calm note for website orders."""
+    if delivered:
+        return ""
+    if is_web_user(user_id):
+        return " 🌐 Web order — the customer follows it live on the site."
+    return warning
+
+
 async def notify_user(bot: Bot, user_id: int, text: str,
                       reply_markup: InlineKeyboardMarkup | None = None) -> bool:
     """Returns False when the message could not be delivered (e.g. the user
     blocked the bot) so callers can surface that instead of claiming success.
     Website customers (negative ids — no Telegram account) are skipped outright:
     they follow their order live on the site instead."""
-    if user_id < 0:
+    if is_web_user(user_id):
         return False
     try:
         await bot.send_message(user_id, text, reply_markup=reply_markup)

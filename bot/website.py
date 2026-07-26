@@ -23,7 +23,8 @@ import logging
 import secrets
 import time
 from collections import deque
-from datetime import timedelta, timezone
+from datetime import timezone
+from functools import lru_cache
 
 from aiohttp import web
 from sqlalchemy import select
@@ -105,9 +106,17 @@ async def _ensure_uid(request: web.Request) -> tuple[int, bool]:
     return -(secrets.randbits(47) | (1 << 46)), True
 
 
-def _set_uid_cookie(resp, signed: str) -> None:
+def _is_https(request: web.Request) -> bool:
+    return (request.secure or
+            request.headers.get("X-Forwarded-Proto", "").lower() == "https")
+
+
+def _set_uid_cookie(resp, signed: str, secure: bool) -> None:
+    # Secure only when the request is HTTPS, so the identity cookie can't be
+    # sniffed or fixated over a downgraded http request (production runs behind
+    # nginx+TLS; plain-http dev still works with secure=False).
     resp.set_cookie(COOKIE, signed, httponly=True, samesite="Lax",
-                    max_age=COOKIE_TTL)
+                    secure=secure, max_age=COOKIE_TTL)
 
 
 async def _csrf(scope: str) -> str:
@@ -116,24 +125,106 @@ async def _csrf(scope: str) -> str:
 
 
 def _client_ip(request: web.Request) -> str:
-    return request.headers.get("X-Forwarded-For",
-                               request.remote or "?").split(",")[0].strip()
+    """The real client IP for per-IP throttling. X-Forwarded-For is only trusted
+    when the direct peer is our local reverse proxy, and then only its LAST hop
+    (the value nginx appended) — never the client-controlled leftmost entry, which
+    would otherwise let an attacker mint a fresh 'IP' per request and defeat the
+    throttle. Direct connections (no proxy) use the real socket peer."""
+    peer = request.remote or "?"
+    if peer in ("127.0.0.1", "::1"):
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            return xff.split(",")[-1].strip() or peer
+    return peer
+
+
+def _prune(dq: deque, now: float, window: int = 3600) -> None:
+    while dq and dq[0] < now - window:
+        dq.popleft()
 
 
 def _throttled(ip: str) -> bool:
+    """Read-only check — never creates an entry (so it can't mint unbounded dict
+    keys) and reaps a deque once it empties."""
+    now = time.time()
+    dq = _order_times.get(ip)
+    if dq is None:
+        return False
+    _prune(dq, now)
+    if not dq:
+        del _order_times[ip]
+        return False
+    return len(dq) >= max(1, settings.site_orders_per_hour)
+
+
+def _record_order(ip: str) -> None:
     now = time.time()
     dq = _order_times.setdefault(ip, deque())
-    while dq and dq[0] < now - 3600:
-        dq.popleft()
-    if len(dq) >= max(1, settings.site_orders_per_hour):
-        return True
-    return False
+    _prune(dq, now)
+    dq.append(now)
+    if len(_order_times) > 5000:          # hard cap: drop emptied deques
+        for k in [k for k, v in _order_times.items() if not v]:
+            _order_times.pop(k, None)
+
+
+# claim-attempt throttle keyed on "<ip>:<token>" — bounds the outbound chain
+# lookups an attacker can drive by looping random valid-format TXIDs on one order.
+_claim_times: dict[str, deque] = {}
+_CLAIM_MAX_PER_HOUR = 8
+# per-IP throttle for the on-demand "I've sent it" re-scan (each drives a sweep).
+_check_times: dict[str, deque] = {}
+_CHECK_MAX_PER_MIN = 6
+
+
+def _bucket_throttled(store: dict, key: str, limit: int, window: int) -> bool:
+    now = time.time()
+    dq = store.get(key)
+    if dq is None:
+        return False
+    _prune(dq, now, window)
+    if not dq:
+        del store[key]
+        return False
+    return len(dq) >= limit
+
+
+def _bucket_record(store: dict, key: str, window: int) -> None:
+    now = time.time()
+    dq = store.setdefault(key, deque())
+    _prune(dq, now, window)
+    dq.append(now)
+    if len(store) > 5000:
+        for k in [k for k, v in store.items() if not v]:
+            store.pop(k, None)
 
 
 # ── HTML shell ────────────────────────────────────────────────────────────────
 
 def _esc(v) -> str:
     return html.escape("" if v is None else str(v))
+
+
+@web.middleware
+async def _sec_headers(request: web.Request, handler):
+    """Security headers on every response (incl. redirects/404s) + HSTS on HTTPS."""
+    try:
+        resp = await handler(request)
+    except web.HTTPException as exc:
+        resp = exc          # HTTPException is itself a Response — decorate + return
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    if _is_https(request):
+        resp.headers.setdefault("Strict-Transport-Security",
+                                "max-age=63072000; includeSubDomains")
+    return resp
+
+
+@lru_cache(maxsize=512)
+def _gen_qr(address: str) -> bytes | None:
+    """Auto-generated QR bytes for an address — memoized (a pure function; the QR
+    for a given address never changes), so repeated /qr.png hits don't re-render."""
+    return qr_png(address)
 
 
 _STYLE = """
@@ -367,7 +458,7 @@ The quote stays live for {ttl} minutes after you submit.</p>
 <p class='muted small'>🆘 Questions? {_support_html(support)}</p>"""
         resp = _page("Sell USDT — P2P Desk", body)
     if is_new:
-        _set_uid_cookie(resp, await _sign_uid(uid))
+        _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
 
 
@@ -468,9 +559,9 @@ async def sell_post(request: web.Request):
         await s.commit()
         token = order.web_token
 
-    _order_times.setdefault(ip, deque()).append(time.time())
+    _record_order(ip)
     resp = web.HTTPFound(f"/o/{token}")
-    _set_uid_cookie(resp, await _sign_uid(uid))
+    _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
 
 
@@ -636,12 +727,19 @@ async def order_qr(request: web.Request):
         raise web.HTTPNotFound()
     show_addr = order.display_address or order.deposit_address
     async with Session() as s:
-        png = await get_network_qr(s, order.network or "TRC20", show_addr)
-    png = png or qr_png(show_addr)
-    if not png:
+        stored = await get_network_qr(s, order.network or "TRC20", show_addr)
+    # get_network_qr returns bytes on this branch, or (bytes, mime) once the
+    # QR-upload PR lands — accept either so merge order doesn't matter.
+    if isinstance(stored, tuple):
+        img, mime, cache = stored[0], stored[1], "no-store"
+    elif stored:
+        img, mime, cache = stored, "image/png", "no-store"
+    else:
+        img, mime, cache = _gen_qr(show_addr), "image/png", "private, max-age=600"
+    if not img:
         raise web.HTTPNotFound()
-    return web.Response(body=png, content_type="image/png",
-                        headers={"Cache-Control": "no-store"})
+    return web.Response(body=img, content_type=mime,
+                        headers={"Cache-Control": cache})
 
 
 async def order_check(request: web.Request):
@@ -654,8 +752,13 @@ async def order_check(request: web.Request):
     if not hmac.compare_digest(request.headers.get("X-CSRF", ""),
                                await _csrf(f"o:{token}")):
         raise web.HTTPForbidden(text="bad csrf")
+    ip = _client_ip(request)
+    if _bucket_throttled(_check_times, ip, _CHECK_MAX_PER_MIN, 60):
+        return web.json_response({"checking": False, "wait": True}, status=429)
+    _bucket_record(_check_times, ip, 60)
     bot = request.app.get("bot")
     if order.status == OrderStatus.AWAITING_DEPOSIT.value and bot is not None:
+        # launch_order_check dedups per order_id, so repeated taps don't stack sweeps
         from .scanner import launch_order_check
         launch_order_check(bot, order.id)
     return web.json_response({"checking": True})
@@ -698,6 +801,14 @@ async def order_claim(request: web.Request):
     if not TXID_RE.fullmatch(txid):
         return back("That doesn't look like a transaction hash — it's 64 characters "
                     "(with a 0x in front on BEP20). Check your wallet's history.")
+    # Rate-limit the outbound on-chain lookup per (ip, order): a failed check
+    # leaves the order claimable, so without this an attacker could loop random
+    # hashes and burn the desk's TronGrid/BscScan quota.
+    throttle_key = f"{_client_ip(request)}:{token}"
+    if _bucket_throttled(_claim_times, throttle_key, _CLAIM_MAX_PER_HOUR, 3600):
+        return back("Too many checks on this order — please wait a bit, or send your "
+                    "payment screenshot + TXID to support.")
+    _bucket_record(_claim_times, throttle_key, 3600)
     async with Session() as s:
         if await txid_used_elsewhere(s, txid, order.id):
             return back("That TXID is already used by another order.")
@@ -707,6 +818,11 @@ async def order_claim(request: web.Request):
         import re as _re
         return back(_re.sub(r"<[^>]+>", "", reject)[:500] or
                     "We couldn't verify that TXID against this order.")
+    if verify.get("error"):
+        # transient chain-API error: on the bot this passes to a human, but on the
+        # open web we must NOT accept it (it would post an admin card) — ask to retry.
+        return back("We couldn't reach the blockchain just now — please try again in "
+                    "a minute. If it keeps failing, send your TXID to support.")
     async with Session() as s:
         fresh = await s.get(Order, order.id)
         if fresh is None or fresh.status not in _CLAIMABLE or fresh.claim_txid:
@@ -756,7 +872,7 @@ async def start_site(bot):
     if not settings.site_port:
         log.info("customer website disabled (P2P_SITE_PORT=0)")
         return None
-    app = web.Application()
+    app = web.Application(middlewares=[_sec_headers])
     app["bot"] = bot
     app.add_routes([
         web.get("/", home),
@@ -770,7 +886,9 @@ async def start_site(bot):
         web.post("/o/{token}/cancel", order_cancel),
         web.post("/o/{token}/claim", order_claim),
     ])
-    runner = web.AppRunner(app)
+    # access_log=None: request lines carry the per-order capability token in the
+    # path (/o/<token>) — keep it out of the log sink.
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, settings.site_host, settings.site_port)
     await site.start()

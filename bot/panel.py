@@ -748,7 +748,8 @@ async def desk_toggle(request: web.Request):
 async def broadcast_get(request: web.Request):
     async with Session() as s:
         n = await s.scalar(select(func.count()).select_from(User)
-                           .where(User.banned.is_(False)))
+                           .where(User.banned.is_(False),
+                                  User.id > 0))  # skip web (negative-id) users
     csrf = await _csrf_for(request)
     msg = request.query.get("msg", "")
     banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
@@ -781,7 +782,8 @@ async def broadcast_post(request: web.Request):
     to_proof = bool(data.get("to_proof"))
     async with Session() as s:
         n = await s.scalar(select(func.count()).select_from(User)
-                           .where(User.banned.is_(False)))
+                           .where(User.banned.is_(False),
+                                  User.id > 0))  # skip web (negative-id) users
     launch_broadcast(request.app["bot"], compose_announcement(text), to_proof)
     raise web.HTTPFound("/broadcast?msg=" + html.escape(
         f"Broadcast started to {n or 0} users — you'll get a summary in Telegram."))
