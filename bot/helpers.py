@@ -271,7 +271,11 @@ async def notify_admins(bot: Bot, text: str) -> None:
 async def notify_user(bot: Bot, user_id: int, text: str,
                       reply_markup: InlineKeyboardMarkup | None = None) -> bool:
     """Returns False when the message could not be delivered (e.g. the user
-    blocked the bot) so callers can surface that instead of claiming success."""
+    blocked the bot) so callers can surface that instead of claiming success.
+    Website customers (negative ids — no Telegram account) are skipped outright:
+    they follow their order live on the site instead."""
+    if user_id < 0:
+        return False
     try:
         await bot.send_message(user_id, text, reply_markup=reply_markup)
         return True

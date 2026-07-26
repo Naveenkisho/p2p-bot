@@ -22,6 +22,7 @@ _ADDED_COLUMNS = [
     ("orders", "claim_txid", "VARCHAR(80)"),
     ("orders", "network", "VARCHAR(8) DEFAULT 'TRC20'"),
     ("orders", "display_address", "VARCHAR(64)"),
+    ("orders", "web_token", "VARCHAR(48)"),
 ]
 
 

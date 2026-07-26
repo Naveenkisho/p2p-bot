@@ -537,10 +537,11 @@ async def dashboard(request: web.Request):
               f"<a href='/orders.csv?tab=all'>⬇️ all CSV</a></div>")
     rows = []
     for o in orders:
+        src = ("<span class='badge accent'>🌐 web</span>" if o.user_id < 0 else "")
         rows.append(
             f"<a class='card link' href='/order/{o.id}' "
             f"style='display:block;color:inherit'>"
-            f"<div class=row><b>{texts.tag(o.id)}</b>"
+            f"<div class=row><b>{texts.tag(o.id)}</b>{src}"
             f"<span class=sp></span>{_badge(o.status)}</div>"
             f"<div class=row style='margin-top:8px'>"
             f"<span class=amt>{o.usd_amount:g}<span class=muted "
@@ -569,6 +570,8 @@ async def order_detail(request: web.Request):
         card = await s.get(BankCard, order.bank_card_id) if order.bank_card_id else None
     csrf = await _csrf_for(request)
     uname = f"@{_esc(user.username)}" if user and user.username else "—"
+    if order.user_id < 0:
+        uname = "<span class='badge accent'>🌐 website customer</span>"
     msg = request.query.get("msg", "")
     banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
     lines = [

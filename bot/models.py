@@ -76,6 +76,9 @@ class Order(Base):
     # later can't make a reminder show a different address than the first message).
     network: Mapped[str] = mapped_column(String(8), default="TRC20")
     display_address: Mapped[str | None] = mapped_column(String(64))
+    # Unguessable token for the website order page (/o/<token>) — web orders only.
+    # Web customers have negative user ids (no Telegram account behind them).
+    web_token: Mapped[str | None] = mapped_column(String(48), index=True)
     refund_address: Mapped[str | None] = mapped_column(String(64))
     txid: Mapped[str | None] = mapped_column(String(80))
     deposit_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
