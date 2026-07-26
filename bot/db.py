@@ -158,17 +158,24 @@ async def get_network_qr(session: AsyncSession, network: str,
     return None
 
 
+DEFAULT_DEPOSIT_TTL_MIN = 15   # product default; the stale P2P_DEPOSIT_TTL_MIN env
+                               # is intentionally NOT consulted here — the panel is
+                               # the single source of truth for the live window.
+
+
 async def get_deposit_ttl(session: AsyncSession) -> int:
-    """Minutes a deposit quote stays live before it expires — panel-editable,
-    falling back to the env/default. Clamped to a sane floor so the reminder
-    window never inverts."""
+    """Minutes a deposit quote stays live before it expires. The admin panel
+    (Settings → Deposit window) is the source of truth; when it's unset we use a
+    hard 15-min default and ignore the env var, so an old P2P_DEPOSIT_TTL_MIN=60
+    left in .env can never quietly make quotes last an hour. Clamped to a sane
+    floor so the reminder window never inverts."""
     raw = await get_setting(session, "deposit_ttl_min")
     try:
         if raw and int(raw) > 0:
             return max(2, int(raw))
     except ValueError:
         pass
-    return settings.deposit_ttl_min
+    return DEFAULT_DEPOSIT_TTL_MIN
 
 
 async def get_service_limits(session: AsyncSession, service: str) -> tuple[float, float]:
