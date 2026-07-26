@@ -342,9 +342,10 @@ async def _create_order(message_target, state: FSMContext, tg_user,
                                 support=support, ttl_min=ttl_min, lang=lang)
     # Prefer an admin-uploaded QR for this network, but only when it still encodes
     # the live address (get_network_qr enforces that); otherwise auto-generate one.
+    # Telegram sniffs the actual image type, so a stored JPG/WebP sends fine too.
     async with Session() as session:
-        png = await get_network_qr(session, net_key, show_addr)
-    png = png or qr_png(show_addr)
+        stored = await get_network_qr(session, net_key, show_addr)
+    png = (stored[0] if stored else None) or qr_png(show_addr)
     if png and len(msg) <= 1024:
         await message_target.answer_photo(
             BufferedInputFile(png, "deposit-qr.png"), caption=msg,
