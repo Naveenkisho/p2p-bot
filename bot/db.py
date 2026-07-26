@@ -26,6 +26,15 @@ _ADDED_COLUMNS = [
 ]
 
 
+# Indexes on those late-added columns. create_all() only builds indexes for
+# tables it creates, so an upgraded database would otherwise never get them —
+# the column appears, the index silently doesn't, and the miss only shows up as
+# a slow table scan on the busiest server.
+_ADDED_INDEXES = [
+    ("ix_orders_web_token", "orders", "web_token"),
+]
+
+
 def _migrate(conn) -> None:
     insp = inspect(conn)
     tables = set(insp.get_table_names())
@@ -35,6 +44,14 @@ def _migrate(conn) -> None:
         cols = {c["name"] for c in insp.get_columns(table)}
         if col not in cols:
             conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+    insp = inspect(conn)   # re-reflect: the loop above just changed the schema,
+    for name, table, col in _ADDED_INDEXES:   # and the old inspector is cached
+        if table not in tables:
+            continue
+        if col not in {c["name"] for c in insp.get_columns(table)}:
+            continue
+        conn.exec_driver_sql(
+            f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({col})")
 
 
 async def init_db() -> None:

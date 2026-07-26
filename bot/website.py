@@ -135,7 +135,25 @@ def _client_ip(request: web.Request) -> str:
         xff = request.headers.get("X-Forwarded-For", "")
         if xff:
             return xff.split(",")[-1].strip() or peer
+        _warn_no_xff()
     return peer
+
+
+_warned_no_xff = False
+
+
+def _warn_no_xff() -> None:
+    """A proxied request that carries no X-Forwarded-For means the proxy isn't
+    passing the client on — every visitor on earth then shares one throttle
+    bucket, and the site starts refusing real customers as if they were one
+    abuser. That looks like a site bug, so say so loudly, once."""
+    global _warned_no_xff
+    if not _warned_no_xff:
+        _warned_no_xff = True
+        log.warning("proxied request with no X-Forwarded-For — every visitor is "
+                    "sharing one rate-limit bucket. Add "
+                    "'proxy_set_header X-Forwarded-For $remote_addr;' to the "
+                    "site's nginx location block (see deploy/nginx-site.conf).")
 
 
 def _prune(dq: deque, now: float, window: int = 3600) -> None:
@@ -558,7 +576,16 @@ async def sell_post(request: web.Request):
         order.inr_amount = order.usd_amount * rate
         await s.commit()
         token = order.web_token
+        order_id = order.id
 
+    # The client IP is otherwise invisible (the site runs with access logging
+    # off so order tokens stay out of the logs), and it is the one thing that
+    # proves the reverse proxy is forwarding visitors correctly: if every order
+    # here shows the SAME address, the per-IP limits are all sharing one bucket
+    # and real customers will start being refused. Also the first thing you want
+    # when investigating abuse.
+    log.info("web order #%s created from %s (%s %.2f USDT)",
+             order_id, ip, service, usd)
     _record_order(ip)
     resp = web.HTTPFound(f"/o/{token}")
     _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
@@ -626,7 +653,8 @@ to our address is accepted.</p>
 <b>{net_emoji} On {_esc(net_label)} — copy the address</b>
 <span class=addr id=addr>{_esc(show_addr)}</span>
 <button class="btn ghost" onclick="copyAddr(this)">📋 Copy address</button>
-<img class=qrimg src="/o/{_esc(token)}/qr.png" alt="Deposit QR">
+<img class=qrimg src="/o/{_esc(token)}/qr.png" alt="Deposit QR"
+ onerror="this.remove()">
 <b>💸 Then send exactly</b>
 <div class=amtbox><div class=l>send exactly</div><div class=v>{_esc(amt)} USDT</div></div>
 <p class='muted small' style="margin:6px 0 0">{warn}</p>
