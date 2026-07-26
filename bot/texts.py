@@ -180,15 +180,14 @@ def rate_updated_note(rate: float, lang: str = "en") -> str:
 
 
 def _amount_box(amt: str) -> str:
-    """The exact deposit amount as a centered monospace box — the hero of the
-    deposit screen, so the decimals can't be missed."""
-    label = f"{amt} USDT"
-    inner = max(17, len(label) + 6)
-    return ("<pre>"
-            "┏" + "━" * inner + "┓\n"
-            "┃" + label.center(inner) + "┃\n"
-            "┗" + "━" * inner + "┛"
-            "</pre>")
+    """The exact amount inside a real box — top & bottom rules with corners — but
+    NOT a <pre>/code block (so no code badge, nothing to mis-copy). The sides are
+    open so it lines up in Telegram's normal proportional font; the amount is bold
+    and shifted toward the middle."""
+    rule = "━" * 13
+    return (f"┏{rule}┓\n"
+            f"      💠 <b>{amt} USDT</b>\n"
+            f"┗{rule}┛")
 
 
 def support_footer(support: str, lang: str = "en") -> str:
@@ -211,9 +210,9 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
                     address: str, net_label: str, rate: float, created_at=None,
                     rate_note: str = "", bank_label: str = "", support: str = "",
                     ttl_min: int | None = None, lang: str = "en") -> str:
-    """Deposit screen for ONE chosen network. The payout/expiry info sits at the
-    TOP and the pay block (amount box + address) at the BOTTOM — the address is the
-    LAST line so it stays visible above the keyboard, and a QR is sent alongside."""
+    """Deposit screen for ONE chosen network. The address sits ABOVE the amount box
+    (never the last line), so tapping it to copy can't accidentally hit the inline
+    buttons; the amount box is bold/centered, not a code block. A QR is sent along."""
     bank = html.escape(bank_label) if bank_label else service_label
     amt = usd_str(usd)
     dec = f".{amt.split('.')[1]}" if "." in amt else ""
@@ -237,10 +236,10 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
             f"⏱ Confirm hote hi seconds me auto-verify\n"
             f"{sup}{rate_note}"
             "━━━━━━━━━━━━━━\n"
-            f"{net_emoji} <b>{net}</b> par — exactly itna bhejein 👇\n{amt_box}\n"
-            f"{warn}\n\n"
-            f"{net_emoji} <b>{net}</b> address — 👇 <i>tap to copy</i>\n"
-            f"<code>{addr}</code>"
+            f"{net_emoji} <b>{net}</b> — address copy karein 👇\n"
+            f"<code>{addr}</code>\n\n"
+            f"💸 Phir <b>exactly itna</b> bhejein 👇\n{amt_box}\n"
+            f"{warn}"
         )
     sup = f"🆘 <b>Need help?</b> {html.escape(support)}\n" if support else ""
     warn = (f"❗ <b>Include the {dec}</b> — send the EXACT amount, decimals and all. "
@@ -253,10 +252,10 @@ def deposit_request(order_id: int, usd: float, inr: float, service_label: str,
         f"⏱ Auto-verified in seconds after it confirms\n"
         f"{sup}{rate_note}"
         "━━━━━━━━━━━━━━\n"
-        f"{net_emoji} On <b>{net}</b> — send exactly 👇\n{amt_box}\n"
-        f"{warn}\n\n"
-        f"{net_emoji} <b>{net}</b> address — 👇 <i>tap to copy</i>\n"
-        f"<code>{addr}</code>"
+        f"{net_emoji} On <b>{net}</b> — tap the address to copy 👇\n"
+        f"<code>{addr}</code>\n\n"
+        f"💸 Then send <b>exactly</b> 👇\n{amt_box}\n"
+        f"{warn}"
     )
 
 
