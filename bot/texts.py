@@ -180,10 +180,14 @@ def rate_updated_note(rate: float, lang: str = "en") -> str:
 
 
 def _amount_box(amt: str) -> str:
-    """The exact deposit amount as the hero of the screen — big and bold, framed
-    and shifted toward the middle. Deliberately NOT a <pre>/code block, so there's
-    no 'code' badge and nothing to mis-copy; the decimals still stand out."""
-    return f"        💠  <b>{amt} USDT</b>  💠"
+    """The exact amount inside a real box — top & bottom rules with corners — but
+    NOT a <pre>/code block (so no code badge, nothing to mis-copy). The sides are
+    open so it lines up in Telegram's normal proportional font; the amount is bold
+    and shifted toward the middle."""
+    rule = "━" * 13
+    return (f"┏{rule}┓\n"
+            f"      💠 <b>{amt} USDT</b>\n"
+            f"┗{rule}┛")
 
 
 def support_footer(support: str, lang: str = "en") -> str:
