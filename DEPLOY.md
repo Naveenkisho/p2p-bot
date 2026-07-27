@@ -105,6 +105,20 @@ with the bot on `127.0.0.1:8090` and stays invisible until you put a proxy in
 front of it. Web customers appear in the panel tagged `🌐 web`, and the rates,
 deposit address, QR and deposit window you set there govern both interfaces.
 
+### The short way: one script
+
+After 5.1 (ship the code) and 5.2 (point the domain), one script does sections
+5.3–5.6 for you — installs nginx, writes both configs with your domain filled
+in, takes the pasted Cloudflare origin certificate, locks the firewall to
+Cloudflare, and prints the exact dashboard settings and verification commands:
+
+```bash
+cd /opt/p2p-bot && sudo bash deploy/setup-site.sh yourdomain.com
+```
+
+It backs up anything it replaces and is safe to re-run. The sections below are
+the same steps by hand, if you prefer to see each one.
+
 ### 5.1 Ship the code
 
 ```bash
