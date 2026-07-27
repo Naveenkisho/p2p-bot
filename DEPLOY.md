@@ -199,8 +199,10 @@ Cloudflare protection — WAF, rate limiting, DDoS — is bypassed.
 
 ```bash
 sudo ufw allow OpenSSH
-for ip in $(curl -fsS https://www.cloudflare.com/ips-v4/ \
-                 https://www.cloudflare.com/ips-v6/); do
+# one curl per list + echo: the endpoints have no trailing newline, and a
+# combined fetch glues the last v4 range onto the first v6 range
+for ip in $({ curl -fsS https://www.cloudflare.com/ips-v4/; echo; \
+              curl -fsS https://www.cloudflare.com/ips-v6/; echo; }); do
   sudo ufw allow from $ip to any port 443 proto tcp
 done
 sudo ufw default deny incoming
