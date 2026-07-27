@@ -114,6 +114,21 @@ if [[ -e /etc/nginx/sites-enabled/default ]]; then
     rm -f /etc/nginx/sites-enabled/default
     ok "removed nginx's default site (it would answer on the bare IP)"
 fi
+
+# Coexist with other apps on this box (e.g. another site's vhost): nginx allows
+# exactly ONE default_server per port. If some other enabled config already
+# claims it, yield ours on that port instead of failing nginx -t.
+for port in 80 443; do
+    OTHER="$(grep -RlsE "listen[[:space:]]+(\[[^]]*\]:)?${port}([[:space:]][^;]*)?default_server" \
+                 /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null \
+             | grep -v "p2p-site" || true)"
+    if [[ -n "$OTHER" ]]; then
+        sed -i -E "/listen[[:space:]]+(\[[^]]*\]:)?${port}([[:space:]]|;)/ s/[[:space:]]+default_server//" \
+            "$SITE_AVAIL"
+        warn "$(basename "$(head -1 <<<"$OTHER")") already owns default_server on :$port — ours yields"
+        [[ "$port" == 443 ]] && warn "requests to the BARE server IP on 443 will hit that other site — make sure it isn't the admin panel"
+    fi
+done
 echo
 
 # ── 3. certificate ───────────────────────────────────────────────────────────
