@@ -83,8 +83,15 @@ ok "nginx $(nginx -v 2>&1 | sed 's|.*/||')"
 
 # Cloudflare real-IP + visitor-scheme, at HTTP level so the panel vhost gets it too
 backup "$CF_CONF"
-if RANGES="$(curl -fsS --max-time 10 https://www.cloudflare.com/ips-v4/ \
-                  https://www.cloudflare.com/ips-v6/ 2>/dev/null)" \
+cf_ranges() {
+    # One curl per list with a forced newline after each: the endpoints return
+    # no trailing newline, so fetching both in one call glues the last v4 range
+    # to the first v6 range ("131.0.72.0/222400:cb00::/32") and nginx -t dies.
+    { curl -fsS --max-time 10 https://www.cloudflare.com/ips-v4/ && echo
+      curl -fsS --max-time 10 https://www.cloudflare.com/ips-v6/ && echo
+    } 2>/dev/null | sed '/^[[:space:]]*$/d'
+}
+if RANGES="$(cf_ranges)" \
    && [[ -n "$RANGES" ]]; then
     { sed 's|^|set_real_ip_from |; s|$|;|' <<<"$RANGES"
       echo 'real_ip_header CF-Connecting-IP;'
@@ -167,8 +174,7 @@ elif ask "Apply firewall rules now?"; then
     ufw allow "$SSH_PORT"/tcp >/dev/null
     ok "SSH kept open on port $SSH_PORT"
 
-    if CFIPS="$(curl -fsS --max-time 10 https://www.cloudflare.com/ips-v4/ \
-                     https://www.cloudflare.com/ips-v6/ 2>/dev/null)" && [[ -n "$CFIPS" ]]; then
+    if CFIPS="$(cf_ranges)" && [[ -n "$CFIPS" ]]; then
         while read -r ip; do
             [[ -n "$ip" ]] && ufw allow from "$ip" to any port 443 proto tcp >/dev/null
         done <<<"$CFIPS"
