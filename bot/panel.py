@@ -430,7 +430,7 @@ def _qr_card(net_key: str, label: str, current_addr: str,
     upload = (f"<form method=post action=/settings/qr enctype=multipart/form-data>"
               f"<input type=hidden name=csrf value='{_esc(csrf)}'>"
               f"<input type=hidden name=net value='{net_key}'>"
-              f"<label>Upload a QR image (PNG/JPG, max {MAX_QR_BYTES // 1000} KB)</label>"
+              f"<label>Upload a QR image (PNG / JPG / WebP, max 1 MB)</label>"
               f"<input type=file name=qr accept='image/png,image/jpeg,image/webp'{disabled}>"
               f"<div class=row style='margin-top:8px'>"
               f"<button type=submit{disabled}>Upload QR</button>{remove}</div>"
@@ -442,14 +442,27 @@ def _qr_card(net_key: str, label: str, current_addr: str,
             f"<div style='margin-top:12px'>{upload}</div></div></div></div>")
 
 
-def _to_png(raw: bytes) -> bytes | None:
-    """Validate an uploaded image and normalise it to PNG. Uses Pillow when it's
-    installed (which also downsizes a large phone photo); without Pillow it only
-    accepts a file that is already a real PNG."""
+def _sniff_mime(raw: bytes) -> str | None:
+    """Image type by magic bytes — so PNG/JPG/WebP uploads work even on a server
+    without Pillow installed. Returns None for anything else (HEIC, PDF, …)."""
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _normalize_upload(raw: bytes) -> tuple[bytes, str] | None:
+    """(image_bytes, mime) for an uploaded QR. With Pillow installed the image
+    is re-encoded to PNG (also downsizing huge phone photos); without Pillow a
+    real PNG/JPG/WebP is stored as-is — so the upload works either way."""
     try:
         from PIL import Image
     except Exception:
-        return raw if raw[:8] == b"\x89PNG\r\n\x1a\n" else None
+        mime = _sniff_mime(raw)
+        return (raw, mime) if mime else None
     try:
         im = Image.open(io.BytesIO(raw))
         im.load()
@@ -457,9 +470,11 @@ def _to_png(raw: bytes) -> bytes | None:
         im.thumbnail((900, 900))
         buf = io.BytesIO()
         im.save(buf, format="PNG")
-        return buf.getvalue()
+        return buf.getvalue(), "image/png"
     except Exception:
-        return None
+        # Pillow couldn't parse it (e.g. exotic format) — magic-byte fallback
+        mime = _sniff_mime(raw)
+        return (raw, mime) if mime else None
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
@@ -858,8 +873,8 @@ async def settings_get(request: web.Request):
         admin_chat = await get_setting(s, "admin_chat_id") or ""
         proof = await get_setting(s, "proof_channel") or ""
         token_set = bool((await get_setting(s, "bot_token")) or settings.bot_token)
-        qr_trc_png, qr_trc_addr = await get_network_qr_raw(s, "TRC20")
-        qr_bep_png, qr_bep_addr = await get_network_qr_raw(s, "BEP20")
+        qr_trc_png, qr_trc_addr, _ = await get_network_qr_raw(s, "TRC20")
+        qr_bep_png, qr_bep_addr, _ = await get_network_qr_raw(s, "BEP20")
     csrf = await _csrf_for(request)
     msg = request.query.get("msg", "")
     msg_banner = (f"<div class='banner {'ok' if msg.startswith('✅') else 'warn'}'>"
@@ -1074,13 +1089,16 @@ async def qr_preview(request: web.Request):
     if net not in ("TRC20", "BEP20"):
         raise web.HTTPNotFound()
     async with Session() as s:
-        stored_png, _ = await get_network_qr_raw(s, net)
+        stored_img, _, stored_mime = await get_network_qr_raw(s, net)
         current = (await get_bep20_address(s) if net == "BEP20"
                    else await get_deposit_address(s)) or ""
-    png = stored_png or (qr_png(current) if current else None)
-    if not png:
+    if stored_img:
+        img, mime = stored_img, stored_mime
+    else:
+        img, mime = (qr_png(current) if current else None), "image/png"
+    if not img:
         raise web.HTTPNotFound()
-    return web.Response(body=png, content_type="image/png",
+    return web.Response(body=img, content_type=mime,
                         headers={"Cache-Control": "no-store"})
 
 
@@ -1109,13 +1127,15 @@ async def qr_post(request: web.Request):
         raise web.HTTPFound("/settings?msg=" + quote("No image selected."))
     if len(raw) > MAX_QR_BYTES:
         raise web.HTTPFound("/settings?msg=" + quote(
-            f"Image too large (max {MAX_QR_BYTES // 1000} KB) — try a smaller PNG."))
-    png = _to_png(raw)
-    if png is None:
+            "Image too large (max 1 MB) — screenshot the QR instead of a full photo."))
+    norm = _normalize_upload(raw)
+    if norm is None:
         raise web.HTTPFound("/settings?msg=" + quote(
-            "That file isn't a readable image (use a PNG or JPG)."))
+            "That file type isn't supported — upload a PNG, JPG or WebP. "
+            "(iPhone HEIC photos aren't: take a screenshot of the QR and upload that.)"))
+    img, mime = norm
     async with Session() as s:
-        await set_network_qr(s, net, png, current)
+        await set_network_qr(s, net, img, current, mime)
     raise web.HTTPFound("/settings?msg=" + quote(
         f"✅ {net} custom QR uploaded and now live."))
 

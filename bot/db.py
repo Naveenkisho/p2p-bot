@@ -117,44 +117,49 @@ async def bep20_active(session: AsyncSession) -> bool:
 # QR is only ever shown to a customer when it still matches the live address for
 # that network (an address change silently invalidates a stale QR).
 
-MAX_QR_BYTES = 400_000        # cap the stored image so the DB stays small
+MAX_QR_BYTES = 1_000_000      # cap the stored image so the DB stays small (~1 MB)
 
 
 async def set_network_qr(session: AsyncSession, network: str,
-                         png_bytes: bytes, address: str) -> None:
+                         img_bytes: bytes, address: str,
+                         mime: str = "image/png") -> None:
     net = network.upper()
-    await set_setting(session, f"qr_png_b64:{net}", base64.b64encode(png_bytes).decode())
+    await set_setting(session, f"qr_png_b64:{net}", base64.b64encode(img_bytes).decode())
     await set_setting(session, f"qr_png_addr:{net}", address or "")
+    await set_setting(session, f"qr_mime:{net}", mime or "image/png")
 
 
 async def clear_network_qr(session: AsyncSession, network: str) -> None:
     net = network.upper()
     await set_setting(session, f"qr_png_b64:{net}", "")
     await set_setting(session, f"qr_png_addr:{net}", "")
+    await set_setting(session, f"qr_mime:{net}", "")
 
 
 async def get_network_qr_raw(session: AsyncSession,
-                             network: str) -> tuple[bytes | None, str]:
-    """(png_bytes, address_it_encodes) for an uploaded QR, or (None, "")."""
+                             network: str) -> tuple[bytes | None, str, str]:
+    """(image_bytes, address_it_encodes, mime) for an uploaded QR, or
+    (None, "", "image/png"). Rows stored before mime existed default to PNG."""
     net = network.upper()
     b64 = await get_setting(session, f"qr_png_b64:{net}")
     if not b64:
-        return None, ""
+        return None, "", "image/png"
     addr = await get_setting(session, f"qr_png_addr:{net}") or ""
+    mime = await get_setting(session, f"qr_mime:{net}") or "image/png"
     try:
-        return base64.b64decode(b64), addr
+        return base64.b64decode(b64), addr, mime
     except Exception:
-        return None, ""
+        return None, "", "image/png"
 
 
 async def get_network_qr(session: AsyncSession, network: str,
-                         current_address: str | None) -> bytes | None:
-    """The uploaded QR bytes ONLY when it still encodes the live address for the
-    network — otherwise None, so the caller falls back to an auto-generated QR
-    that is guaranteed to match the address the customer is told to pay."""
-    png, addr = await get_network_qr_raw(session, network)
-    if png and current_address and addr == current_address:
-        return png
+                         current_address: str | None) -> tuple[bytes, str] | None:
+    """(image_bytes, mime) of the uploaded QR ONLY when it still encodes the
+    live address for the network — otherwise None, so the caller falls back to
+    an auto-generated QR that always matches the address the customer pays."""
+    img, addr, mime = await get_network_qr_raw(session, network)
+    if img and current_address and addr == current_address:
+        return img, mime
     return None
 
 
