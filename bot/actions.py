@@ -16,7 +16,9 @@ from .flow import notify_deposit_received
 from .scanner import _ms
 from .keyboards import admin_order_kb, bot_link_kb
 from .helpers import (
+    dm_note,
     ist_now_str,
+    is_web_user,
     notify_admins,
     notify_user,
     post_order_card,
@@ -82,11 +84,14 @@ async def complete_order(bot: Bot, order_id: int) -> tuple[bool, str]:
             receipt += texts.trust_footer(user.first_name, user.id, support, lang)
         delivered = await notify_user(bot, order.user_id, receipt)
         await notify_admins(bot, f"✅ Order {texts.tag(order.id)} completed."
-                            + ("" if delivered else " ⚠️ User DM failed (blocked bot?)."))
+                            + dm_note(order.user_id, delivered,
+                                      " ⚠️ User DM failed (blocked bot?)."))
         if user is not None:
             await update_order_cards(bot, session, updated, user, card, None)
+        web = is_web_user(order.user_id)
     await post_proof(bot, updated)
     return True, ("Done — user notified ✅" if delivered
+                  else "Done — the customer sees it on the site ✅" if web
                   else "Done, but couldn't DM the user ⚠️")
 
 
@@ -140,9 +145,7 @@ async def record_manual_order(bot: Bot, user_id: int, usd: float,
         delivered = await notify_user(bot, user_id, text)
         posted = await post_order_card(bot, session, order, user, None,
                                        admin_order_kb(order_id, "pending_payout"))
-    tail = ""
-    if not delivered:
-        tail += " ⚠️ Couldn't DM the customer."
+    tail = dm_note(user_id, delivered, " ⚠️ Couldn't DM the customer.")
     if not posted:
         tail += f" ⚠️ Card post failed — run /order {order_id}."
     return True, (f"✅ Manual order {texts.tag(order_id)} created — "
@@ -162,14 +165,16 @@ async def refund_order(bot: Bot, order_id: int) -> tuple[bool, str]:
             session, order.id, (OrderStatus.REFUND_REQUESTED,), OrderStatus.REFUNDED)
         if updated is None:
             return False, "Already handled."
-        user = await session.get(User, order.user_id)
+        uid = order.user_id
+        user = await session.get(User, uid)
         lang = user.lang if user and user.lang else "en"
-        delivered = await notify_user(bot, order.user_id,
-                                      texts.refund_sent(order.id, lang))
+        delivered = await notify_user(bot, uid, texts.refund_sent(order.id, lang))
         await notify_admins(bot, f"💸 Order {texts.tag(order.id)} refunded.")
         if user is not None:
             await update_order_cards(bot, session, updated, user, card, None)
     return True, ("Refund marked sent ✅" if delivered
+                  else "Refund marked — the customer sees it on the site ✅"
+                  if is_web_user(uid)
                   else "Refund marked, but couldn't DM the user ⚠️")
 
 
@@ -183,16 +188,19 @@ async def reject_refund(bot: Bot, order_id: int) -> tuple[bool, str]:
             session, order.id, (OrderStatus.REFUND_REQUESTED,), OrderStatus.REFUND_REJECTED)
         if updated is None:
             return False, "Already handled."
-        user = await session.get(User, order.user_id)
+        uid = order.user_id
+        user = await session.get(User, uid)
         support = await get_support(session)
         lang = user.lang if user and user.lang else "en"
-        delivered = await notify_user(bot, order.user_id,
-                                      texts.refund_rejected(order.id, support, lang))
+        delivered = await notify_user(
+            bot, uid, texts.refund_rejected(order.id, support, lang))
         await notify_admins(bot, f"🚫 Order {texts.tag(order.id)} refund rejected "
                                  "(no verified deposit).")
         if user is not None:
             await update_order_cards(bot, session, updated, user, card, None)
     return True, ("Refund rejected — user notified 🚫" if delivered
+                  else "Refund rejected — the customer sees it on the site 🚫"
+                  if is_web_user(uid)
                   else "Refund rejected, but couldn't DM the user ⚠️")
 
 
@@ -206,7 +214,8 @@ async def broadcast(bot: Bot, text: str, to_proof: bool = False) -> tuple[int, i
     proof channel. Returns (sent, failed)."""
     async with Session() as session:
         user_ids = (await session.scalars(
-            select(User.id).where(User.banned.is_(False)))).all()
+            select(User.id).where(User.banned.is_(False),
+                                  User.id > 0))).all()   # skip web (negative-id) users
     sent = failed = 0
     for uid in user_ids:
         try:
@@ -328,11 +337,14 @@ async def reject_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
             return False, "No pending claim on this order."
         order.claim_txid = None
         await session.commit()
-        user = await session.get(User, order.user_id)
+        uid = order.user_id
+        user = await session.get(User, uid)
         support = await get_support(session)
         lang = user.lang if user and user.lang else "en"
-    delivered = await notify_user(bot, order.user_id,
+    delivered = await notify_user(bot, uid,
                                   texts.claim_rejected(order_id, support, lang))
     await notify_admins(bot, f"🚫 Payment claim for {texts.tag(order_id)} rejected.")
     return True, ("Claim rejected — user notified 🚫" if delivered
+                  else "Claim rejected — the customer sees it on the site 🚫"
+                  if is_web_user(uid)
                   else "Claim rejected, but couldn't DM the user ⚠️")

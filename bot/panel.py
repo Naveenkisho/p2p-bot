@@ -552,10 +552,11 @@ async def dashboard(request: web.Request):
               f"<a href='/orders.csv?tab=all'>⬇️ all CSV</a></div>")
     rows = []
     for o in orders:
+        src = ("<span class='badge accent'>🌐 web</span>" if o.user_id < 0 else "")
         rows.append(
             f"<a class='card link' href='/order/{o.id}' "
             f"style='display:block;color:inherit'>"
-            f"<div class=row><b>{texts.tag(o.id)}</b>"
+            f"<div class=row><b>{texts.tag(o.id)}</b>{src}"
             f"<span class=sp></span>{_badge(o.status)}</div>"
             f"<div class=row style='margin-top:8px'>"
             f"<span class=amt>{o.usd_amount:g}<span class=muted "
@@ -584,6 +585,8 @@ async def order_detail(request: web.Request):
         card = await s.get(BankCard, order.bank_card_id) if order.bank_card_id else None
     csrf = await _csrf_for(request)
     uname = f"@{_esc(user.username)}" if user and user.username else "—"
+    if order.user_id < 0:
+        uname = "<span class='badge accent'>🌐 website customer</span>"
     msg = request.query.get("msg", "")
     banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
     lines = [
@@ -760,7 +763,8 @@ async def desk_toggle(request: web.Request):
 async def broadcast_get(request: web.Request):
     async with Session() as s:
         n = await s.scalar(select(func.count()).select_from(User)
-                           .where(User.banned.is_(False)))
+                           .where(User.banned.is_(False),
+                                  User.id > 0))  # skip web (negative-id) users
     csrf = await _csrf_for(request)
     msg = request.query.get("msg", "")
     banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
@@ -793,7 +797,8 @@ async def broadcast_post(request: web.Request):
     to_proof = bool(data.get("to_proof"))
     async with Session() as s:
         n = await s.scalar(select(func.count()).select_from(User)
-                           .where(User.banned.is_(False)))
+                           .where(User.banned.is_(False),
+                                  User.id > 0))  # skip web (negative-id) users
     launch_broadcast(request.app["bot"], compose_announcement(text), to_proof)
     raise web.HTTPFound("/broadcast?msg=" + html.escape(
         f"Broadcast started to {n or 0} users — you'll get a summary in Telegram."))

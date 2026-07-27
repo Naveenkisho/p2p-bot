@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     claim_fee_band_abs: float = 3.0
     claim_fee_band_pct: float = 0.02
 
+    # Public customer website (same process + DB as the bot; the interface for
+    # ad traffic). Serve behind nginx + TLS on your domain; set port 0 to disable.
+    site_host: str = "127.0.0.1"
+    site_port: int = 8090
+    site_orders_per_hour: int = 6      # per-IP new-order throttle (anti junk/ads abuse)
+
     # Web admin panel (optional; disabled unless a password is set)
     panel_password: str = ""           # required to enable the web panel
     panel_secret: str = ""             # cookie-signing secret (auto-derived if blank)

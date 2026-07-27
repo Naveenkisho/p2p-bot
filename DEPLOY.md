@@ -97,7 +97,158 @@ serve it over a self-signed cert and lock the port to your own IP.
 Without the firewall rule, a token-changing panel would be exposed to the whole
 internet — don't skip step 3.
 
-## 5. Back up the database
+## 5. Public customer website
+
+The website is the same desk with a second face on it — same process, same
+database, same admin panel. Nothing to install and no second service: it starts
+with the bot on `127.0.0.1:8090` and stays invisible until you put a proxy in
+front of it. Web customers appear in the panel tagged `🌐 web`, and the rates,
+deposit address, QR and deposit window you set there govern both interfaces.
+
+### The short way: one script
+
+After 5.1 (ship the code) and 5.2 (point the domain), one script does sections
+5.3–5.6 for you — installs nginx, writes both configs with your domain filled
+in, takes the pasted Cloudflare origin certificate, locks the firewall to
+Cloudflare, and prints the exact dashboard settings and verification commands:
+
+```bash
+cd /opt/p2p-bot && sudo bash deploy/setup-site.sh yourdomain.com
+```
+
+It backs up anything it replaces and is safe to re-run. The sections below are
+the same steps by hand, if you prefer to see each one.
+
+### 5.1 Ship the code
+
+```bash
+cd /opt/p2p-bot
+sudo -u p2pbot git pull
+sudo systemctl restart p2p-bot
+sudo systemctl is-active p2p-bot          # must print "active"
+curl -sI http://127.0.0.1:8090/ | head -1 # must print HTTP/1.1 200 OK
+```
+
+The database migrates itself on that restart — new columns and their index are
+added in place and existing orders are untouched. Re-running is harmless.
+
+**Do the QR step too**, unless you upload your own QR images in the panel:
+
+```bash
+sudo -u p2pbot /opt/p2p-bot/.venv/bin/pip install -r requirements.txt
+sudo systemctl restart p2p-bot
+```
+
+Without `qrcode`/`Pillow` the site still works and still shows the deposit
+address, but there is no QR picture to scan — on a page you are paying ads to
+reach, that costs conversions.
+
+### 5.2 Point a domain at it
+
+One canonical hostname (`example.com` **or** `www.example.com`, not both — the
+customer's session cookie is host-only and does not follow a redirect between
+them). In Cloudflare DNS: an `A` record to the server's IP.
+
+### 5.3 Behind Cloudflare (orange cloud)
+
+Cloudflare makes the site faster and absorbs junk traffic, but three settings
+are not optional. Skip them and the failures are silent and expensive.
+
+**Install the Cloudflare support file first — HTTP level, not inside a vhost:**
+
+```bash
+sudo cp deploy/cloudflare-realip.conf /etc/nginx/conf.d/cloudflare.conf
+```
+
+It restores the real visitor IP (otherwise **every customer shares one
+rate-limit bucket** and the site starts refusing real buyers as if they were one
+abuser) and it tells the app which scheme the visitor actually used (otherwise
+anyone arriving on `http://` gets an identity cookie the browser throws away,
+and is stuck on "please enable cookies" forever).
+
+**In the Cloudflare dashboard:**
+
+| Setting | Value | Why |
+|---|---|---|
+| SSL/TLS → Overview | **Full (strict)** | "Flexible" strips the cookie's Secure flag and causes a redirect loop |
+| SSL/TLS → Edge Certificates → Always Use HTTPS | **On** | this is the redirect that actually runs; the origin's is bypassed |
+| SSL/TLS → Origin Server | **Create Certificate** | free, 15 years, no renewal cron — install at the paths in `nginx-site.conf` |
+| Speed → Optimization → **Rocket Loader** | **Off** | it defers inline scripts and breaks the Copy-address and "I've sent it" buttons |
+| Security → **Bot Fight Mode** | Off, or exclude `/o/*` | it challenges the order page's background status polling, which then silently stops updating |
+| Caching | leave default | never add "Cache Everything" — it would serve one customer's order page, with their deposit amount, to another |
+
+### 5.4 nginx
+
+```bash
+sudo apt install nginx
+sudo cp deploy/nginx-site.conf /etc/nginx/sites-available/p2p-site
+sudo nano /etc/nginx/sites-available/p2p-site      # server_name + cert paths
+sudo ln -s /etc/nginx/sites-available/p2p-site /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Edit the copy under `/etc/nginx`, never the one in the git tree — a modified
+tracked file makes the next `git pull` refuse to merge, and you would restart
+into the old code believing you had updated.
+
+### 5.5 Lock the origin to Cloudflare
+
+Otherwise anyone who finds the server's IP reaches the site directly and every
+Cloudflare protection — WAF, rate limiting, DDoS — is bypassed.
+
+```bash
+sudo ufw allow OpenSSH
+for ip in $(curl -fsS https://www.cloudflare.com/ips-v4/ \
+                 https://www.cloudflare.com/ips-v6/); do
+  sudo ufw allow from $ip to any port 443 proto tcp
+done
+sudo ufw default deny incoming
+sudo ufw enable
+```
+
+Ports **8090** (site) and **8088** (panel) must never be open to the internet —
+both bind to localhost by default, and the firewall is your second lock.
+
+### 5.6 Verify it actually works
+
+```bash
+# 1. the site answers over HTTPS
+curl -sI https://example.com/ | head -1
+
+# 2. security headers arrive through the proxy
+curl -sI https://example.com/ | grep -iE 'x-frame|x-content|strict-transport'
+
+# 3. the identity cookie is Secure — check /sell, NOT the landing page
+#    (the landing page never issues a cookie, so it would "pass" while broken)
+curl -sI https://example.com/sell | grep -i set-cookie
+#    → expect: HttpOnly; Secure; SameSite=Lax
+
+# 4. the panel is NOT public
+curl -sI --max-time 5 http://<server-ip>:8088/   # must fail/time out
+```
+
+Then place one real test order and check the log — this is the only way to see
+whether Cloudflare's real IP is arriving:
+
+```bash
+sudo journalctl -u p2p-bot | grep "web order"
+```
+
+If your test orders show **your own IP**, the setup is correct. If they show a
+Cloudflare address (or every order shows the same one), `cloudflare.conf` is not
+loaded and your customers are sharing one rate-limit bucket.
+
+### 5.7 If something is wrong
+
+```bash
+sudo journalctl -u p2p-bot -n 50        # a config typo shows as a raw traceback
+```
+
+To take the site down without touching the bot, put `P2P_SITE_PORT=0` in `.env`
+(literally `0` — leaving it blank crashes the process on boot) and restart.
+
+## 6. Back up the database
 
 Everything lives in one SQLite file (`P2P_DB_PATH`, default
 `/opt/p2p-bot/p2p.sqlite3`): orders, refund addresses, rates, the deposit
@@ -108,7 +259,7 @@ address, and (if changed via the panel) the bot token. Back it up:
 sqlite3 /opt/p2p-bot/p2p.sqlite3 ".backup /opt/p2p-bot/backups/p2p-$(date +\%F).sqlite3"
 ```
 
-## Running alongside another app (e.g. ReelCaps)
+## 7. Running alongside another app (e.g. ReelCaps)
 
 Fully compatible. Different process, different database, its own systemd
 service, and no inbound port for the bot itself — so it doesn't touch the other

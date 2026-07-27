@@ -14,6 +14,7 @@ from sqlalchemy import select
 from . import texts
 from .db import Session, get_support
 from .helpers import (
+    dm_note,
     notify_admins,
     notify_user,
     post_order_card,
@@ -61,8 +62,8 @@ async def notify_deposit_received(bot: Bot, order_id: int) -> None:
                     f"{order.usd_amount:g} USDT "
                     f"(tx <code>{(order.txid or '')[:12]}…</code>). "
                     f"Pay ₹{order.inr_amount:,.2f}.")
-            if not delivered:
-                note += " ⚠️ Couldn't DM the user (blocked bot?)."
+            note += dm_note(order.user_id, delivered,
+                            " ⚠️ Couldn't DM the user (blocked bot?).")
             if not posted:
                 note += f" ⚠️ Card post failed — run /order {order.id}."
             await notify_admins(bot, note)
@@ -84,4 +85,5 @@ async def notify_deposit_received(bot: Bot, order_id: int) -> None:
         f"📥 Deposit confirmed for Order {texts.tag(order.id)} — "
         f"{order.usd_amount:g} USDT (tx <code>{(order.txid or '')[:12]}…</code>). "
         + ("Waiting for the user's bank choice." if delivered
-           else "⚠️ Couldn't DM the user (blocked bot?)."))
+           else dm_note(order.user_id, delivered,
+                        "⚠️ Couldn't DM the user (blocked bot?).").strip()))

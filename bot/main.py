@@ -11,6 +11,7 @@ from .db import Session, get_bot_token, init_db
 from .handlers import routers
 from .panel import start_panel
 from .scanner import scan_loop
+from .website import start_site
 
 
 async def main() -> None:
@@ -77,6 +78,7 @@ async def main() -> None:
     scanner.add_done_callback(_scanner_done)
 
     panel_runner = await start_panel(bot)  # web admin panel (if enabled)
+    site_runner = await start_site(bot)    # public customer website (if enabled)
 
     try:
         await dp.start_polling(bot)
@@ -84,6 +86,8 @@ async def main() -> None:
         scanner.cancel()
         if panel_runner is not None:
             await panel_runner.cleanup()
+        if site_runner is not None:
+            await site_runner.cleanup()
 
 
 if __name__ == "__main__":
