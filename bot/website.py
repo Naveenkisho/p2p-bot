@@ -393,49 +393,39 @@ def _ld(obj) -> str:
             + json.dumps(obj).replace("<", "\\u003c") + "</script>")
 
 
-# ── marketing pixels (admin-configured, injected on public pages) ────────────
-# The IDs are validated in the panel (Meta = digits, Google = G-/AW-/… ), and
-# re-validated here before they reach a <script>, so nothing user-shaped is
-# ever emitted as live markup. Cached in-process (sync-readable from _page);
-# the panel calls load_tracking() on save and start_site() loads it at boot.
-_TRACKING = {"meta": "", "google": ""}
-_META_RE = re.compile(r"^[0-9]{1,24}$")
-_GTAG_RE = re.compile(r"^(?:G|AW|GT|UA|DC)-[A-Za-z0-9\-]{4,20}$")
+# ── marketing pixels (admin-pasted head code, injected on public pages) ──────
+# The desk owner pastes each provider's FULL snippet (the <script> block from
+# Meta Events Manager / Google) in the panel's Marketing tab; it is injected
+# verbatim into <head> on public pages only. This is admin-authored code (same
+# trust model as Google Tag Manager) — only the authenticated panel can set it,
+# and it never touches private/noindex order or account pages. Cached in-process
+# (sync-readable from _page); the panel calls load_tracking() on save and
+# start_site() loads it at boot.
+_TRACKING = {"meta": "", "google": "", "custom": ""}
+_TRACK_MAX = 20000        # sanity cap per snippet
 
 
 async def load_tracking() -> None:
     async with Session() as s:
-        meta = (await get_setting(s, "meta_pixel_id") or "").strip()
-        google = (await get_setting(s, "google_tag_id") or "").strip()
-    _TRACKING["meta"] = meta if _META_RE.match(meta) else ""
-    _TRACKING["google"] = google if _GTAG_RE.match(google) else ""
+        _TRACKING["meta"] = (await get_setting(s, "track_meta_code") or "")[:_TRACK_MAX]
+        _TRACKING["google"] = (await get_setting(s, "track_google_code") or "")[:_TRACK_MAX]
+        _TRACKING["custom"] = (await get_setting(s, "track_custom_code") or "")[:_TRACK_MAX]
 
 
 def _tracking_head() -> str:
-    """The pixel/tag <script> snippets for the current config (validated IDs)."""
-    out = ""
-    g = _TRACKING["google"]
-    if g and _GTAG_RE.match(g):
-        out += (f"<script async src='https://www.googletagmanager.com/gtag/js?id={g}'></script>"
-                "<script>window.dataLayer=window.dataLayer||[];"
-                "function gtag(){dataLayer.push(arguments);}gtag('js',new Date());"
-                f"gtag('config','{g}');</script>")
-    m = _TRACKING["meta"]
-    if m and _META_RE.match(m):
-        out += ("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function()"
-                "{n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
-                "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];"
-                "t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];"
-                "s.parentNode.insertBefore(t,s)}(window,document,'script',"
-                "'https://connect.facebook.net/en_US/fbevents.js');"
-                f"fbq('init','{m}');fbq('track','PageView');</script>"
-                f"<noscript><img height=1 width=1 style=display:none "
-                f"src='https://www.facebook.com/tr?id={m}&ev=PageView&noscript=1'/></noscript>")
-    return out
+    """The admin-pasted tracking snippets, injected verbatim (trusted input)."""
+    parts = []
+    if _TRACKING["meta"].strip():
+        parts.append("<!-- Meta Pixel -->" + _TRACKING["meta"])
+    if _TRACKING["google"].strip():
+        parts.append("<!-- Google tag -->" + _TRACKING["google"])
+    if _TRACKING["custom"].strip():
+        parts.append("<!-- Extra tracking -->" + _TRACKING["custom"])
+    return "".join(parts)
 
 
 def _tracking_active() -> bool:
-    return bool(_TRACKING["meta"] or _TRACKING["google"])
+    return any(v.strip() for v in _TRACKING.values())
 
 
 @web.middleware
@@ -2498,9 +2488,12 @@ async def legal_page(request: web.Request):
     if slug == "privacy":
         # keep the policy truthful about whatever tracking is actually live
         if _tracking_active():
-            svcs = " and ".join(
-                s for s, on in [("Google", _TRACKING["google"]),
-                                ("Meta (Facebook)", _TRACKING["meta"])] if on)
+            names = [s for s, on in [("Google", _TRACKING["google"].strip()),
+                                     ("Meta (Facebook)", _TRACKING["meta"].strip())]
+                     if on]
+            if _TRACKING["custom"].strip():
+                names.append("other analytics/advertising tools")
+            svcs = " and ".join(names) if names else "analytics/advertising tools"
             body_html = body_html.replace("{TRACKING_COOKIES}",
                 "We also use analytics/advertising cookies set by "
                 f"{svcs} to measure how visitors reach us from ads.")
