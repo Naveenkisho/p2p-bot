@@ -18,7 +18,6 @@ import html
 import io
 import logging
 import os
-import re
 import secrets
 import time
 from urllib.parse import quote
@@ -387,6 +386,7 @@ def _nav(active: str) -> str:
             + link("/pay", "Manual pay", "pay")
             + link("/tickets", "Tickets", "tickets")
             + link("/signups", "Signups", "signups")
+            + link("/marketing", "Marketing", "marketing")
             + link("/broadcast", "Broadcast", "broadcast")
             + link("/settings", "Settings", "settings")
             + "</nav><span class=sp></span>"
@@ -880,8 +880,6 @@ async def settings_get(request: web.Request):
         admin_ids = admin_ids if admin_ids is not None else settings.admin_ids
         admin_chat = await get_setting(s, "admin_chat_id") or ""
         proof = await get_setting(s, "proof_channel") or ""
-        meta_pixel = await get_setting(s, "meta_pixel_id") or ""
-        google_tag = await get_setting(s, "google_tag_id") or ""
         token_set = bool((await get_setting(s, "bot_token")) or settings.bot_token)
         qr_trc_png, qr_trc_addr, _ = await get_network_qr_raw(s, "TRC20")
         qr_bep_png, qr_bep_addr, _ = await get_network_qr_raw(s, "BEP20")
@@ -934,15 +932,6 @@ async def settings_get(request: web.Request):
             f"<input name=support value='{_esc(support)}'>"
             "<label>Proof channel (@channel or -100… id, blank to disable)</label>"
             f"<input name=proof value='{_esc(proof)}'>"
-            "</div><h2>Marketing pixels</h2><div class=card>"
-            "<p class=muted style='margin-top:0'>Paste your ad tracking IDs to "
-            "measure conversions from Google &amp; Meta ads. They load on every "
-            "public website page. Blank = off. (When either is set, the site's "
-            "privacy policy automatically discloses the tracking.)</p>"
-            "<label>Meta (Facebook) Pixel ID — digits only, e.g. 1234567890</label>"
-            f"<input name=meta_pixel value='{_esc(meta_pixel)}' inputmode=numeric>"
-            "<label>Google tag ID — G-… (Analytics) or AW-… (Ads)</label>"
-            f"<input name=google_tag value='{_esc(google_tag)}'>"
             "</div><h2>Admins</h2><div class=card>"
             "<label>Admin Telegram IDs (space/comma-separated)</label>"
             f"<input name=admin_ids value='{_esc(admin_ids)}'>"
@@ -1057,19 +1046,6 @@ async def settings_post(request: web.Request):
                           proof if (proof.startswith("@") or proof.lstrip("-").isdigit())
                           else "")
 
-        # marketing pixels — store only clean IDs so nothing user-shaped is ever
-        # injected into a <script>. Meta = digits; Google tag = G-/AW-/GT-… .
-        mpix = str(data.get("meta_pixel", "")).strip()
-        if mpix == "" or (mpix.isdigit() and len(mpix) <= 24):
-            await set_setting(s, "meta_pixel_id", mpix)
-        else:
-            errors.append("Meta Pixel ID must be digits only")
-        gtag = str(data.get("google_tag", "")).strip()
-        if gtag == "" or re.fullmatch(r"(G|AW|GT|UA|DC)-[A-Za-z0-9\-]{4,20}", gtag):
-            await set_setting(s, "google_tag_id", gtag)
-        else:
-            errors.append("Google tag ID must look like G-XXXXXXX or AW-XXXXXXX")
-
         aids = str(data.get("admin_ids", "")).replace(",", " ").split()
         if all(x.isdigit() for x in aids):
             await set_setting(s, "admin_ids", " ".join(aids))
@@ -1102,12 +1078,6 @@ async def settings_post(request: web.Request):
                      + "<div class='banner danger'><b>Not saved:</b> "
                      + _esc("; ".join(errors)) + "</div>"
                      "<p><a href=/settings>← Back to settings</a></p>")
-    # refresh the website's in-memory pixel cache so a saved ID goes live now
-    try:
-        from .website import load_tracking
-        await load_tracking()
-    except Exception:
-        log.exception("tracking cache refresh failed")
     if restart:
         # write is committed; exit so systemd restarts with the new token
         asyncio.get_running_loop().call_later(1.0, os._exit, 0)
@@ -1297,6 +1267,66 @@ async def signups_get(request: web.Request):
     return _page("Signups", body)
 
 
+@_authed
+async def marketing_get(request: web.Request):
+    """Paste-the-full-code marketing pixels: Meta, Google, and any extra head
+    snippet. Injected verbatim on public website pages (never on private ones)."""
+    async with Session() as s:
+        meta = await get_setting(s, "track_meta_code") or ""
+        google = await get_setting(s, "track_google_code") or ""
+        custom = await get_setting(s, "track_custom_code") or ""
+    csrf = await _csrf_for(request)
+    on = [n for n, v in [("Meta Pixel", meta), ("Google tag", google),
+                         ("Extra", custom)] if v.strip()]
+    status = (f"<div class='banner ok'>✅ Live: {', '.join(on)}</div>" if on
+              else "<div class=banner>No tracking code set yet — paste your "
+                   "snippets below and Save.</div>")
+    saved_banner = ("<div class='banner ok'>✅ Saved — the code is live on the "
+                    "website now.</div>" if request.query.get("saved") else "")
+    body = (_nav("marketing") + "<h1>📈 Marketing pixels</h1>" + saved_banner
+            + "<p class=muted>Paste each provider's <b>full code</b> exactly as "
+            "they give it to you (the whole <code>&lt;script&gt;…&lt;/script&gt;</code> "
+            "block). It loads in the &lt;head&gt; of every <b>public</b> page — "
+            "never on customer order or account pages. Leave a box blank to turn "
+            "that one off. The site's privacy policy updates automatically to "
+            "disclose whatever you enable.</p>"
+            + status
+            + "<form method=post action=/marketing>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<div class=card><label>Meta (Facebook) Pixel code</label>"
+            "<textarea name=meta_code rows=8 spellcheck=false "
+            "placeholder='&lt;!-- Meta Pixel Code --&gt; …'>"
+            f"{_esc(meta)}</textarea></div>"
+            "<div class=card><label>Google tag code (gtag.js / GA4 / Ads)</label>"
+            "<textarea name=google_code rows=8 spellcheck=false "
+            "placeholder='&lt;!-- Global site tag (gtag.js) --&gt; …'>"
+            f"{_esc(google)}</textarea></div>"
+            "<div class=card><label>Any other head code (TikTok, etc.) — optional</label>"
+            "<textarea name=custom_code rows=6 spellcheck=false>"
+            f"{_esc(custom)}</textarea></div>"
+            "<div class=row style='margin-top:14px'><button>Save &amp; go live</button></div>"
+            "</form>")
+    return _page("Marketing", body)
+
+
+@_authed
+async def marketing_post(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("marketing") + "<p>Invalid CSRF token.</p>")
+    cap = 20000
+    async with Session() as s:
+        await set_setting(s, "track_meta_code", str(data.get("meta_code", ""))[:cap])
+        await set_setting(s, "track_google_code", str(data.get("google_code", ""))[:cap])
+        await set_setting(s, "track_custom_code", str(data.get("custom_code", ""))[:cap])
+    try:
+        from .website import load_tracking
+        await load_tracking()
+    except Exception:
+        log.exception("tracking cache refresh failed")
+    raise web.HTTPFound("/marketing?saved=1")
+
+
 async def start_panel(bot):
     """Start the web panel if a password is configured; returns the AppRunner
     (or None when disabled) so main() can clean it up."""
@@ -1315,6 +1345,8 @@ async def start_panel(bot):
         web.get("/tickets", tickets_get),
         web.post("/tickets/{id:\\d+}/{act}", ticket_act),
         web.get("/signups", signups_get),
+        web.get("/marketing", marketing_get),
+        web.post("/marketing", marketing_post),
         web.post("/pay", pay_post),
         web.get("/broadcast", broadcast_get),
         web.post("/broadcast", broadcast_post),
