@@ -55,7 +55,7 @@ from .helpers import (
     try_transition,
     txid_used_elsewhere,
 )
-from .models import BankCard, Order, OrderStatus, User
+from .models import BankCard, Order, OrderStatus, Ticket, User
 from .qr import qr_png
 
 log = logging.getLogger(__name__)
@@ -194,6 +194,9 @@ _CLAIM_MAX_PER_HOUR = 8
 # per-IP throttle for the on-demand "I've sent it" re-scan (each drives a sweep).
 _check_times: dict[str, deque] = {}
 _CHECK_MAX_PER_MIN = 6
+# support-ticket throttle: bounds junk tickets per IP
+_ticket_times: dict[str, deque] = {}
+_TICKET_MAX_PER_HOUR = 5
 
 
 def _bucket_throttled(store: dict, key: str, limit: int, window: int) -> bool:
@@ -479,7 +482,9 @@ _TAIL = """<div class=bigfoot>
 <div class=cols>
 <div><h3>Trade</h3>
 <a href="/sell">Sell USDT</a><a href="/my">My orders</a>
-<a href="/#rates">Live rates</a><a href="/#faq">FAQ</a></div>
+<a href="/#rates">Live rates</a><a href="/#faq">FAQ</a>
+<a href="/support">Create a ticket</a>
+<a href="/guarantee">Clean-funds guarantee</a></div>
 <div><h3>User rights &amp; disclosures</h3>
 <a href="/legal/terms">Terms of Use</a>
 <a href="/legal/privacy">Privacy &amp; Cookies Policy</a>
@@ -531,8 +536,9 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False) -> web.Resp
 <span class=sp></span>
 <a class=nav href="/">Home</a>
 <a class=nav href="/#rates">Rates</a>
+<a class=nav href="/guarantee">Guarantee</a>
 <a class=nav href="/my">My orders</a>
-<a class=nav href="/#support">Support</a>
+<a class=nav href="/support">Support</a>
 <a class="nav hot" href="/sell">Sell USDT</a></div>
 {body}
 {_TAIL}
@@ -680,7 +686,8 @@ in any state, on bank holidays too.</span></div></div></div>
 <div class=card><h2 style="margin-top:0">100% Clean Funds — our guarantee</h2>
 <p class='muted small' style="margin:0">Every rupee we pay out comes from verified,
 legitimate sources — mutual &amp; stock-market funds, cash deposits, credit-card and
-payment-gateway funds. Your account is never at risk of a freeze or hold.</p></div>
+payment-gateway funds. Your account is never at risk of a freeze or hold.
+<a href="/guarantee"><b>How the guarantee works →</b></a></p></div>
 <h2 id=faq>Frequently asked</h2>
 <div class=card><div class=grid2>
 <details><summary>How fast do I get paid?</summary><p class='muted small'>Your deposit is
@@ -705,7 +712,8 @@ orders are tied to this browser automatically — find them any time under
 <a href="/my">My orders</a>.</p></details>
 </div></div>
 <div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}
-<span class=muted>— mention your order ID (#ORD…)</span></span></div>
+<span class=muted>— mention your order ID (#ORD…)</span></span>
+<a class="btn ghost" style="margin-top:12px;max-width:340px" href="/support">Create a support ticket</a></div>
 {cta if rows else ""}
 {_fabs_html(support, whatsapp)}"""
     return _page("Sell USDT for INR — P2P Desk", body,
@@ -1073,6 +1081,9 @@ to our address is accepted.</p>
 <div id=checking class="banner warn" style="display:none">Checking the blockchain…
 a fresh transfer takes ~a minute to confirm. This page updates automatically.</div>
 {claim_form}
+<p class='muted small' style="margin:10px 0 4px">Sent the USDT but nothing happened?
+<a href="/support?order={_esc(token)}&amp;cat=deposit"><b>Create a support ticket</b></a>
+— admins are alerted instantly.</p>
 <form method=post action="/o/{_esc(token)}/cancel"
  onsubmit="return confirm('Cancel this order? Only do this if you have NOT paid.')">
 <input type=hidden name=csrf value='{csrf}'>
@@ -1138,6 +1149,8 @@ back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 {pending_claim}
 <a class=btn href="/sell">Start a fresh order</a>
 {claim_form if not order.claim_txid else ''}
+<p class='muted small'>Paid but it expired anyway?
+<a href="/support?order={_esc(token)}&amp;cat=deposit"><b>Create a support ticket</b></a>.</p>
 <p class='muted small'>{_support_html(support)} — mention {tagline}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
@@ -1359,11 +1372,218 @@ async def my_orders(request: web.Request):
             f"<div style='margin-top:10px'>{rows}</div>{bank}"
             f"<a class='btn ghost' style='margin-top:12px' "
             f"href='/o/{_esc(o.web_token)}'>Open live order page →</a></div>")
+    async with Session() as s:
+        tickets = (await s.scalars(select(Ticket).where(Ticket.user_id == uid)
+                                   .order_by(Ticket.id.desc()).limit(10))).all()
+    tk = ""
+    if tickets:
+        rows_t = "".join(
+            f"<div class=kv><span class=k>{_tkt_tag(t.id)} · {_ist(t.created_at)}</span>"
+            f"<span class=v><span class='badge {'warn' if t.status == 'open' else 'ok'}'>"
+            f"{_esc(t.status)}</span></span></div>"
+            for t in tickets)
+        tk = (f"<h2>My tickets</h2><div class=card>{rows_t}"
+              "<a class='btn ghost' style='margin-top:12px' href='/support'>"
+              "New ticket</a></div>")
     return _page("My orders", f"<h1>My orders</h1>{''.join(blocks)}"
-                 "<a class=btn href='/sell'>New order</a>"
+                 "<a class=btn href='/sell'>New order</a>" + tk
                  + _fabs_html(support, whatsapp))
 
 
+
+
+
+
+# ── support tickets ──────────────────────────────────────────────────────────
+
+_TICKET_CATS = {
+    "deposit": "I sent USDT but my order isn't credited",
+    "payout": "Deposit verified but INR not received",
+    "other": "Something else",
+}
+
+
+def _tkt_tag(tid: int) -> str:
+    return f"#TKT{tid:04d}"
+
+
+async def support_get(request: web.Request, error: str = "",
+                      prefill: dict | None = None):
+    p = prefill or {}
+    uid, is_new = await _ensure_uid(request)
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+        orders = [] if is_new else (await s.scalars(
+            select(Order).where(Order.user_id == uid)
+            .order_by(Order.id.desc()).limit(10))).all()
+    # arriving from an order page pre-selects that order + the deposit category
+    otok = str(request.query.get("order", "") or p.get("order", ""))
+    cat = str(request.query.get("cat", "") or p.get("category", "") or "deposit")
+    if cat not in _TICKET_CATS:
+        cat = "other"
+    csrf = await _csrf(f"tkt:{uid}")
+    cat_opts = "".join(
+        f"<option value={k} {'selected' if k == cat else ''}>{v}</option>"
+        for k, v in _TICKET_CATS.items())
+    ord_opts = "<option value=''>— not about a specific order —</option>" + "".join(
+        f"<option value='{_esc(o.web_token)}' "
+        f"{'selected' if o.web_token == otok else ''}>"
+        f"{texts.tag(o.id)} — {texts.usd_str(o.usd_amount)} USDT · "
+        f"{_esc(o.status.replace('_', ' '))}</option>"
+        for o in orders if o.web_token)
+    err = f"<p class=err>{_esc(error)}</p>" if error else ""
+    body = f"""
+<h1>Support ticket</h1>
+<p class='muted small'>Tell us what happened — our admins see tickets instantly and
+reply on the contact you give below. For deposit issues, include your transaction
+hash (TXID) so we can check the chain right away.</p>
+{err}
+<form method=post action=/support><div class=card>
+<input type=hidden name=csrf value='{csrf}'>
+<label>What's the problem?</label>
+<select name=category>{cat_opts}</select>
+<label>Related order (optional)</label>
+<select name=order>{ord_opts}</select>
+<label>Transaction hash / TXID (for deposit issues)</label>
+<input name=txid placeholder="64-character hash, 0x… on BEP20"
+ value="{_esc(p.get('txid', ''))}">
+<label>Describe what happened</label>
+<textarea name=message rows=5 required
+ placeholder="What you sent, when, and what you expected">{_esc(p.get('message', ''))}</textarea>
+<label>How do we reach you? (Telegram @username / WhatsApp number)</label>
+<input name=contact placeholder="@yourname or +91…" required
+ value="{_esc(p.get('contact', ''))}">
+<div style="margin-top:16px"><button class=btn>Create ticket</button></div>
+</div></form>
+<p class='muted small'>Prefer chat? {_support_html(support)}</p>
+{_fabs_html(support, whatsapp)}"""
+    resp = _page("Support — P2P Desk", body)
+    if is_new:
+        _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
+    return resp
+
+
+async def support_post(request: web.Request):
+    data = await request.post()
+    uid, is_new = await _ensure_uid(request)
+    prefill = {k: str(data.get(k, "")).strip()
+               for k in ("category", "order", "txid", "message", "contact")}
+    if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"tkt:{uid}")):
+        return await support_get(request, "That form expired — please try again.",
+                                 prefill)
+    ip = _client_ip(request)
+    if _bucket_throttled(_ticket_times, ip, _TICKET_MAX_PER_HOUR, 3600):
+        return await support_get(request, "Too many tickets from this connection — "
+                                 "please wait a while.", prefill)
+    cat = prefill["category"] if prefill["category"] in _TICKET_CATS else "other"
+    msg = prefill["message"][:2000].strip()
+    contact = prefill["contact"][:120].strip()
+    txid = norm_txid(prefill["txid"]) if prefill["txid"] else ""
+    if len(msg) < 10:
+        return await support_get(request, "Please describe the problem in a bit "
+                                 "more detail.", prefill)
+    if len(contact) < 3:
+        return await support_get(request, "Please give a contact so we can reach "
+                                 "you back.", prefill)
+    if txid and not TXID_RE.fullmatch(txid):
+        return await support_get(request, "That TXID doesn't look right — it's 64 "
+                                 "characters (0x… on BEP20). Leave it blank if "
+                                 "you don't have it.", prefill)
+
+    order_id = None
+    async with Session() as s:
+        if prefill["order"]:
+            o = await s.scalar(select(Order).where(Order.web_token == prefill["order"]))
+            # only their own order can be attached
+            if o is not None and o.user_id == uid:
+                order_id = o.id
+        user = await s.get(User, uid)
+        if user is None:
+            user = User(id=uid, username="web", first_name="Web")
+            s.add(user)
+            await s.flush()
+        t = Ticket(user_id=uid, order_id=order_id, category=cat,
+                   txid=txid or None, contact=contact, message=msg)
+        s.add(t)
+        await s.commit()
+        tid = t.id
+    _bucket_record(_ticket_times, ip, 3600)
+    log.info("support ticket %s from %s (%s, order=%s)", tid, ip, cat, order_id)
+
+    # ping the admins in Telegram right away — the panel has the full record
+    bot = request.app.get("bot")
+    if bot is not None:
+        from .helpers import notify_admins
+        note = (f"🎫 <b>New support ticket {_tkt_tag(tid)}</b> — "
+                f"{_esc(_TICKET_CATS[cat])}\n"
+                + (f"Order {texts.tag(order_id)}\n" if order_id else "")
+                + (f"TX <code>{_esc(txid[:16])}…</code>\n" if txid else "")
+                + f"Contact: {_esc(contact)}\n"
+                f"“{_esc(msg[:300])}”\n\nFull details in the panel → Tickets.")
+        try:
+            await notify_admins(bot, note)
+        except Exception:
+            log.exception("ticket admin notify failed")
+
+    body = f"""
+<h1>Ticket created {_tkt_tag(tid)}</h1>
+<div class='banner ok'><b>Our admins have been alerted.</b><br>
+<span class=small>We'll reach you at <b>{_esc(contact)}</b>. You can also check
+this ticket's status any time under <a href='/my'>My orders</a>.</span></div>
+<a class=btn href="/my">My orders &amp; tickets</a>"""
+    resp = _page("Ticket created — P2P Desk", body)
+    _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
+    return resp
+
+
+
+
+async def guarantee_page(request: web.Request):
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+    body = f"""
+<h1>The 100% Clean-Funds <span class=g>Guarantee</span></h1>
+<p class="muted lead">The biggest fear when selling USDT in India isn't the rate —
+it's receiving money from an unknown source and having your bank account frozen.
+Our entire desk is built so that can't happen to you.</p>
+
+<h2>Where every rupee comes from</h2>
+<div class=card><div class=steps3>
+<div class=step><div class=n>1</div><div><b>Market &amp; mutual-fund settlements</b><br>
+<span class='muted small'>Withdrawals from stock-market and mutual-fund accounts —
+money with a full paper trail behind it.</span></div></div>
+<div class=step><div class=n>2</div><div><b>Cash &amp; CDM deposits</b><br>
+<span class='muted small'>Physical cash deposited over the counter or by cash-deposit
+machine — clean at the moment it enters the banking system.</span></div></div>
+<div class=step><div class=n>3</div><div><b>Card &amp; gateway settlements</b><br>
+<span class='muted small'>Credit-card and payment-gateway settlement funds from
+regular commerce.</span></div></div></div></div>
+
+<h2>What we never touch</h2>
+<p class=muted>No gaming or betting money, no proceeds of scams or fraud, no
+third-party transfers from strangers, nothing linked to sanctioned parties. Our
+AML screening (see the <a href="/legal/aml">AML policy</a>) exists to keep those
+out — and orders that fail it are refused or refunded, not passed on to you.</p>
+
+<h2>Why this protects your account</h2>
+<p class=muted>Bank freezes on P2P traders almost always trace back to one thing:
+a payment whose sender's money was dirty. Because every payout we make comes from
+the verified sources above, there is no dirty sender in the chain — which is why
+we can stand behind the guarantee on every single deal, with proof shared on each
+completed order.</p>
+
+<h2>Our record, in the open</h2>
+<p class=muted>Every deposit is verified on a public blockchain and every completed
+deal gets a proof card. If anything about a payout ever concerns you, raise a
+<a href="/support">support ticket</a> — admins see tickets instantly.</p>
+<a class="btn cta-mid" href="/sell">Sell USDT with the guarantee</a>
+{_fabs_html(support, whatsapp)}"""
+    return _page("100% Clean-Funds Guarantee — P2P Desk", body,
+                 "Every payout from verified clean sources — market funds, cash "
+                 "deposits, card settlements. Your account is never at risk.",
+                 wide=True)
 
 
 # ── legal / disclosure pages ─────────────────────────────────────────────────
@@ -1526,6 +1746,9 @@ async def start_site(bot):
         web.post("/sell", sell_post),
         web.get("/my", my_orders),
         web.get("/legal/{slug}", legal_page),
+        web.get("/support", support_get),
+        web.get("/guarantee", guarantee_page),
+        web.post("/support", support_post),
         web.get("/o/{token}", order_page),
         web.get("/o/{token}/status.json", order_status),
         web.get("/o/{token}/qr.png", order_qr),

@@ -117,6 +117,25 @@ class OrderMsg(Base):
     message_id: Mapped[int] = mapped_column(BigInteger)
 
 
+class Ticket(Base):
+    """Customer support tickets — filed from the website (deposit sent but not
+    credited, payout issues, anything else) and worked from the admin panel.
+    Web customers have no Telegram chat, so `contact` is how the desk reaches
+    them back."""
+
+    __tablename__ = "tickets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"))
+    category: Mapped[str] = mapped_column(String(24))       # deposit / payout / other
+    txid: Mapped[str | None] = mapped_column(String(80))
+    contact: Mapped[str] = mapped_column(String(120), default="")
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(12), default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Setting(Base):
     """Chat-managed runtime settings: per-service rates, deposit address."""
 
