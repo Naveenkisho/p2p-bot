@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     biz_name: str = ""
     biz_address: str = ""
     biz_email: str = ""
+    # Google OAuth web client ID (…apps.googleusercontent.com) — enables the
+    # "Sign in with Google" button on the website's signup gate. The site's
+    # https origin must be listed under the client's Authorized JavaScript
+    # origins in Google Cloud Console.
+    google_client_id: str = ""
 
     # TRON auto-scan (5s ≈ 17,280 calls/day per chain — within BscScan's free 100k/day)
     scan_interval_sec: int = 5
