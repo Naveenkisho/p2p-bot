@@ -280,11 +280,9 @@ h2{font-size:1.12rem;font-weight:800;letter-spacing:-.01em;margin:28px 0 10px}
  border-radius:999px}
 .topbar a.nav:hover{background:var(--surface-2);color:var(--text)}
 .topbar a.nav.hot{background:var(--navy);color:#fff;padding:9px 16px;margin-left:2px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
- padding:20px;margin:14px 0;box-shadow:var(--shadow);overflow-wrap:anywhere;
- transition:transform .18s,box-shadow .18s}
-.card:hover{transform:translateY(-3px);
- box-shadow:0 4px 8px rgba(14,19,48,.05),0 20px 44px rgba(14,19,48,.12)}
+.card{background:transparent;border:0;border-radius:0;box-shadow:none;
+ padding:14px 0;margin:6px 0;overflow-wrap:anywhere}
+.card.sep+.card.sep{border-top:1px solid var(--border);padding-top:22px;margin-top:14px}
 .muted{color:var(--muted)} .small{font-size:.88rem} .faint{color:var(--faint)}
 .badge{display:inline-flex;align-items:center;gap:6px;font-size:.73rem;font-weight:800;
  letter-spacing:.03em;padding:6px 12px;border-radius:999px;
@@ -339,7 +337,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .rates tr:last-child td{border-bottom:0}
 .rates .r{text-align:right;font-weight:900;font-size:1.12rem;color:var(--accent-dark)}
 .hero-badges{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 4px}
-.marq{overflow:hidden;position:relative;margin:14px -20px 4px;
+.marq{overflow:hidden;position:relative;margin:14px calc(50% - 50vw) 4px;
  -webkit-mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent);
  mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent)}
 .marq .track{display:flex;gap:52px;width:max-content;align-items:center;
@@ -406,8 +404,8 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .netpick input:checked+span{color:var(--accent-dark)}
 .netpick label:has(input:checked){border-color:var(--accent);background:var(--accent-soft);
  box-shadow:0 0 0 3px var(--accent-soft)}
-.banner{border:1px solid var(--border);border-left:5px solid var(--muted);background:var(--surface);
- border-radius:14px;padding:13px 15px;margin:12px 0;box-shadow:var(--shadow)}
+.banner{border:0;border-left:5px solid var(--muted);background:var(--surface-2);
+ border-radius:12px;padding:13px 15px;margin:12px 0}
 .banner.ok{border-left-color:var(--accent)} .banner.warn{border-left-color:var(--warn)}
 .banner.danger{border-left-color:var(--danger)}
 .err{color:var(--danger);font-weight:700;margin:10px 0}
@@ -415,17 +413,19 @@ details{margin:12px 0}
 details summary{cursor:pointer;color:var(--text);font-weight:700;padding:4px 0}
 details summary::marker{color:var(--accent-dark)}
 .footer{margin-top:0;color:#8b95b8;font-size:.82rem;text-align:center}
-.darkband{margin:18px 0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.darkband .cell{background:linear-gradient(160deg,#171d3d 0%,var(--navy) 60%);
+.darkband{margin:26px calc(50% - 50vw);background:var(--navy);
+ padding:26px max(16px,calc(50vw - 520px));
+ display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.darkband .cell{background:linear-gradient(160deg,#1b2248 0%,#141a3a 60%);
  border-radius:18px;padding:20px 6px;text-align:center;
- border:1px solid rgba(255,255,255,.07);
- box-shadow:0 14px 30px rgba(14,19,48,.28),0 2px 6px rgba(14,19,48,.18);
+ border:1px solid rgba(255,255,255,.08);
+ box-shadow:0 14px 30px rgba(0,0,0,.30),0 2px 6px rgba(0,0,0,.2);
  animation:floaty 5s ease-in-out infinite;
  transition:transform .18s,box-shadow .18s}
 .darkband .cell:nth-child(2),.darkband .cell:nth-child(5){animation-delay:1.6s}
 .darkband .cell:nth-child(3),.darkband .cell:nth-child(4){animation-delay:3.2s}
 .darkband .cell:hover{transform:translateY(-6px);
- box-shadow:0 22px 44px rgba(14,19,48,.34),0 4px 10px rgba(14,19,48,.2)}
+ box-shadow:0 22px 44px rgba(0,0,0,.38),0 4px 10px rgba(0,0,0,.22)}
 .darkband .k{color:#8b95b8;font-size:.68rem;font-weight:800;letter-spacing:.07em;
  text-transform:uppercase;margin-bottom:4px}
 .darkband .v{color:#fff;font-size:1.45rem;font-weight:900;letter-spacing:-.02em;
@@ -466,7 +466,8 @@ details summary::marker{color:var(--accent-dark)}
  .wide .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 34px;align-items:start}
  .wide .cols2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch}
  .wide .cols2 .card{margin:0}
- .wide .darkband{grid-template-columns:repeat(6,1fr)}
+ .wide .darkband{grid-template-columns:repeat(6,1fr);
+  padding-left:max(16px,calc(50vw - 520px));padding-right:max(16px,calc(50vw - 520px))}
  .wide .darkband .v{font-size:1.6rem}
  .wide .cta-mid{max-width:420px;margin-left:auto;margin-right:auto}
  .bigfoot .cols{grid-template-columns:1fr 1fr 1fr}
@@ -1355,7 +1356,7 @@ async def my_orders(request: web.Request):
             bank = (f"<details><summary>Payout bank — {_esc(card.label)}</summary>"
                     f"<div style='margin-top:8px'>{det}</div></details>")
         blocks.append(
-            f"<div class=card><b>{texts.tag(o.id)}</b> "
+            f"<div class='card sep'><b>{texts.tag(o.id)}</b> "
             f"<span class='badge {cls.get(o.status, '')}'>"
             f"{_esc(nice.get(o.status, o.status.replace('_', ' ')))}</span>"
             f"<div style='margin-top:10px'>{rows}</div>{bank}"
