@@ -408,6 +408,12 @@ async def _sec_headers(request: web.Request, handler):
     # Services still receives the origin it must match against the OAuth
     # client's authorized origins (no-referrer silently breaks the button).
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    # no-store by default: these pages are dynamic and often per-account (My
+    # orders, the sell form's saved banks, order pages). Without this a caching
+    # proxy like Cloudflare can store one visitor's page and serve it to
+    # another. Endpoints that ARE safe to cache (QR PNGs) set their own
+    # Cache-Control, which setdefault leaves untouched.
+    resp.headers.setdefault("Cache-Control", "private, no-store")
     if _is_https(request):
         resp.headers.setdefault("Strict-Transport-Security",
                                 "max-age=63072000; includeSubDomains")
@@ -792,6 +798,8 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
         # see _sec_headers: keeps token paths out of cross-origin referers while
         # letting Google Identity Services validate the origin
         "Referrer-Policy": "strict-origin-when-cross-origin",
+        # never let a proxy cache a per-account page and serve it to someone else
+        "Cache-Control": "private, no-store",
     })
 
 
