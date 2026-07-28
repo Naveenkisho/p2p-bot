@@ -280,7 +280,10 @@ h2{font-size:1.12rem;font-weight:800;letter-spacing:-.01em;margin:28px 0 10px}
 .topbar a.nav:hover{background:var(--surface-2);color:var(--text)}
 .topbar a.nav.hot{background:var(--navy);color:#fff;padding:9px 16px;margin-left:2px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
- padding:20px;margin:14px 0;box-shadow:var(--shadow);overflow-wrap:anywhere}
+ padding:20px;margin:14px 0;box-shadow:var(--shadow);overflow-wrap:anywhere;
+ transition:transform .18s,box-shadow .18s}
+.card:hover{transform:translateY(-3px);
+ box-shadow:0 4px 8px rgba(14,19,48,.05),0 20px 44px rgba(14,19,48,.12)}
 .muted{color:var(--muted)} .small{font-size:.88rem} .faint{color:var(--faint)}
 .badge{display:inline-flex;align-items:center;gap:6px;font-size:.73rem;font-weight:800;
  letter-spacing:.03em;padding:6px 12px;border-radius:999px;
@@ -336,10 +339,26 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .rates .r{text-align:right;font-weight:900;font-size:1.12rem;color:var(--accent-dark)}
 .hero-badges{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 4px}
 .brands{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 2px}
-.brands .b{display:inline-flex;align-items:center;gap:7px;background:var(--surface);
- border:1.5px solid var(--border);border-radius:999px;padding:9px 14px;font-weight:800;
- font-size:.9rem;box-shadow:0 1px 2px rgba(14,19,48,.06)}
-.brands .d{width:10px;height:10px;border-radius:50%}
+.brands .b{display:inline-flex;align-items:center;gap:8px;background:var(--surface);
+ border:1.5px solid var(--border);border-radius:999px;padding:7px 14px 7px 8px;
+ font-weight:800;font-size:.9rem;box-shadow:0 1px 2px rgba(14,19,48,.06)}
+.brands .ic{width:24px;height:24px;border-radius:50%;display:inline-flex;
+ align-items:center;justify-content:center;color:#fff;font-size:.72rem;font-weight:900}
+.d{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:baseline}
+.livewrap{display:inline-flex;align-items:center;gap:6px;margin-left:8px;
+ font-size:.66rem;font-weight:900;letter-spacing:.1em;color:var(--accent-dark);
+ vertical-align:middle}
+.livedot{width:8px;height:8px;border-radius:50%;background:var(--accent);
+ animation:pulse 1.6s ease-in-out infinite}
+.livebars{display:inline-flex;align-items:flex-end;gap:2px;height:14px}
+.livebars i{width:3px;border-radius:2px;background:var(--accent);animation:bars 1.1s ease-in-out infinite}
+.livebars i:nth-child(1){height:6px}
+.livebars i:nth-child(2){height:11px;animation-delay:.18s}
+.livebars i:nth-child(3){height:8px;animation-delay:.36s}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(0,194,111,.45)}
+ 55%{box-shadow:0 0 0 6px rgba(0,194,111,0)}}
+@keyframes bars{0%,100%{transform:scaleY(.55)}50%{transform:scaleY(1.15)}}
+@keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
 .step{display:flex;gap:12px;margin:14px 0}
 .step .n{flex:0 0 32px;height:32px;border-radius:50%;background:var(--navy);
  color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center}
@@ -384,9 +403,17 @@ details{margin:12px 0}
 details summary{cursor:pointer;color:var(--text);font-weight:700;padding:4px 0}
 details summary::marker{color:var(--accent-dark)}
 .footer{margin-top:0;color:#8b95b8;font-size:.82rem;text-align:center}
-.darkband{background:var(--navy);border-radius:24px;padding:6px;margin:18px 0;
- display:grid;grid-template-columns:repeat(3,1fr);overflow:hidden}
-.darkband .cell{padding:22px 6px;text-align:center;box-shadow:0 0 0 .5px rgba(255,255,255,.09)}
+.darkband{margin:18px 0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.darkband .cell{background:linear-gradient(160deg,#171d3d 0%,var(--navy) 60%);
+ border-radius:18px;padding:20px 6px;text-align:center;
+ border:1px solid rgba(255,255,255,.07);
+ box-shadow:0 14px 30px rgba(14,19,48,.28),0 2px 6px rgba(14,19,48,.18);
+ animation:floaty 5s ease-in-out infinite;
+ transition:transform .18s,box-shadow .18s}
+.darkband .cell:nth-child(2),.darkband .cell:nth-child(5){animation-delay:1.6s}
+.darkband .cell:nth-child(3),.darkband .cell:nth-child(4){animation-delay:3.2s}
+.darkband .cell:hover{transform:translateY(-6px);
+ box-shadow:0 22px 44px rgba(14,19,48,.34),0 4px 10px rgba(14,19,48,.2)}
 .darkband .k{color:#8b95b8;font-size:.68rem;font-weight:800;letter-spacing:.07em;
  text-transform:uppercase;margin-bottom:4px}
 .darkband .v{color:#fff;font-size:1.45rem;font-weight:900;letter-spacing:-.02em;
@@ -419,7 +446,7 @@ details summary::marker{color:var(--accent-dark)}
 .cardpick input{display:none}
 .cardpick label:has(input:checked){border-color:var(--accent);background:var(--accent-soft);
  box-shadow:0 0 0 3px var(--accent-soft)}
-@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 """
 
 
@@ -455,10 +482,13 @@ the network shown. By using this site you agree to the
  els.forEach(function(el){el.classList.add('rv');io.observe(el)});
  function cu(el){
    if(el.dataset.done)return;el.dataset.done=1;
-   var n=parseFloat(el.dataset.cu),pre=el.dataset.pre||'',t0=null;
+   var n=parseFloat(el.dataset.cu),pre=el.dataset.pre||'',suf=el.dataset.suf||'',
+       dec=parseInt(el.dataset.dec||'0'),t0=null;
    if(!isFinite(n))return;
    function fr(t){if(!t0)t0=t;var p=Math.min(1,(t-t0)/900);p=1-Math.pow(1-p,3);
-     el.textContent=pre+Math.round(n*p).toLocaleString('en-IN');
+     var v=n*p;
+     el.textContent=pre+v.toLocaleString('en-IN',
+       {minimumFractionDigits:dec,maximumFractionDigits:dec})+suf;
      if(p<1)requestAnimationFrame(fr);}
    requestAnimationFrame(fr);}
 })();
@@ -497,11 +527,11 @@ def _fabs_html(support: str, whatsapp: str) -> str:
         digits = "".join(ch for ch in whatsapp if ch.isdigit())
         if digits:
             fabs += (f"<a class='fab wa' href='https://wa.me/{digits}' "
-                     "target=_blank rel=noopener>\U0001f4ac WhatsApp</a>")
+                     "target=_blank rel=noopener>WhatsApp</a>")
     first = next((h for h in (support or "").split() if h.startswith("@")), "")
     if first:
         fabs += (f"<a class='fab tg' href='https://t.me/{_esc(first.lstrip('@'))}' "
-                 "target=_blank rel=noopener>\u2708\ufe0f Telegram</a>")
+                 "target=_blank rel=noopener>Telegram</a>")
     return f"<div class=fabs>{fabs}</div>" if fabs else ""
 
 
@@ -533,6 +563,13 @@ async def home(request: web.Request):
             .where(Order.status == OrderStatus.COMPLETED.value)) or 0.0
         quotes_n = await s.scalar(
             select(func.count()).select_from(Order)) or 0
+    # owner-declared lifetime history (Telegram-era) + what this system counted
+    done_n += max(0, settings.stats_base_orders)
+    paid_inr += max(0.0, settings.stats_base_inr)
+    usdt_vol += max(0.0, settings.stats_base_usdt or
+                    (settings.stats_base_inr / max(1.0, settings.stats_base_rate)))
+    quotes_n += max(0, settings.stats_base_orders)
+    plus = "+" if settings.stats_base_orders > 0 else ""
     rows = "".join(
         f"<tr><td><b>{_esc(SERVICES.get(k, k))}</b><br>"
         f"<span class='muted small'>{limits[k][0]:g}$ – {limits[k][1]:g}$ per order</span></td>"
@@ -540,20 +577,28 @@ async def home(request: web.Request):
         for k, v in rates.items())
     open_badge = ("<span class='badge ok'>● Desk open now</span>" if is_open
                   else "<span class='badge danger'>● Desk closed — check back soon</span>")
-    cta = ("<a class=btn href='/sell'>💵 Sell USDT now</a>" if is_open
+    cta = ("<a class=btn href='/sell'>Sell USDT now</a>" if is_open
            else "<button class=btn disabled style='opacity:.6'>Desk closed</button>")
+    def _big(n: float, pre: str = "", plus: str = "") -> str:
+        """(cell html) — compact Indian-friendly figure with count-up targets."""
+        if n >= 1e7:
+            v, dec, suf = n / 1e7, (1 if n < 1e8 else 0), " Cr" + plus
+        elif n >= 1e5:
+            v, dec, suf = n / 1e5, (1 if n < 1e6 else 0), " L" + plus
+        else:
+            v, dec, suf = n, 0, plus
+        disp = f"{v:,.{dec}f}"
+        return (f"<div class=v data-cu={v:.{dec}f} data-dec={dec} "
+                f"data-pre='{pre}' data-suf='{suf}'>{pre}{disp}{suf}</div>")
+
     stats = ""
     if done_n >= 5:
         stats = f"""
 <div class=darkband>
-<div class=cell><div class=k>Orders paid</div>
-<div class=v data-cu={done_n}>{done_n:,}</div></div>
-<div class=cell><div class=k>Paid out</div>
-<div class=v data-cu={paid_inr:.0f} data-pre=₹>₹{paid_inr:,.0f}</div></div>
-<div class=cell><div class=k>USDT settled</div>
-<div class=v data-cu={usdt_vol:.0f}>{usdt_vol:,.0f}</div></div>
-<div class=cell><div class=k>Quotes serviced</div>
-<div class=v data-cu={quotes_n}>{quotes_n:,}</div></div>
+<div class=cell><div class=k>Orders paid</div>{_big(done_n, "", plus)}</div>
+<div class=cell><div class=k>Paid out</div>{_big(paid_inr, "₹", plus)}</div>
+<div class=cell><div class=k>USDT settled</div>{_big(usdt_vol, "", plus)}</div>
+<div class=cell><div class=k>Quotes serviced</div>{_big(quotes_n, "", plus)}</div>
 <div class=cell><div class=k>Payout time</div>
 <div class=v>~{_esc(settings.eta_text)}</div></div>
 <div class=cell><div class=k>Verification</div>
@@ -566,11 +611,11 @@ async def home(request: web.Request):
 pay your bank — UPI, IMPS, CDM or cheque. The same desk thousands trade on Telegram,
 now on the web.</p>
 <div class=hero-badges>{open_badge}
-<span class=badge>🛡 100% clean funds</span>
-<span class=badge>⚡ Auto-verified deposits</span>
-<span class=badge>📸 Proof on every deal</span></div>
+<span class=badge>100% clean funds</span>
+<span class=badge>Auto-verified deposits</span>
+<span class=badge>Proof on every deal</span></div>
 {stats}
-<div class=card id=rates><h2 style="margin-top:0">📈 Live rates</h2>
+<div class=card id=rates><h2 style="margin-top:0">Live rates <span class=livewrap><span class=livedot></span>LIVE<span class=livebars><i></i><i></i><i></i></span></span></h2>
 <table class=rates>{rows or "<tr><td class=muted>No rates live right now.</td></tr>"}</table>
 <p class='muted small' style="margin:10px 0 0">Rates are live — the rate you see when you
 order is the rate you're paid at. Networks accepted: <b>{nets}</b>.</p></div>
@@ -586,14 +631,26 @@ scanner verifies it on-chain in seconds, no screenshots needed.</span></div></di
 <div class=step><div class=n>3</div><div><b>Get paid in INR</b><br>
 <span class='muted small'>Verified deposits enter the payout queue and our admins pay
 your bank directly — typically {_esc(settings.eta_text)}. Proof shared on every deal.</span></div></div></div>
-<div class=card><h2 style="margin-top:0">👛 Sell from any wallet or exchange</h2>
+<div class=card><h2 style="margin-top:0">Sell from any wallet or exchange</h2>
 <p class='muted small' style="margin:0 0 4px">Withdraw USDT from wherever you hold it and
 send it to your order address — it works the same from every app:</p>
-<div class=brands><span class=b><span class=d style='background:#f0b90b'></span>Binance</span><span class=b><span class=d style='background:#3375bb'></span>Trust Wallet</span><span class=b><span class=d style='background:#0e1330'></span>OKX</span><span class=b><span class=d style='background:#f7a600'></span>Bybit</span><span class=b><span class=d style='background:#24ae8f'></span>KuCoin</span><span class=b><span class=d style='background:#2980fe'></span>TokenPocket</span><span class=b><span class=d style='background:#3067f0'></span>WazirX</span><span class=b><span class=d style='background:#4a24ae'></span>CoinDCX</span></div>
+<div class=brands><span class=b><span class=ic style='background:#f0b90b'>◆</span>Binance</span><span class=b><span class=ic style='background:#3375bb'>T</span>Trust Wallet</span><span class=b><span class=ic style='background:#0e1330'>OK</span>OKX</span><span class=b><span class=ic style='background:#f7a600'>B</span>Bybit</span><span class=b><span class=ic style='background:#24ae8f'>K</span>KuCoin</span><span class=b><span class=ic style='background:#2980fe'>TP</span>TokenPocket</span><span class=b><span class=ic style='background:#3067f0'>W</span>WazirX</span><span class=b><span class=ic style='background:#4a24ae'>D</span>CoinDCX</span></div>
 <p class='muted small' style="margin:8px 0 0">…and any other wallet or exchange that can
 send USDT on your chosen network. Pick the network on the sell form and match it when
 you withdraw.</p></div>
-<div class=card><h2 style="margin-top:0">🛡 100% Clean Funds — our guarantee</h2>
+<div class=card><h2 style="margin-top:0">Fast and safe — across all of India</h2>
+<div class=step><div class=n>⚑</div><div><b>Built to be India's fastest desk</b><br>
+<span class='muted small'>Deposits verify on-chain in seconds — no screenshots, no
+waiting for a human to check. Verified orders enter the payout queue and admins pay
+over UPI and IMPS round the clock, typically {_esc(settings.eta_text)}.</span></div></div>
+<div class=step><div class=n>✓</div><div><b>Engineered to be the safest</b><br>
+<span class='muted small'>Every payout comes from verified clean sources, every deposit
+is matched on a public blockchain, and proof is shared on every completed deal — a
+record you can check, not a promise.</span></div></div>
+<div class=step><div class=n>⌂</div><div><b>Every bank, everywhere in India</b><br>
+<span class='muted small'>UPI, IMPS, CDM or cheque — payouts reach any Indian bank,
+in any state, on bank holidays too.</span></div></div></div>
+<div class=card><h2 style="margin-top:0">100% Clean Funds — our guarantee</h2>
 <p class='muted small' style="margin:0">Every rupee we pay out comes from verified,
 legitimate sources — mutual &amp; stock-market funds, cash deposits, credit-card and
 payment-gateway funds. Your account is never at risk of a freeze or hold.</p></div>
@@ -620,7 +677,7 @@ first.</p></details>
 orders are tied to this browser automatically — find them any time under
 <a href="/my">My orders</a>.</p></details>
 </div>
-<div class=card id=support><b>🆘 Support</b><br><span class=small>{_support_html(support)}
+<div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}
 <span class=muted>— mention your order ID (#ORD…)</span></span></div>
 {cta if rows else ""}
 {_fabs_html(support, whatsapp)}"""
@@ -681,9 +738,11 @@ async def _sell_form(request: web.Request, error: str = "",
             net_html = (
                 "<label>Network you'll send USDT on</label><div class=netpick>"
                 f"<label><input type=radio name=network value=TRC20 {trc_sel}>"
-                "<span>🔷 TRC20<br><span class='muted small'>TRON</span></span></label>"
+                "<span><span class=d style='background:#2470ff'></span> TRC20<br>"
+                "<span class='muted small'>TRON</span></span></label>"
                 f"<label><input type=radio name=network value=BEP20 {bep_sel}>"
-                "<span>🟡 BEP20<br><span class='muted small'>BSC</span></span></label></div>")
+                "<span><span class=d style='background:#f0b90b'></span> BEP20<br>"
+                "<span class='muted small'>BSC</span></span></label></div>")
         async with Session() as s:
             ttl = await get_deposit_ttl(s)
         err = f"<p class=err>{_esc(error)}</p>" if error else ""
@@ -695,11 +754,11 @@ async def _sell_form(request: web.Request, error: str = "",
             copts = "".join(
                 f"<label><input type=radio name=card_id value={c.id} "
                 f"{'checked' if str(c.id) == picked else ''}>"
-                f"🏦 {_esc(c.label)}</label>"
+                f"{_esc(c.label)}</label>"
                 for c in saved_cards)
             copts += (f"<label><input type=radio name=card_id value=new "
                       f"{'checked' if picked == 'new' else ''}>"
-                      "➕ Add a new bank</label>")
+                      "+ Add a new bank</label>")
             card_pick = f"<div class=cardpick id=cardpick>{copts}</div>"
             nb_style = " style=display:none" if picked != "new" else ""
         else:
@@ -738,7 +797,7 @@ The quote stays live for {ttl} minutes after you submit.</p>
 </div>
 <div style="margin-top:18px"><button class=btn id=go>Get my deposit address →</button></div>
 </div></form>
-<p class='muted small'>🆘 Questions? {_support_html(support)}</p>"""
+<p class='muted small'>Questions? {_support_html(support)}</p>"""
         # the live limits/preview script is a plain string (no f-string) so the
         # JS braces stay readable; META carries lo/hi/rate/name per method
         body += ("<script>var META=" + meta_js + """;
@@ -754,10 +813,10 @@ function upd(){
   if(!raw||isNaN(v)){hint.className='hint';hint.textContent=base;
     recv.textContent='\\u20b9 \\u2014';go.disabled=false;go.style.opacity=1;return}
   if(v<m.lo){hint.className='hint bad';
-    hint.textContent='\\u26a0 Minimum for '+m.name+' is '+m.lo+'$ \\u2014 enter '+m.lo+'$ or more.';
+    hint.textContent='\Minimum for '+m.name+' is '+m.lo+'$ \\u2014 enter '+m.lo+'$ or more.';
     recv.textContent='\\u20b9 \\u2014';go.disabled=true;go.style.opacity=.55;return}
   if(v>m.hi){hint.className='hint bad';
-    hint.textContent='\\u26a0 Maximum for '+m.name+' is '+m.hi+'$ \\u2014 enter '+m.hi+'$ or less.';
+    hint.textContent='\Maximum for '+m.name+' is '+m.hi+'$ \\u2014 enter '+m.hi+'$ or less.';
     recv.textContent='\\u20b9 \\u2014';go.disabled=true;go.style.opacity=.55;return}
   hint.className='hint';hint.textContent=base;
   recv.textContent=inr(v*m.rate);
@@ -945,7 +1004,9 @@ async def order_page(request: web.Request):
     amt = texts.usd_str(order.usd_amount)
     dec = f".{amt.split('.')[1]}" if "." in amt else ""
     net_label = "BEP20 (BSC)" if order.network == "BEP20" else "TRC20 (TRON)"
-    net_emoji = "🟡" if order.network == "BEP20" else "🔷"
+    net_dot = ("<span class=d style='background:#f0b90b'></span>"
+               if order.network == "BEP20" else
+               "<span class=d style='background:#2470ff'></span>")
     show_addr = order.display_address or order.deposit_address
     tagline = f"<code>{texts.tag(order.id)}</code>"
     claim_form = f"""
@@ -961,34 +1022,34 @@ to our address is accepted.</p>
 
     if st == OrderStatus.AWAITING_DEPOSIT.value:
         deadline = _epoch_ms(order.created_at) + ttl * 60_000
-        warn = (f"❗ <b>Include the {dec}</b> — send the EXACT amount, decimals and all. "
+        warn = (f"<b>Include the {dec}</b> — send the EXACT amount, decimals and all. "
                 f"A wrong amount may not auto-detect." if dec else
-                "❗ <b>Send the exact amount.</b>")
+                "<b>Send the exact amount.</b>")
         body = f"""
 <h1>Send your USDT {tagline}</h1>
-<div class=banner><b>💵 You'll receive ₹{order.inr_amount:,.2f}</b>
+<div class=banner><b>You'll receive ₹{order.inr_amount:,.2f}</b>
 <span class=muted>→ {_esc(bank_label)}</span><br>
 <span class='muted small'>⏳ Quote expires in <span id=cd class=count>--:--</span>
 · auto-verified in seconds after it confirms</span></div>
 <div class=card>
-<b>{net_emoji} On {_esc(net_label)} — copy the address</b>
+<b>{net_dot} On {_esc(net_label)} — copy the address</b>
 <span class=addr id=addr>{_esc(show_addr)}</span>
-<button class="btn ghost" onclick="copyAddr(this)">📋 Copy address</button>
+<button class="btn ghost" onclick="copyAddr(this)">Copy address</button>
 <img class=qrimg src="/o/{_esc(token)}/qr.png" alt="Deposit QR"
  onerror="this.remove()">
-<b>💸 Then send exactly</b>
+<b>Then send exactly</b>
 <div class=amtbox><div class=l>send exactly</div><div class=v>{_esc(amt)} USDT</div></div>
 <p class='muted small' style="margin:6px 0 0">{warn}</p>
 </div>
-<button class=btn id=checkbtn onclick="checkNow()">✅ I've sent it — check it</button>
-<div id=checking class="banner warn" style="display:none">🔍 Checking the blockchain…
+<button class=btn id=checkbtn onclick="checkNow()">I've sent it — check it</button>
+<div id=checking class="banner warn" style="display:none">Checking the blockchain…
 a fresh transfer takes ~a minute to confirm. This page updates automatically.</div>
 {claim_form}
 <form method=post action="/o/{_esc(token)}/cancel"
  onsubmit="return confirm('Cancel this order? Only do this if you have NOT paid.')">
 <input type=hidden name=csrf value='{csrf}'>
-<button class="btn ghost">🚫 No, I'm not paid — cancel</button></form>
-<p class='muted small'>🆘 Need help? {_support_html(support)} — mention {tagline}</p>
+<button class="btn ghost">No, I'm not paid — cancel</button></form>
+<p class='muted small'>Need help? {_support_html(support)} — mention {tagline}</p>
 <script>
 var deadline={deadline};
 function tick(){{var s=Math.max(0,Math.floor((deadline-Date.now())/1000));
@@ -996,7 +1057,7 @@ document.getElementById('cd').textContent=Math.floor(s/60)+':'+String(s%60).padS
 if(s<=0)setTimeout(function(){{location.reload()}},4000);}}
 tick();setInterval(tick,1000);
 function copyAddr(b){{navigator.clipboard.writeText(document.getElementById('addr').textContent.trim())
-.then(function(){{b.textContent='✅ Copied';setTimeout(function(){{b.textContent='📋 Copy address'}},1500)}});}}
+.then(function(){{b.textContent='Copied';setTimeout(function(){{b.textContent='Copy address'}},1500)}});}}
 function checkNow(){{var b=document.getElementById('checkbtn');b.disabled=true;b.style.opacity=.6;
 document.getElementById('checking').style.display='block';
 fetch('/o/{_esc(token)}/check',{{method:'POST',headers:{{'X-CSRF':'{csrf}'}}}});}}
@@ -1009,47 +1070,47 @@ setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
         qtxt = (f"You're <b>#{pos}</b> in the payout queue." if pos
                 else "Finalizing your payout…")
         body = f"""
-<h1>✅ Deposit verified {tagline}</h1>
+<h1>Deposit verified {tagline}</h1>
 <div class="banner ok"><b>{texts.usd_str(order.usd_amount)} USDT received &amp; verified on-chain.</b><br>
-<span class=small>💰 ₹{order.inr_amount:,.2f} is being paid to
+<span class=small>₹{order.inr_amount:,.2f} is being paid to
 {_esc(bank_label)}. {qtxt}</span></div>
 <div class=card class=small><span class=muted>TX:</span>
 <code>{_esc((order.txid or '')[:20])}…</code>
 {f'<a href="{_esc(explorer_tx(order.txid))}" target=_blank rel=noopener>view on explorer</a>' if order.txid and order.txid != 'manual' else ''}</div>
 <p class='muted small'>This page refreshes automatically — you can keep it open or come
-back later from <a href="/my">My orders</a>. 🆘 {_support_html(support)}</p>
+back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
         return _page(f"Order {texts.tag(order.id)} — verified", body + fabs)
 
     if st == OrderStatus.COMPLETED.value:
         body = f"""
-<h1>🎉 Paid! {tagline}</h1>
+<h1>Paid! {tagline}</h1>
 <div class="banner ok"><b>₹{order.inr_amount:,.2f} sent to {_esc(bank_label)}.</b><br>
 <span class=small>Thanks for trading with us — proof is shared on every deal.</span></div>
-<a class=btn href="/sell">💵 Sell more USDT</a>
-<a class="btn ghost" href="/my">📋 All my orders</a>
-<p class='muted small'>🆘 {_support_html(support)}</p>"""
+<a class=btn href="/sell">Sell more USDT</a>
+<a class="btn ghost" href="/my">All my orders</a>
+<p class='muted small'>{_support_html(support)}</p>"""
         return _page(f"Order {texts.tag(order.id)} — paid", body + fabs)
 
     if st in (OrderStatus.EXPIRED.value, OrderStatus.CANCELLED.value):
-        head = ("⌛ This quote expired" if st == OrderStatus.EXPIRED.value
-                else "❌ Order cancelled")
+        head = ("This quote expired" if st == OrderStatus.EXPIRED.value
+                else "Order cancelled")
         note = ("No deposit arrived in time — don't send anything to the old "
                 "address/amount now." if st == OrderStatus.EXPIRED.value else
                 "Nothing is pending on this order.")
         pending_claim = ""
         if order.claim_txid:
-            pending_claim = ("<div class='banner warn'>🧾 Your TXID is <b>under review</b> — "
+            pending_claim = ("<div class='banner warn'>Your TXID is <b>under review</b> — "
                              "our team verifies it and pays out if it checks out. "
                              "This page updates automatically.</div>")
         body = f"""
 <h1>{head} {tagline}</h1>
 <div class=banner>{note}</div>
 {pending_claim}
-<a class=btn href="/sell">💵 Start a fresh order</a>
+<a class=btn href="/sell">Start a fresh order</a>
 {claim_form if not order.claim_txid else ''}
-<p class='muted small'>🆘 {_support_html(support)} — mention {tagline}</p>
+<p class='muted small'>{_support_html(support)} — mention {tagline}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
         return _page(f"Order {texts.tag(order.id)}", body + fabs)
@@ -1058,7 +1119,7 @@ back later from <a href="/my">My orders</a>. 🆘 {_support_html(support)}</p>
     body = f"""
 <h1>Order {tagline}</h1>
 <div class=banner>Status: <b>{_esc(st.replace('_', ' '))}</b></div>
-<p class='muted small'>🆘 {_support_html(support)} — mention {tagline}</p>"""
+<p class='muted small'>{_support_html(support)} — mention {tagline}</p>"""
     return _page(f"Order {texts.tag(order.id)}", body + fabs)
 
 
@@ -1205,7 +1266,7 @@ async def my_orders(request: web.Request):
     if uid is None:
         return _page("My orders", "<h1>My orders</h1><div class=banner>No orders on "
                      "this device yet — they appear here after your first order.</div>"
-                     "<a class=btn href='/sell'>💵 Sell USDT</a>")
+                     "<a class=btn href='/sell'>Sell USDT</a>")
     async with Session() as s:
         orders = (await s.scalars(select(Order).where(Order.user_id == uid)
                                   .order_by(Order.id.desc()).limit(20))).all()
@@ -1216,7 +1277,7 @@ async def my_orders(request: web.Request):
             select(BankCard).where(BankCard.id.in_(card_ids)))).all()} if card_ids else {}
     if not orders:
         return _page("My orders", "<h1>My orders</h1><div class=banner>No orders yet."
-                     "</div><a class=btn href='/sell'>💵 Sell USDT</a>")
+                     "</div><a class=btn href='/sell'>Sell USDT</a>")
     cls = {OrderStatus.COMPLETED.value: "ok", OrderStatus.PENDING_PAYOUT.value: "warn",
            OrderStatus.DEPOSIT_RECEIVED.value: "info",
            OrderStatus.AWAITING_DEPOSIT.value: "info",
@@ -1261,7 +1322,7 @@ async def my_orders(request: web.Request):
                 f"<div class=kv><span class=v style='text-align:left;font-weight:500'>"
                 f"{_esc(line.strip())}</span></div>"
                 for line in card.details.splitlines() if line.strip())
-            bank = (f"<details><summary>🏦 Payout bank — {_esc(card.label)}</summary>"
+            bank = (f"<details><summary>Payout bank — {_esc(card.label)}</summary>"
                     f"<div style='margin-top:8px'>{det}</div></details>")
         blocks.append(
             f"<div class=card><b>{texts.tag(o.id)}</b> "
@@ -1271,7 +1332,7 @@ async def my_orders(request: web.Request):
             f"<a class='btn ghost' style='margin-top:12px' "
             f"href='/o/{_esc(o.web_token)}'>Open live order page →</a></div>")
     return _page("My orders", f"<h1>My orders</h1>{''.join(blocks)}"
-                 "<a class=btn href='/sell'>💵 New order</a>"
+                 "<a class=btn href='/sell'>New order</a>"
                  + _fabs_html(support, whatsapp))
 
 
@@ -1415,7 +1476,7 @@ async def legal_page(request: web.Request):
         support = await get_support(s)
         whatsapp = await get_whatsapp(s)
     body = (f"<h1>{title}</h1>{body_html}"
-            f"<p class='muted small'>🆘 Questions about this policy? "
+            f"<p class='muted small'>Questions about this policy? "
             f"{_support_html(support)}</p>"
             + _fabs_html(support, whatsapp))
     return _page(f"{html.unescape(title)} — P2P Desk", body)
