@@ -54,7 +54,7 @@ from .db import (
     set_setting,
 )
 from .helpers import is_bep20, is_trc20
-from .models import Order, OrderStatus, User
+from .models import Ticket, Order, OrderStatus, User
 from .qr import qr_png
 from sqlalchemy import and_, func, or_, select
 
@@ -330,7 +330,7 @@ async def _export_rows(tab: str):
     """(order, user, card) tuples for a tab, or every order when tab == 'all'.
     Users and cards are batch-fetched (3 queries total, no per-row N+1) so even a
     full 'all' export can't flood the single shared SQLite connection."""
-    from .models import BankCard, User
+    from .models import Ticket, BankCard, User
     async with Session() as s:
         if tab == "all":
             orders = (await s.scalars(select(Order).order_by(Order.id.desc()))).all()
@@ -384,6 +384,7 @@ def _nav(active: str) -> str:
             "<span class=brand><span class=dot></span>P2P Desk</span>"
             "<nav>" + link("/", "Orders", "orders")
             + link("/pay", "Manual pay", "pay")
+            + link("/tickets", "Tickets", "tickets")
             + link("/broadcast", "Broadcast", "broadcast")
             + link("/settings", "Settings", "settings")
             + "</nav><span class=sp></span>"
@@ -575,7 +576,7 @@ async def dashboard(request: web.Request):
 
 @_authed
 async def order_detail(request: web.Request):
-    from .models import BankCard, User
+    from .models import Ticket, BankCard, User
     oid = int(request.match_info["id"])
     async with Session() as s:
         order = await s.get(Order, oid)
@@ -636,7 +637,7 @@ async def order_detail(request: web.Request):
 
 @_authed
 async def order_print(request: web.Request):
-    from .models import BankCard, User
+    from .models import Ticket, BankCard, User
     oid = int(request.match_info["id"])
     async with Session() as s:
         order = await s.get(Order, oid)
@@ -1145,6 +1146,74 @@ async def qr_post(request: web.Request):
         f"✅ {net} custom QR uploaded and now live."))
 
 
+
+@_authed
+async def tickets_get(request: web.Request):
+    """Support tickets from the website — full details, newest first."""
+    show = request.query.get("show", "open")
+    async with Session() as s:
+        q = select(Ticket).order_by(Ticket.id.desc()).limit(100)
+        if show == "open":
+            q = q.where(Ticket.status == "open")
+        tickets = (await s.scalars(q)).all()
+        open_n = await s.scalar(select(func.count()).select_from(Ticket)
+                                .where(Ticket.status == "open")) or 0
+        orders = {}
+        oids = [t.order_id for t in tickets if t.order_id]
+        if oids:
+            orders = {o.id: o for o in (await s.scalars(
+                select(Order).where(Order.id.in_(oids)))).all()}
+    csrf = await _csrf_for(request)
+    cats = {"deposit": "💸 deposit not credited", "payout": "🏦 payout missing",
+            "other": "💬 other"}
+    cards = []
+    for t in tickets:
+        o = orders.get(t.order_id)
+        ordline = ""
+        if o:
+            ordline = (f"<div><span class=muted>Order:</span> "
+                       f"<a href='/order/{o.id}'>#ORD{o.id:04d}</a> — "
+                       f"{o.usd_amount:g} USDT → ₹{o.inr_amount:,.2f} "
+                       f"<span class=badge>{_esc(o.status.replace('_', ' '))}</span></div>")
+        tx = (f"<div><span class=muted>TXID:</span> <code>{_esc(t.txid)}</code></div>"
+              if t.txid else "")
+        who = "🌐 web" if t.user_id < 0 else f"tg {t.user_id}"
+        act = ("close" if t.status == "open" else "reopen")
+        cards.append(f"""
+<div class=card>
+<b>#TKT{t.id:04d}</b> <span class='badge {"warn" if t.status == "open" else "ok"}'>
+{_esc(t.status)}</span> <span class=badge>{cats.get(t.category, t.category)}</span>
+<span class='muted small'> · {t.created_at:%d %b %Y %H:%M} UTC · {who}</span>
+<div style='margin:8px 0'>{ordline}{tx}
+<div><span class=muted>Contact:</span> <b>{_esc(t.contact)}</b></div></div>
+<div style='background:var(--surface-2);border-radius:10px;padding:10px 12px;
+ white-space:pre-wrap'>{_esc(t.message)}</div>
+<form method=post action='/tickets/{t.id}/{act}' style='margin-top:10px'>
+<input type=hidden name=csrf value='{csrf}'>
+<button class='btn small'>{'✅ Mark resolved' if act == 'close' else '↩ Reopen'}</button>
+</form></div>""")
+    tab = (f"<p><a href='/tickets'{' ' if show != 'open' else ' class=on '}>"
+           f"Open ({open_n})</a> · <a href='/tickets?show=all'>All</a></p>")
+    body = (_nav("tickets") + f"<h1>🎫 Tickets</h1>{tab}"
+            + ("".join(cards) or "<div class=card><span class=muted>No "
+               + ("open " if show == "open" else "") + "tickets.</span></div>"))
+    return _page("Tickets", body)
+
+
+@_authed
+async def ticket_act(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("tickets") + "<p>Invalid CSRF token.</p>")
+    tid = int(request.match_info["id"])
+    act = request.match_info["act"]
+    async with Session() as s:
+        t = await s.get(Ticket, tid)
+        if t is not None and act in ("close", "reopen"):
+            t.status = "closed" if act == "close" else "open"
+            await s.commit()
+    raise web.HTTPFound("/tickets")
+
 async def start_panel(bot):
     """Start the web panel if a password is configured; returns the AppRunner
     (or None when disabled) so main() can clean it up."""
@@ -1160,6 +1229,8 @@ async def start_panel(bot):
         web.get("/", dashboard),
         web.post("/desk/toggle", desk_toggle),
         web.get("/pay", pay_get),
+        web.get("/tickets", tickets_get),
+        web.post("/tickets/{id:\\d+}/{act}", ticket_act),
         web.post("/pay", pay_post),
         web.get("/broadcast", broadcast_get),
         web.post("/broadcast", broadcast_post),
