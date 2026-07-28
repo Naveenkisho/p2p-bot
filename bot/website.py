@@ -335,6 +335,14 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .swaparrow{width:38px;height:38px;border-radius:50%;background:#fff;border:1.5px solid var(--border);
  display:flex;align-items:center;justify-content:center;margin:-16px auto;position:relative;z-index:2;
  font-weight:900;color:var(--accent-dark);box-shadow:0 2px 6px rgba(14,19,48,.10)}
+.rategrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.rategrid .rt{background:#fff;border:1px solid var(--border);border-radius:18px;
+ padding:18px 10px;text-align:center;
+ box-shadow:0 10px 24px rgba(14,19,48,.08),0 2px 5px rgba(14,19,48,.04)}
+.rategrid .rt .nm{font-weight:800;font-size:.95rem}
+.rategrid .rt .pr{font-weight:900;font-size:1.45rem;letter-spacing:-.02em;
+ color:var(--accent-dark);margin:4px 0 2px;font-variant-numeric:tabular-nums}
+.rategrid .rt .lm{font-size:.76rem;color:var(--faint);font-weight:700}
 .rates{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .rates td{padding:12px 4px;border-bottom:1px solid var(--border)}
 .rates tr:last-child td{border-bottom:0}
@@ -602,9 +610,9 @@ async def home(request: web.Request):
     quotes_n += max(0, settings.stats_base_orders)
     plus = "+" if settings.stats_base_orders > 0 else ""
     rows = "".join(
-        f"<tr><td><b>{_esc(SERVICES.get(k, k))}</b><br>"
-        f"<span class='muted small'>{limits[k][0]:g}$ – {limits[k][1]:g}$ per order</span></td>"
-        f"<td class=r>₹{v:g}<span class='muted small'> /$</span></td></tr>"
+        f"<div class=rt><div class=nm>{_esc(SERVICES.get(k, k))}</div>"
+        f"<div class=pr>₹{v:g}<span style='font-size:.8rem'>/$</span></div>"
+        f"<div class=lm>{limits[k][0]:g}$ – {limits[k][1]:g}$ per order</div></div>"
         for k, v in rates.items())
     open_badge = ("<span class='badge ok'>● Desk open now</span>" if is_open
                   else "<span class='badge danger'>● Desk closed — check back soon</span>")
@@ -645,13 +653,13 @@ Telegram, now on the web.</p>
 <span class=badge>100% clean funds</span>
 <span class=badge>Auto-verified deposits</span>
 <span class=badge>Proof on every deal</span></div>
+{cta}
 {stats}
 <div class=cols2>
 <div class=card id=rates><h2 style="margin-top:0">Live rates <span class=livewrap><span class=livedot></span>LIVE<span class=livebars><i></i><i></i><i></i></span></span></h2>
-<table class=rates>{rows or "<tr><td class=muted>No rates live right now.</td></tr>"}</table>
+<div class=rategrid>{rows or "<span class=muted>No rates live right now.</span>"}</div>
 <p class='muted small' style="margin:10px 0 0">Rates are live — the rate you see when you
 order is the rate you're paid at. Networks accepted: <b>{nets}</b>.</p></div>
-{cta}
 <h2>How it works</h2>
 <div class=card><div class=steps3>
 <div class=step><div class=n>1</div><div><b>Choose method &amp; amount</b><br>
@@ -714,7 +722,6 @@ orders are tied to this browser automatically — find them any time under
 <div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}
 <span class=muted>— mention your order ID (#ORD…)</span></span>
 <a class="btn ghost" style="margin-top:12px;max-width:340px" href="/support">Create a support ticket</a></div>
-{cta if rows else ""}
 {_fabs_html(support, whatsapp)}"""
     return _page("Sell USDT for INR — P2P Desk", body,
                  "Sell USDT for INR at live rates. On-chain verified deposits, "
