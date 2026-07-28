@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     stats_base_inr: float = 0.0
     stats_base_usdt: float = 0.0
     stats_base_rate: float = 94.0
+    # Public site URL (https://yourdomain.com, no trailing slash) — enables
+    # canonical links, Open Graph URLs, sitemap.xml and robots.txt Sitemap line.
+    site_url: str = ""
+    # Business identity shown on /about (fill with your REAL details — ad
+    # reviewers and payment partners check this page).
+    biz_name: str = ""
+    biz_address: str = ""
+    biz_email: str = ""
 
     # TRON auto-scan (5s ≈ 17,280 calls/day per chain — within BscScan's free 100k/day)
     scan_interval_sec: int = 5

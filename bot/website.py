@@ -506,7 +506,8 @@ _TAIL = """<div class=bigfoot>
 <a href="/sell">Sell USDT</a><a href="/my">My orders</a>
 <a href="/#rates">Live rates</a><a href="/#faq">FAQ</a>
 <a href="/support">Create a ticket</a>
-<a href="/guarantee">Clean-funds guarantee</a></div>
+<a href="/guarantee">Clean-funds guarantee</a>
+<a href="/about">About &amp; contact</a></div>
 <div><h3>User rights &amp; disclosures</h3>
 <a href="/legal/terms">Terms of Use</a>
 <a href="/legal/privacy">Privacy &amp; Cookies Policy</a>
@@ -548,10 +549,24 @@ the network shown. By using this site you agree to the
 """
 
 
-def _page(title: str, body: str, desc: str = "", wide: bool = False) -> web.Response:
+def _page(title: str, body: str, desc: str = "", wide: bool = False,
+          path: str = "", noindex: bool = False) -> web.Response:
+    desc = desc or "Sell USDT for INR — instant bank payout, on-chain verified."
+    head_extra = ""
+    if noindex:
+        head_extra += "<meta name=robots content='noindex,nofollow'>"
+    if settings.site_url and path and not noindex:
+        url = settings.site_url.rstrip("/") + path
+        head_extra += (f"<link rel=canonical href='{_esc(url)}'>"
+                       f"<meta property=og:url content='{_esc(url)}'>")
+    head_extra += (f"<meta property=og:title content='{_esc(title)}'>"
+                   f"<meta property=og:description content='{_esc(desc)}'>"
+                   "<meta property=og:type content=website>"
+                   "<meta property=og:site_name content='P2P Desk'>"
+                   "<meta name=twitter:card content=summary>")
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name=description content="{_esc(desc or 'Sell USDT for INR — instant bank payout, on-chain verified.')}">
+<meta name=description content="{_esc(desc)}">{head_extra}
 <title>{_esc(title)}</title><style>{_STYLE}</style></head><body>
 <div class="wrap{' wide' if wide else ''}">
 <div class=topbar><a href="/" class=brand><span class=dot></span>P2P Desk</a>
@@ -737,10 +752,38 @@ orders are tied to this browser automatically — find them any time under
 <span class=muted>— mention your order ID (#ORD…)</span></span>
 <a class="btn ghost" style="margin-top:12px;max-width:340px" href="/support">Create a support ticket</a></div>
 {_fabs_html(support, whatsapp)}"""
-    return _page("Sell USDT for INR — P2P Desk", body,
+    faq_ld = json.dumps({
+        "@context": "https://schema.org", "@type": "FAQPage",
+        "mainEntity": [
+            {"@type": "Question", "name": q, "acceptedAnswer":
+             {"@type": "Answer", "text": a}} for q, a in [
+                ("How fast do I get paid when selling USDT for INR?",
+                 f"Deposits verify on-chain within seconds of confirming; bank "
+                 f"payout typically follows in {settings.eta_text} via UPI or IMPS."),
+                ("Which networks can I send USDT on?",
+                 "TRC20 (TRON), and BEP20 (BSC) when enabled — pick the network "
+                 "on the sell form and match it in your wallet."),
+                ("Can I sell USDT directly from Binance or another exchange?",
+                 "Yes — place the order, then withdraw the exact USDT amount from "
+                 "your exchange to the address shown, on the same network."),
+                ("Do I need an account to sell USDT here?",
+                 "No signup — orders are tied to your browser and listed under "
+                 "My orders."),
+            ]]})
+    org = {"@context": "https://schema.org", "@type": "Organization",
+           "name": settings.biz_name or "P2P Desk"}
+    if settings.site_url:
+        org["url"] = settings.site_url
+    if settings.biz_email:
+        org["email"] = settings.biz_email
+    body += ("<script type='application/ld+json'>" + faq_ld + "</script>"
+             "<script type='application/ld+json'>" + json.dumps(org) + "</script>")
+    return _page("Sell USDT for INR at Live Rates — Instant Bank Payout | P2P Desk",
+                 body,
                  "Sell USDT for INR at live rates. On-chain verified deposits, "
-                 "instant bank payout via UPI/IMPS/CDM. 100% clean funds.",
-                 wide=True)
+                 "instant bank payout via UPI/IMPS/CDM across India. No signup. "
+                 "100% clean funds guarantee.",
+                 wide=True, path="/")
 
 
 # ── sell flow ─────────────────────────────────────────────────────────────────
@@ -890,7 +933,10 @@ function updBank(){
 if(pick)pick.addEventListener('change',updBank);updBank();
 </script>""")
         body += _fabs_html(support, whatsapp)
-        resp = _page("Sell USDT — P2P Desk", body)
+        resp = _page("Sell USDT for INR — Live Rate & Instant Quote | P2P Desk",
+                     body, "Get your USDT deposit address and a locked INR rate "
+                     "in one step. UPI, IMPS, CDM payouts across India.",
+                     path="/sell")
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
@@ -1124,7 +1170,8 @@ fetch('/o/{_esc(token)}/check',{{method:'POST',headers:{{'X-CSRF':'{csrf}'}}}});
 setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},6000);
 </script>"""
-        return _page(f"Order {texts.tag(order.id)} — send USDT", body + fabs)
+        return _page(f"Order {texts.tag(order.id)} — send USDT", body + fabs,
+                     noindex=True)
 
     if st in (OrderStatus.DEPOSIT_RECEIVED.value, OrderStatus.PENDING_PAYOUT.value):
         qtxt = (f"You're <b>#{pos}</b> in the payout queue." if pos
@@ -1141,7 +1188,8 @@ setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
-        return _page(f"Order {texts.tag(order.id)} — verified", body + fabs)
+        return _page(f"Order {texts.tag(order.id)} — verified", body + fabs,
+                     noindex=True)
 
     if st == OrderStatus.COMPLETED.value:
         body = f"""
@@ -1151,7 +1199,8 @@ back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 <a class=btn href="/sell">Sell more USDT</a>
 <a class="btn ghost" href="/my">All my orders</a>
 <p class='muted small'>{_support_html(support)}</p>"""
-        return _page(f"Order {texts.tag(order.id)} — paid", body + fabs)
+        return _page(f"Order {texts.tag(order.id)} — paid", body + fabs,
+                     noindex=True)
 
     if st in (OrderStatus.EXPIRED.value, OrderStatus.CANCELLED.value):
         head = ("This quote expired" if st == OrderStatus.EXPIRED.value
@@ -1175,14 +1224,14 @@ back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 <p class='muted small'>{_support_html(support)} — mention {tagline}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
-        return _page(f"Order {texts.tag(order.id)}", body + fabs)
+        return _page(f"Order {texts.tag(order.id)}", body + fabs, noindex=True)
 
     # refund / rejected / anything else — simple status card
     body = f"""
 <h1>Order {tagline}</h1>
 <div class=banner>Status: <b>{_esc(st.replace('_', ' '))}</b></div>
 <p class='muted small'>{_support_html(support)} — mention {tagline}</p>"""
-    return _page(f"Order {texts.tag(order.id)}", body + fabs)
+    return _page(f"Order {texts.tag(order.id)}", body + fabs, noindex=True)
 
 
 
@@ -1328,7 +1377,7 @@ async def my_orders(request: web.Request):
     if uid is None:
         return _page("My orders", "<h1>My orders</h1><div class=banner>No orders on "
                      "this device yet — they appear here after your first order.</div>"
-                     "<a class=btn href='/sell'>Sell USDT</a>")
+                     "<a class=btn href='/sell'>Sell USDT</a>", noindex=True)
     async with Session() as s:
         orders = (await s.scalars(select(Order).where(Order.user_id == uid)
                                   .order_by(Order.id.desc()).limit(20))).all()
@@ -1339,7 +1388,7 @@ async def my_orders(request: web.Request):
             select(BankCard).where(BankCard.id.in_(card_ids)))).all()} if card_ids else {}
     if not orders:
         return _page("My orders", "<h1>My orders</h1><div class=banner>No orders yet."
-                     "</div><a class=btn href='/sell'>Sell USDT</a>")
+                     "</div><a class=btn href='/sell'>Sell USDT</a>", noindex=True)
     cls = {OrderStatus.COMPLETED.value: "ok", OrderStatus.PENDING_PAYOUT.value: "warn",
            OrderStatus.DEPOSIT_RECEIVED.value: "info",
            OrderStatus.AWAITING_DEPOSIT.value: "info",
@@ -1408,7 +1457,7 @@ async def my_orders(request: web.Request):
               "New ticket</a></div>")
     return _page("My orders", f"<h1>My orders</h1>{''.join(blocks)}"
                  "<a class=btn href='/sell'>New order</a>" + tk
-                 + _fabs_html(support, whatsapp))
+                 + _fabs_html(support, whatsapp), noindex=True)
 
 
 
@@ -1479,7 +1528,7 @@ hash (TXID) so we can check the chain right away.</p>
 </div></form>
 <p class='muted small'>Prefer chat? {_support_html(support)}</p>
 {_fabs_html(support, whatsapp)}"""
-    resp = _page("Support — P2P Desk", body)
+    resp = _page("Support — P2P Desk", body, path="/support")
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
@@ -1553,7 +1602,7 @@ async def support_post(request: web.Request):
 <span class=small>We'll reach you at <b>{_esc(contact)}</b>. You can also check
 this ticket's status any time under <a href='/my'>My orders</a>.</span></div>
 <a class=btn href="/my">My orders &amp; tickets</a>"""
-    resp = _page("Ticket created — P2P Desk", body)
+    resp = _page("Ticket created — P2P Desk", body, noindex=True)
     _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
 
@@ -1604,7 +1653,7 @@ deal gets a proof card. If anything about a payout ever concerns you, raise a
     return _page("100% Clean-Funds Guarantee — P2P Desk", body,
                  "Every payout from verified clean sources — market funds, cash "
                  "deposits, card settlements. Your account is never at risk.",
-                 wide=True)
+                 wide=True, path="/guarantee")
 
 
 # ── legal / disclosure pages ─────────────────────────────────────────────────
@@ -1748,7 +1797,79 @@ async def legal_page(request: web.Request):
             f"<p class='muted small'>Questions about this policy? "
             f"{_support_html(support)}</p>"
             + _fabs_html(support, whatsapp))
-    return _page(f"{html.unescape(title)} — P2P Desk", body)
+    return _page(f"{html.unescape(title)} — P2P Desk", body,
+                 path=f"/legal/{slug}")
+
+
+
+
+# ── about / robots / sitemap ─────────────────────────────────────────────────
+
+async def about_page(request: web.Request):
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+    name = settings.biz_name.strip()
+    ident = ""
+    if name:
+        rows = [("Business name", _esc(name))]
+        if settings.biz_address.strip():
+            rows.append(("Address", _esc(settings.biz_address)))
+        if settings.biz_email.strip():
+            rows.append(("Email", f"<a href='mailto:{_esc(settings.biz_email)}'>"
+                                  f"{_esc(settings.biz_email)}</a>"))
+        ident = "<div class=card>" + "".join(
+            f"<div class=kv><span class=k>{k}</span><span class=v>{v}</span></div>"
+            for k, v in rows) + "</div>"
+    else:
+        ident = ("<div class='banner warn'>Business identity not configured yet — "
+                 "set P2P_BIZ_NAME / P2P_BIZ_ADDRESS / P2P_BIZ_EMAIL in .env.</div>")
+    body = f"""
+<h1>About this desk</h1>
+<p class=muted>An independent over-the-counter desk for selling USDT (Tether) for
+Indian rupees — operating on Telegram since before this website existed, now open
+to everyone. Deposits are verified on a public blockchain and payouts are made by
+the desk's own admins over UPI, IMPS, CDM and cheque.</p>
+{ident}
+<h2>Contact</h2>
+<p class=muted>Fastest: the chat buttons on every page ({_support_html(support)}).
+For a written record, <a href="/support">create a support ticket</a> — admins are
+alerted instantly and reply on the contact you give.</p>
+<h2>How we operate</h2>
+<p class=muted>Rates are locked at order time and are all-inclusive. Every deposit
+is matched on-chain by exact amount, every completed deal gets a proof card, and
+every payout comes from verified clean sources — the
+<a href="/guarantee">clean-funds guarantee</a> explains the sourcing, and the
+<a href="/legal/terms">Terms of Use</a>, <a href="/legal/privacy">Privacy
+Policy</a> and <a href="/legal/aml">AML policy</a> set out the rules we hold both
+sides to.</p>
+{_fabs_html(support, whatsapp)}"""
+    return _page("About & Contact — P2P Desk", body,
+                 "Who runs this USDT-to-INR desk, how to reach us, and the rules "
+                 "we operate by.", path="/about")
+
+
+_SITE_PATHS = ["/", "/sell", "/guarantee", "/support", "/about",
+               "/legal/terms", "/legal/privacy", "/legal/risks",
+               "/legal/transactions", "/legal/aml"]
+
+
+async def robots_txt(request: web.Request):
+    lines = ["User-agent: *", "Disallow: /o/", "Disallow: /my", "Allow: /"]
+    if settings.site_url:
+        lines.append(f"Sitemap: {settings.site_url.rstrip('/')}/sitemap.xml")
+    return web.Response(text="\n".join(lines) + "\n", content_type="text/plain")
+
+
+async def sitemap_xml(request: web.Request):
+    base = settings.site_url.rstrip("/")
+    if not base:
+        raise web.HTTPNotFound(text="set P2P_SITE_URL to enable the sitemap")
+    urls = "".join(f"<url><loc>{base}{p}</loc></url>" for p in _SITE_PATHS)
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+           f"{urls}</urlset>")
+    return web.Response(text=xml, content_type="application/xml")
 
 
 # ── app ───────────────────────────────────────────────────────────────────────
@@ -1769,6 +1890,9 @@ async def start_site(bot):
         web.get("/legal/{slug}", legal_page),
         web.get("/support", support_get),
         web.get("/guarantee", guarantee_page),
+        web.get("/about", about_page),
+        web.get("/robots.txt", robots_txt),
+        web.get("/sitemap.xml", sitemap_xml),
         web.post("/support", support_post),
         web.get("/o/{token}", order_page),
         web.get("/o/{token}/status.json", order_status),
