@@ -259,6 +259,7 @@ _STYLE = """
  --shadow:0 2px 4px rgba(14,19,48,.04),0 12px 32px rgba(14,19,48,.08);
  --radius:20px;color-scheme:light}
 html{-webkit-text-size-adjust:100%}
+html,body{overflow-x:clip}
 body{margin:0;color:var(--text);line-height:1.55;
  background:radial-gradient(90% 340px at 50% 0,#e4faee 0%,#ffffff 78%) no-repeat,var(--bg);
  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -433,8 +434,7 @@ details summary::marker{color:var(--accent-dark)}
  transition:opacity .6s cubic-bezier(.2,.7,.3,1),transform .6s cubic-bezier(.2,.7,.3,1)}
 .rv.in{opacity:1;transform:none}
 @media (prefers-reduced-motion:reduce){.rv{opacity:1;transform:none;transition:none}}
-.bigfoot{background:var(--navy);border-radius:24px 24px 0 0;margin:44px -16px 0;
- padding:30px 22px 24px;color:#aab3cd;font-size:.88rem}
+.bigfoot{background:var(--navy);color:#aab3cd;font-size:.88rem}
 .bigfoot h3{color:#fff;font-size:.8rem;font-weight:800;letter-spacing:.06em;
  text-transform:uppercase;margin:18px 0 8px}
 .bigfoot a{display:block;color:#cdd5ea;padding:4px 0;font-weight:600}
@@ -457,6 +457,22 @@ details summary::marker{color:var(--accent-dark)}
 .cardpick input{display:none}
 .cardpick label:has(input:checked){border-color:var(--accent);background:var(--accent-soft);
  box-shadow:0 0 0 3px var(--accent-soft)}
+@media (min-width:960px){
+ .wrap.wide{max-width:1040px}
+ .wide h1{font-size:2.7rem}
+ .wide .lead{font-size:1.08rem;max-width:640px}
+ .wide .steps3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 26px}
+ .wide .steps3 .step{flex-direction:column;gap:10px}
+ .wide .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 34px;align-items:start}
+ .wide .cols2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch}
+ .wide .cols2 .card{margin:0}
+ .wide .darkband{grid-template-columns:repeat(6,1fr)}
+ .wide .darkband .v{font-size:1.6rem}
+ .wide .cta-mid{max-width:420px;margin-left:auto;margin-right:auto}
+ .bigfoot .cols{grid-template-columns:1fr 1fr 1fr}
+}
+.bigfoot{margin:44px calc(50% - 50vw) 0;border-radius:0;
+ padding:34px max(22px,calc(50vw - 500px)) 26px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 """
 
@@ -507,12 +523,12 @@ the network shown. By using this site you agree to the
 """
 
 
-def _page(title: str, body: str, desc: str = "") -> web.Response:
+def _page(title: str, body: str, desc: str = "", wide: bool = False) -> web.Response:
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <meta name=description content="{_esc(desc or 'Sell USDT for INR — instant bank payout, on-chain verified.')}">
 <title>{_esc(title)}</title><style>{_STYLE}</style></head><body>
-<div class=wrap>
+<div class="wrap{' wide' if wide else ''}">
 <div class=topbar><a href="/" class=brand><span class=dot></span>P2P Desk</a>
 <span class=sp></span>
 <a class=nav href="/">Home</a>
@@ -588,8 +604,8 @@ async def home(request: web.Request):
         for k, v in rates.items())
     open_badge = ("<span class='badge ok'>● Desk open now</span>" if is_open
                   else "<span class='badge danger'>● Desk closed — check back soon</span>")
-    cta = ("<a class=btn href='/sell'>Sell USDT now</a>" if is_open
-           else "<button class=btn disabled style='opacity:.6'>Desk closed</button>")
+    cta = ("<a class='btn cta-mid' href='/sell'>Sell USDT now</a>" if is_open
+           else "<button class='btn cta-mid' disabled style='opacity:.6'>Desk closed</button>")
     def _big(n: float, pre: str = "", plus: str = "") -> str:
         """(cell html) — compact Indian-friendly figure with count-up targets."""
         if n >= 1e7:
@@ -618,21 +634,22 @@ async def home(request: web.Request):
     nets = "TRC20 (TRON) and BEP20 (BSC)" if two_chains else "TRC20 (TRON)"
     body = f"""
 <h1>Sell USDT.<br><span class=g>Get INR in your bank.</span></h1>
-<p class=muted>Send USDT, we verify it <b>on-chain automatically</b>, and our admins
-pay your bank — UPI, IMPS, CDM or cheque. The same desk thousands trade on Telegram,
-now on the web.</p>
+<p class="muted lead">Send USDT, we verify it <b>on-chain automatically</b>, and our
+admins pay your bank — UPI, IMPS, CDM or cheque. The same desk thousands trade on
+Telegram, now on the web.</p>
 <div class=hero-badges>{open_badge}
 <span class=badge>100% clean funds</span>
 <span class=badge>Auto-verified deposits</span>
 <span class=badge>Proof on every deal</span></div>
 {stats}
+<div class=cols2>
 <div class=card id=rates><h2 style="margin-top:0">Live rates <span class=livewrap><span class=livedot></span>LIVE<span class=livebars><i></i><i></i><i></i></span></span></h2>
 <table class=rates>{rows or "<tr><td class=muted>No rates live right now.</td></tr>"}</table>
 <p class='muted small' style="margin:10px 0 0">Rates are live — the rate you see when you
 order is the rate you're paid at. Networks accepted: <b>{nets}</b>.</p></div>
 {cta}
 <h2>How it works</h2>
-<div class=card>
+<div class=card><div class=steps3>
 <div class=step><div class=n>1</div><div><b>Choose method &amp; amount</b><br>
 <span class='muted small'>Pick your payout method, enter the USDT amount (each method
 shows its min/max), and your bank details for the INR payout.</span></div></div>
@@ -641,7 +658,7 @@ shows its min/max), and your bank details for the INR payout.</span></div></div>
 scanner verifies it on-chain in seconds, no screenshots needed.</span></div></div>
 <div class=step><div class=n>3</div><div><b>Get paid in INR</b><br>
 <span class='muted small'>Verified deposits enter the payout queue and our admins pay
-your bank directly — typically {_esc(settings.eta_text)}. Proof shared on every deal.</span></div></div></div>
+your bank directly — typically {_esc(settings.eta_text)}. Proof shared on every deal.</span></div></div></div></div>
 <div class=card><h2 style="margin-top:0">Sell from any wallet or exchange</h2>
 <p class='muted small' style="margin:0 0 4px">Withdraw USDT from wherever you hold it and
 send it to your order address — it works the same from every app:</p>
@@ -661,12 +678,13 @@ record you can check, not a promise.</span></div></div>
 <div class=step><div class=n>⌂</div><div><b>Every bank, everywhere in India</b><br>
 <span class='muted small'>UPI, IMPS, CDM or cheque — payouts reach any Indian bank,
 in any state, on bank holidays too.</span></div></div></div>
+</div>
 <div class=card><h2 style="margin-top:0">100% Clean Funds — our guarantee</h2>
 <p class='muted small' style="margin:0">Every rupee we pay out comes from verified,
 legitimate sources — mutual &amp; stock-market funds, cash deposits, credit-card and
 payment-gateway funds. Your account is never at risk of a freeze or hold.</p></div>
 <h2 id=faq>Frequently asked</h2>
-<div class=card>
+<div class=card><div class=grid2>
 <details><summary>How fast do I get paid?</summary><p class='muted small'>Your deposit is
 verified on-chain within seconds of confirming. Payout to your bank is typically
 {_esc(settings.eta_text)} after verification, handled by our admins in queue order.</p></details>
@@ -687,14 +705,15 @@ first.</p></details>
 <details><summary>Do I need an account?</summary><p class='muted small'>No signup. Your
 orders are tied to this browser automatically — find them any time under
 <a href="/my">My orders</a>.</p></details>
-</div>
+</div></div>
 <div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}
 <span class=muted>— mention your order ID (#ORD…)</span></span></div>
 {cta if rows else ""}
 {_fabs_html(support, whatsapp)}"""
     return _page("Sell USDT for INR — P2P Desk", body,
                  "Sell USDT for INR at live rates. On-chain verified deposits, "
-                 "instant bank payout via UPI/IMPS/CDM. 100% clean funds.")
+                 "instant bank payout via UPI/IMPS/CDM. 100% clean funds.",
+                 wide=True)
 
 
 # ── sell flow ─────────────────────────────────────────────────────────────────
