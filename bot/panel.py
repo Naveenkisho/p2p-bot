@@ -18,6 +18,7 @@ import html
 import io
 import logging
 import os
+import re
 import secrets
 import time
 from urllib.parse import quote
@@ -879,6 +880,8 @@ async def settings_get(request: web.Request):
         admin_ids = admin_ids if admin_ids is not None else settings.admin_ids
         admin_chat = await get_setting(s, "admin_chat_id") or ""
         proof = await get_setting(s, "proof_channel") or ""
+        meta_pixel = await get_setting(s, "meta_pixel_id") or ""
+        google_tag = await get_setting(s, "google_tag_id") or ""
         token_set = bool((await get_setting(s, "bot_token")) or settings.bot_token)
         qr_trc_png, qr_trc_addr, _ = await get_network_qr_raw(s, "TRC20")
         qr_bep_png, qr_bep_addr, _ = await get_network_qr_raw(s, "BEP20")
@@ -931,6 +934,15 @@ async def settings_get(request: web.Request):
             f"<input name=support value='{_esc(support)}'>"
             "<label>Proof channel (@channel or -100… id, blank to disable)</label>"
             f"<input name=proof value='{_esc(proof)}'>"
+            "</div><h2>Marketing pixels</h2><div class=card>"
+            "<p class=muted style='margin-top:0'>Paste your ad tracking IDs to "
+            "measure conversions from Google &amp; Meta ads. They load on every "
+            "public website page. Blank = off. (When either is set, the site's "
+            "privacy policy automatically discloses the tracking.)</p>"
+            "<label>Meta (Facebook) Pixel ID — digits only, e.g. 1234567890</label>"
+            f"<input name=meta_pixel value='{_esc(meta_pixel)}' inputmode=numeric>"
+            "<label>Google tag ID — G-… (Analytics) or AW-… (Ads)</label>"
+            f"<input name=google_tag value='{_esc(google_tag)}'>"
             "</div><h2>Admins</h2><div class=card>"
             "<label>Admin Telegram IDs (space/comma-separated)</label>"
             f"<input name=admin_ids value='{_esc(admin_ids)}'>"
@@ -1045,6 +1057,19 @@ async def settings_post(request: web.Request):
                           proof if (proof.startswith("@") or proof.lstrip("-").isdigit())
                           else "")
 
+        # marketing pixels — store only clean IDs so nothing user-shaped is ever
+        # injected into a <script>. Meta = digits; Google tag = G-/AW-/GT-… .
+        mpix = str(data.get("meta_pixel", "")).strip()
+        if mpix == "" or (mpix.isdigit() and len(mpix) <= 24):
+            await set_setting(s, "meta_pixel_id", mpix)
+        else:
+            errors.append("Meta Pixel ID must be digits only")
+        gtag = str(data.get("google_tag", "")).strip()
+        if gtag == "" or re.fullmatch(r"(G|AW|GT|UA|DC)-[A-Za-z0-9\-]{4,20}", gtag):
+            await set_setting(s, "google_tag_id", gtag)
+        else:
+            errors.append("Google tag ID must look like G-XXXXXXX or AW-XXXXXXX")
+
         aids = str(data.get("admin_ids", "")).replace(",", " ").split()
         if all(x.isdigit() for x in aids):
             await set_setting(s, "admin_ids", " ".join(aids))
@@ -1077,6 +1102,12 @@ async def settings_post(request: web.Request):
                      + "<div class='banner danger'><b>Not saved:</b> "
                      + _esc("; ".join(errors)) + "</div>"
                      "<p><a href=/settings>← Back to settings</a></p>")
+    # refresh the website's in-memory pixel cache so a saved ID goes live now
+    try:
+        from .website import load_tracking
+        await load_tracking()
+    except Exception:
+        log.exception("tracking cache refresh failed")
     if restart:
         # write is committed; exit so systemd restarts with the new token
         asyncio.get_running_loop().call_later(1.0, os._exit, 0)
