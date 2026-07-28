@@ -393,6 +393,51 @@ def _ld(obj) -> str:
             + json.dumps(obj).replace("<", "\\u003c") + "</script>")
 
 
+# ── marketing pixels (admin-configured, injected on public pages) ────────────
+# The IDs are validated in the panel (Meta = digits, Google = G-/AW-/… ), and
+# re-validated here before they reach a <script>, so nothing user-shaped is
+# ever emitted as live markup. Cached in-process (sync-readable from _page);
+# the panel calls load_tracking() on save and start_site() loads it at boot.
+_TRACKING = {"meta": "", "google": ""}
+_META_RE = re.compile(r"^[0-9]{1,24}$")
+_GTAG_RE = re.compile(r"^(?:G|AW|GT|UA|DC)-[A-Za-z0-9\-]{4,20}$")
+
+
+async def load_tracking() -> None:
+    async with Session() as s:
+        meta = (await get_setting(s, "meta_pixel_id") or "").strip()
+        google = (await get_setting(s, "google_tag_id") or "").strip()
+    _TRACKING["meta"] = meta if _META_RE.match(meta) else ""
+    _TRACKING["google"] = google if _GTAG_RE.match(google) else ""
+
+
+def _tracking_head() -> str:
+    """The pixel/tag <script> snippets for the current config (validated IDs)."""
+    out = ""
+    g = _TRACKING["google"]
+    if g and _GTAG_RE.match(g):
+        out += (f"<script async src='https://www.googletagmanager.com/gtag/js?id={g}'></script>"
+                "<script>window.dataLayer=window.dataLayer||[];"
+                "function gtag(){dataLayer.push(arguments);}gtag('js',new Date());"
+                f"gtag('config','{g}');</script>")
+    m = _TRACKING["meta"]
+    if m and _META_RE.match(m):
+        out += ("<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function()"
+                "{n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};"
+                "if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];"
+                "t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];"
+                "s.parentNode.insertBefore(t,s)}(window,document,'script',"
+                "'https://connect.facebook.net/en_US/fbevents.js');"
+                f"fbq('init','{m}');fbq('track','PageView');</script>"
+                f"<noscript><img height=1 width=1 style=display:none "
+                f"src='https://www.facebook.com/tr?id={m}&ev=PageView&noscript=1'/></noscript>")
+    return out
+
+
+def _tracking_active() -> bool:
+    return bool(_TRACKING["meta"] or _TRACKING["google"])
+
+
 @web.middleware
 async def _sec_headers(request: web.Request, handler):
     """Security headers on every response (incl. redirects/404s) + HSTS on HTTPS."""
@@ -451,25 +496,46 @@ h1{font-size:2rem;font-weight:900;letter-spacing:-.035em;line-height:1.12;
  margin:26px 0 10px;text-wrap:balance}
 h1 .g{color:var(--accent-dark)}
 h2{font-size:1.12rem;font-weight:800;letter-spacing:-.01em;margin:28px 0 10px}
-.topbar{display:flex;align-items:center;gap:2px;padding:12px 0;flex-wrap:nowrap;
- overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;
- position:sticky;top:0;z-index:40;background:rgba(255,255,255,.88);
- backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+.topbar{display:flex;align-items:center;gap:4px;padding:10px 0;flex-wrap:nowrap;
+ position:sticky;top:0;z-index:40;background:rgba(255,255,255,.9);
+ backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+ border-bottom:1px solid var(--border);
  margin:0 -16px;padding-left:16px;padding-right:16px}
-.topbar::-webkit-scrollbar{display:none}
 .topbar a{flex-shrink:0}
 .topbar .brand{font-weight:900;font-size:1.08rem;letter-spacing:-.02em;color:var(--text);
- display:flex;align-items:center;gap:8px;margin-right:4px}
+ display:flex;align-items:center;gap:8px;margin-right:6px}
 .topbar .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);
  box-shadow:0 0 0 4px var(--accent-soft)}
 .topbar .sp{flex:1}
-.topbar a.nav{color:var(--muted);font-weight:700;font-size:.85rem;padding:8px 10px;
+/* inline nav — shown on wider screens, collapsed into the ☰ menu on phones */
+.topnav{display:none;align-items:center;gap:2px}
+.topnav a{color:var(--muted);font-weight:700;font-size:.85rem;padding:8px 11px;
  border-radius:999px}
-.topbar a.nav:hover{background:var(--surface-2);color:var(--text)}
-.topbar a.nav.hot{background:var(--navy);color:#fff;padding:9px 16px;margin-left:2px}
-.topbar a.nav.me{border:1.5px solid var(--border);color:var(--text);
- padding:8px 14px;margin-left:2px;max-width:150px;overflow:hidden;
+.topnav a:hover{background:var(--surface-2);color:var(--text)}
+.topbar a.nav.hot{background:var(--navy);color:#fff;font-weight:800;font-size:.85rem;
+ padding:9px 16px;border-radius:999px}
+.topbar a.nav.hot:hover{background:#000}
+.topbar a.nav.me{border:1.5px solid var(--border);color:var(--text);font-weight:700;
+ font-size:.85rem;padding:8px 14px;border-radius:999px;max-width:150px;overflow:hidden;
  text-overflow:ellipsis;white-space:nowrap}
+.topbar a.nav.me:hover{background:var(--surface-2)}
+.menubtn{display:inline-flex;align-items:center;justify-content:center;width:40px;
+ height:40px;flex:0 0 40px;border:1.5px solid var(--border);border-radius:12px;
+ background:var(--surface);color:var(--text);font-size:1.25rem;line-height:1;
+ cursor:pointer;padding:0}
+.menubtn:hover{background:var(--surface-2)}
+.navmenu{position:absolute;top:calc(100% + 6px);right:16px;min-width:200px;
+ background:#fff;border:1px solid var(--border);border-radius:16px;
+ box-shadow:0 12px 34px rgba(14,19,48,.16);padding:6px;display:none;z-index:60}
+.navmenu.open{display:block}
+.navmenu a{display:block;padding:11px 14px;border-radius:10px;color:var(--text);
+ font-weight:700;font-size:.95rem}
+.navmenu a:hover{background:var(--surface-2)}
+@media(min-width:760px){
+ .topnav{display:flex}
+ .menubtn{display:none}
+ .navmenu{display:none!important}
+}
 .stockpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));
  gap:8px;margin:8px 0 4px}
 .stockpick label{display:block;margin:0;cursor:pointer}
@@ -749,6 +815,11 @@ the network shown. By using this site you agree to the
      if(p<1)requestAnimationFrame(fr);}
    requestAnimationFrame(fr);}
 })();
+// close the ☰ dropdown when tapping anywhere outside it
+document.addEventListener('click',function(e){
+ var m=document.getElementById('navmenu'),b=document.getElementById('menubtn');
+ if(m&&m.classList.contains('open')&&!m.contains(e.target)&&e.target!==b){
+   m.classList.remove('open');b.setAttribute('aria-expanded',false);}});
 </script>
 """
 
@@ -768,27 +839,32 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
                    "<meta property=og:type content=website>"
                    "<meta property=og:site_name content='P2P Desk'>"
                    "<meta name=twitter:card content=summary>")
+    if not noindex:
+        head_extra += _tracking_head()      # marketing pixels on public pages
     if acct:
         label = acct if len(acct) <= 18 else acct[:16] + "…"
         acct_link = (f"<a class='nav me' href='/my' title='{_esc(acct)}'>"
                      f"{_esc(label)}</a>")
     else:
         acct_link = "<a class='nav me' href='/signup'>Sign up</a>"
+    _NAVLINKS = (
+        '<a href="/">Home</a><a href="/#rates">Rates</a>'
+        '<a href="/guarantee">Guarantee</a><a href="/learn">Learn</a>'
+        '<a href="/my">My orders</a><a href="/support">Support</a>')
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name=description content="{_esc(desc)}">{head_extra}
 <title>{_esc(title)}</title><style>{_STYLE}</style></head><body>
 <div class="wrap{' wide' if wide else ''}">
 <div class=topbar><a href="/" class=brand><span class=dot></span>P2P Desk</a>
+<nav class=topnav>{_NAVLINKS}</nav>
 <span class=sp></span>
-<a class=nav href="/">Home</a>
-<a class=nav href="/#rates">Rates</a>
-<a class=nav href="/guarantee">Guarantee</a>
-<a class=nav href="/learn">Learn</a>
-<a class=nav href="/my">My orders</a>
-<a class=nav href="/support">Support</a>
 {acct_link}
-<a class="nav hot" href="/sell">Sell USDT</a></div>
+<a class="nav hot" href="/sell">Sell USDT</a>
+<button class=menubtn id=menubtn aria-label="Open menu" aria-expanded=false
+ onclick="var m=document.getElementById('navmenu'),o=m.classList.toggle('open');
+ this.setAttribute('aria-expanded',o)">☰</button>
+<nav class=navmenu id=navmenu>{_NAVLINKS}</nav></div>
 {body}
 {_TAIL}
 </body></html>"""
@@ -2324,24 +2400,25 @@ orders from the moment it is published.</p>"""),
 
     "privacy": ("Privacy &amp; Cookies Policy", """
 <h2>What we collect</h2>
-<p class=muted>To process your payout we collect the bank details you enter
-(account holder, bank, account number, IFSC), your order details, and your IP
-address (used only for rate-limiting and abuse prevention). We do not collect
-names, emails, phone numbers, or documents through this site.</p>
+<p class=muted>To create your account we collect your name, email, phone number,
+and the daily volume band you select (or, if you sign in with Google, your name
+and email from your verified Google profile). To process a payout we collect the
+bank details you enter (account holder, bank, account number, IFSC) and your
+order details. We also log your IP address, used only for rate-limiting and
+abuse prevention.</p>
 <h2>Cookies</h2>
-<p class=muted>One cookie. It holds a random identifier so your orders appear
-under “My orders” on this browser. No analytics, no trackers, no third-party
-cookies, no advertising pixels.</p>
+<p class=muted>We set one first-party cookie that keeps you signed in and links
+your orders to your account. {TRACKING_COOKIES}</p>
 <h2>What we do with it</h2>
-<p class=muted>Your bank details are used to pay you and are visible to the
-desk's admins for that purpose only. We do not sell or share your data with
-anyone else. Blockchain transactions are public by nature — your deposit's
+<p class=muted>Your account and bank details are used to run your account and pay
+you, and are visible to the desk's admins for that purpose only. We do not sell
+your data. Blockchain transactions are public by nature — your deposit's
 transaction hash exists on a public ledger independent of us.</p>
-<h2>Retention and your rights</h2>
+{TRACKING_SECTION}<h2>Retention and your rights</h2>
 <p class=muted>Order and payout records are retained for the desk's accounting
 and dispute handling. To correct your saved bank details, simply add a new bank
-on your next order. For removal requests, contact support with your order ID —
-we honour them once there is no open order or dispute.</p>"""),
+on your next order. For account or data removal, contact support with your
+account email — we honour it once there is no open order or dispute.</p>"""),
 
     "risks": ("Cryptoasset Risks", """
 <h2>Read this before you trade</h2>
@@ -2418,6 +2495,28 @@ async def legal_page(request: web.Request):
     if doc is None:
         raise web.HTTPNotFound()
     title, body_html = doc
+    if slug == "privacy":
+        # keep the policy truthful about whatever tracking is actually live
+        if _tracking_active():
+            svcs = " and ".join(
+                s for s, on in [("Google", _TRACKING["google"]),
+                                ("Meta (Facebook)", _TRACKING["meta"])] if on)
+            body_html = body_html.replace("{TRACKING_COOKIES}",
+                "We also use analytics/advertising cookies set by "
+                f"{svcs} to measure how visitors reach us from ads.")
+            body_html = body_html.replace("{TRACKING_SECTION}",
+                "<h2>Advertising &amp; analytics</h2><p class=muted>When you "
+                "visit our public pages we load measurement tags from "
+                f"{svcs} so we can see which ads bring visitors and improve "
+                "them. These providers may set their own cookies and receive "
+                "your IP address and the pages you view, under their own "
+                "privacy policies. They are not loaded on your private order "
+                "or account pages, and we never send them your bank details.</p>")
+        else:
+            body_html = body_html.replace(
+                "{TRACKING_COOKIES}",
+                "No analytics, no advertising trackers, no third-party cookies.")
+            body_html = body_html.replace("{TRACKING_SECTION}", "")
     async with Session() as s:
         support = await get_support(s)
         whatsapp = await get_whatsapp(s)
@@ -2670,6 +2769,7 @@ async def start_site(bot):
     if not settings.site_port:
         log.info("customer website disabled (P2P_SITE_PORT=0)")
         return None
+    await load_tracking()          # load marketing-pixel IDs into the cache
     app = web.Application(middlewares=[_sec_headers])
     app["bot"] = bot
     app.add_routes([
