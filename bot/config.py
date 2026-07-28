@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     max_usd: float = 10_000
     eta_text: str = "15-30 minutes"
     support_handle: str = "@support"
+    # WhatsApp number for the website's floating support button (with country
+    # code, digits only or +91… format). Blank = button hidden. Also settable
+    # live from Telegram with /setwhatsapp.
+    support_whatsapp: str = ""
 
     # TRON auto-scan (5s ≈ 17,280 calls/day per chain — within BscScan's free 100k/day)
     scan_interval_sec: int = 5
