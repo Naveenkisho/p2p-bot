@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     # code, digits only or +91… format). Blank = button hidden. Also settable
     # live from Telegram with /setwhatsapp.
     support_whatsapp: str = ""
+    # Lifetime totals from BEFORE this system existed (the Telegram desk's
+    # history) — added to the live database counters on the website's stats
+    # band, shown with a "+" suffix. Enter YOUR real historical numbers; the
+    # site never invents volume. USDT derives from INR at stats_base_rate
+    # unless stats_base_usdt is set explicitly.
+    stats_base_orders: int = 0
+    stats_base_inr: float = 0.0
+    stats_base_usdt: float = 0.0
+    stats_base_rate: float = 94.0
 
     # TRON auto-scan (5s ≈ 17,280 calls/day per chain — within BscScan's free 100k/day)
     scan_interval_sec: int = 5
