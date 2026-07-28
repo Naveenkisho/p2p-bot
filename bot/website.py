@@ -378,7 +378,27 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 details{margin:12px 0}
 details summary{cursor:pointer;color:var(--text);font-weight:700;padding:4px 0}
 details summary::marker{color:var(--accent-dark)}
-.footer{margin-top:38px;color:var(--faint);font-size:.82rem;text-align:center}
+.footer{margin-top:0;color:#8b95b8;font-size:.82rem;text-align:center}
+.darkband{background:var(--navy);border-radius:24px;padding:6px;margin:18px 0;
+ display:grid;grid-template-columns:repeat(3,1fr);overflow:hidden}
+.darkband .cell{padding:22px 6px;text-align:center;box-shadow:0 0 0 .5px rgba(255,255,255,.09)}
+.darkband .k{color:#8b95b8;font-size:.68rem;font-weight:800;letter-spacing:.07em;
+ text-transform:uppercase;margin-bottom:4px}
+.darkband .v{color:#fff;font-size:1.45rem;font-weight:900;letter-spacing:-.02em;
+ font-variant-numeric:tabular-nums}
+.rv{opacity:0;transform:translateY(16px);
+ transition:opacity .6s cubic-bezier(.2,.7,.3,1),transform .6s cubic-bezier(.2,.7,.3,1)}
+.rv.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.rv{opacity:1;transform:none;transition:none}}
+.bigfoot{background:var(--navy);border-radius:24px 24px 0 0;margin:44px -16px 0;
+ padding:30px 22px 24px;color:#aab3cd;font-size:.88rem}
+.bigfoot h3{color:#fff;font-size:.8rem;font-weight:800;letter-spacing:.06em;
+ text-transform:uppercase;margin:18px 0 8px}
+.bigfoot a{display:block;color:#cdd5ea;padding:4px 0;font-weight:600}
+.bigfoot a:hover{color:#fff}
+.bigfoot .cols{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+.bigfoot .legal{color:#7d88a6;font-size:.78rem;line-height:1.6;margin-top:18px;
+ border-top:1px solid rgba(255,255,255,.10);padding-top:16px}
 .fabs{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;
  gap:10px;z-index:60;align-items:flex-end}
 .fab{display:inline-flex;align-items:center;gap:8px;border-radius:999px;
@@ -398,6 +418,49 @@ details summary::marker{color:var(--accent-dark)}
 """
 
 
+_TAIL = """<div class=bigfoot>
+<div class=cols>
+<div><h3>Trade</h3>
+<a href="/sell">Sell USDT</a><a href="/my">My orders</a>
+<a href="/#rates">Live rates</a><a href="/#faq">FAQ</a></div>
+<div><h3>User rights &amp; disclosures</h3>
+<a href="/legal/terms">Terms of Use</a>
+<a href="/legal/privacy">Privacy &amp; Cookies Policy</a>
+<a href="/legal/risks">Cryptoasset Risks</a>
+<a href="/legal/transactions">Transaction &amp; Pricing Information</a>
+<a href="/legal/aml">AML / Clean-Funds Policy</a>
+<a href="/legal/transactions#complaints">Complaints</a></div>
+</div>
+<p class=legal>This is an independent over-the-counter desk for selling USDT for
+Indian rupees. It is not a bank and not a deposit-taking institution; crypto
+assets are not bank deposits, are not government-insured, and may lose value.
+On-chain transfers are irreversible — always send the exact amount shown, on
+the network shown. By using this site you agree to the
+<a href="/legal/terms" style="display:inline;padding:0">Terms of Use</a>.</p>
+<p class=footer>Deposits verified on-chain · every payout handled by our admins</p>
+</div>
+</div>
+<script>
+(function(){
+ var els=document.querySelectorAll('.card,.stats,.darkband,.step,h2,.hero-badges');
+ if(!('IntersectionObserver' in window)){return}
+ var io=new IntersectionObserver(function(es){es.forEach(function(e){
+   if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);
+     e.target.querySelectorAll('[data-cu]').forEach(cu);}})},{threshold:.12});
+ els.forEach(function(el){el.classList.add('rv');io.observe(el)});
+ function cu(el){
+   if(el.dataset.done)return;el.dataset.done=1;
+   var n=parseFloat(el.dataset.cu),pre=el.dataset.pre||'',t0=null;
+   if(!isFinite(n))return;
+   function fr(t){if(!t0)t0=t;var p=Math.min(1,(t-t0)/900);p=1-Math.pow(1-p,3);
+     el.textContent=pre+Math.round(n*p).toLocaleString('en-IN');
+     if(p<1)requestAnimationFrame(fr);}
+   requestAnimationFrame(fr);}
+})();
+</script>
+"""
+
+
 def _page(title: str, body: str, desc: str = "") -> web.Response:
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -412,10 +475,8 @@ def _page(title: str, body: str, desc: str = "") -> web.Response:
 <a class=nav href="/#support">Support</a>
 <a class="nav hot" href="/sell">Sell USDT</a></div>
 {body}
-<p class=footer>Deposits verified on-chain · every payout handled by our admins<br>
-<a href="/">Home</a> · <a href="/sell">Sell USDT</a> · <a href="/my">My orders</a>
- · <a href="/#faq">FAQ</a> · <a href="/#support">Support</a></p>
-</div></body></html>"""
+{_TAIL}
+</body></html>"""
     return web.Response(text=doc, content_type="text/html", headers={
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
@@ -462,6 +523,11 @@ async def home(request: web.Request):
         paid_inr = await s.scalar(
             select(func.sum(Order.inr_amount))
             .where(Order.status == OrderStatus.COMPLETED.value)) or 0.0
+        usdt_vol = await s.scalar(
+            select(func.sum(Order.usd_amount))
+            .where(Order.status == OrderStatus.COMPLETED.value)) or 0.0
+        quotes_n = await s.scalar(
+            select(func.count()).select_from(Order)) or 0
     rows = "".join(
         f"<tr><td><b>{_esc(SERVICES.get(k, k))}</b><br>"
         f"<span class='muted small'>{limits[k][0]:g}$ – {limits[k][1]:g}$ per order</span></td>"
@@ -474,10 +540,19 @@ async def home(request: web.Request):
     stats = ""
     if done_n >= 5:
         stats = f"""
-<div class=stats>
-<div class=stat><div class=v>{done_n:,}</div><div class=k>orders paid</div></div>
-<div class=stat><div class=v>₹{paid_inr:,.0f}</div><div class=k>paid out</div></div>
-<div class=stat><div class=v>~{_esc(settings.eta_text)}</div><div class=k>payout time</div></div>
+<div class=darkband>
+<div class=cell><div class=k>Orders paid</div>
+<div class=v data-cu={done_n}>{done_n:,}</div></div>
+<div class=cell><div class=k>Paid out</div>
+<div class=v data-cu={paid_inr:.0f} data-pre=₹>₹{paid_inr:,.0f}</div></div>
+<div class=cell><div class=k>USDT settled</div>
+<div class=v data-cu={usdt_vol:.0f}>{usdt_vol:,.0f}</div></div>
+<div class=cell><div class=k>Quotes serviced</div>
+<div class=v data-cu={quotes_n}>{quotes_n:,}</div></div>
+<div class=cell><div class=k>Payout time</div>
+<div class=v>~{_esc(settings.eta_text)}</div></div>
+<div class=cell><div class=k>Verification</div>
+<div class=v>On-chain</div></div>
 </div>"""
     nets = "TRC20 (TRON) and BEP20 (BSC)" if two_chains else "TRC20 (TRON)"
     body = f"""
@@ -1183,6 +1258,152 @@ async def my_orders(request: web.Request):
                  + _fabs_html(support, whatsapp))
 
 
+
+
+# ── legal / disclosure pages ─────────────────────────────────────────────────
+# Deliberately factual: they describe what this desk actually does — no invented
+# licences, insurance, or regulator names. On a money site, fabricated claims
+# are worse than none (ad reviews and chargeback disputes both check them).
+
+_LEGAL: dict[str, tuple[str, str]] = {
+    "terms": ("Terms of Use", """
+<h2>What this service is</h2>
+<p class=muted>This site operates an over-the-counter (OTC) desk where you sell
+USDT (Tether) and receive Indian rupees to your own bank account by UPI, IMPS,
+CDM or cheque. Every deposit is verified on the blockchain before payout.</p>
+<h2>Your order</h2>
+<p class=muted>The rate shown when you place an order is the rate you are paid
+at. Each order gets a unique exact amount — send exactly that amount, on the
+network you chose, within the quote window shown on your order page. A deposit
+that arrives late, on the wrong network, or with a different amount may not
+auto-detect; contact support with your transaction hash and order ID.</p>
+<h2>Eligibility and acceptable use</h2>
+<p class=muted>You must be 18 or older and the owner of both the crypto you
+send and the bank account you are paid to. Third-party payouts are not offered.
+We may decline, hold, or cancel any order that appears fraudulent, automated,
+or inconsistent with our AML policy, and may request information about the
+source of funds before paying out.</p>
+<h2>Payouts and refunds</h2>
+<p class=muted>Verified deposits enter the payout queue and are paid by our
+admins in order. If a verified deposit cannot be paid out, the USDT is returned
+to a return address you provide. Unverified or never-received deposits cannot
+be refunded because nothing was received.</p>
+<h2>Liability</h2>
+<p class=muted>On-chain transfers are irreversible. We are not liable for
+transfers sent to a different address, on a different network, or outside an
+order — double-check the address and amount against your live order page, which
+is the only authoritative source. Our total liability for any order is limited
+to the value of that order.</p>
+<h2>Changes</h2>
+<p class=muted>Terms may be updated; the version on this page applies to new
+orders from the moment it is published.</p>"""),
+
+    "privacy": ("Privacy &amp; Cookies Policy", """
+<h2>What we collect</h2>
+<p class=muted>To process your payout we collect the bank details you enter
+(account holder, bank, account number, IFSC), your order details, and your IP
+address (used only for rate-limiting and abuse prevention). We do not collect
+names, emails, phone numbers, or documents through this site.</p>
+<h2>Cookies</h2>
+<p class=muted>One cookie. It holds a random identifier so your orders appear
+under “My orders” on this browser. No analytics, no trackers, no third-party
+cookies, no advertising pixels.</p>
+<h2>What we do with it</h2>
+<p class=muted>Your bank details are used to pay you and are visible to the
+desk's admins for that purpose only. We do not sell or share your data with
+anyone else. Blockchain transactions are public by nature — your deposit's
+transaction hash exists on a public ledger independent of us.</p>
+<h2>Retention and your rights</h2>
+<p class=muted>Order and payout records are retained for the desk's accounting
+and dispute handling. To correct your saved bank details, simply add a new bank
+on your next order. For removal requests, contact support with your order ID —
+we honour them once there is no open order or dispute.</p>"""),
+
+    "risks": ("Cryptoasset Risks", """
+<h2>Read this before you trade</h2>
+<p class=muted>Crypto assets are volatile. The INR value of USDT can move at
+any time; the rate you are paid is the rate locked when you placed the order,
+not the rate at any later moment.</p>
+<h2>Transfers are irreversible</h2>
+<p class=muted>There is no bank to reverse an on-chain transfer. USDT sent to a
+wrong address, on a wrong network, or in a wrong amount may be unrecoverable.
+Always copy the address from your live order page and send the exact amount
+shown, on the network shown.</p>
+<h2>Not a deposit, not insured</h2>
+<p class=muted>Crypto assets are not bank deposits, are not legal tender, and
+are not covered by any deposit-insurance scheme. This desk is not a bank.</p>
+<h2>Network fees and timing</h2>
+<p class=muted>Your wallet may charge a network fee on top of the amount you
+send — the amount that must ARRIVE is the exact amount shown on your order.
+Blockchain congestion can delay confirmation beyond the quote window; if that
+happens, submit your transaction hash from the order page and support will
+review it.</p>
+<h2>No advice</h2>
+<p class=muted>Nothing on this site is investment, tax, or legal advice.</p>"""),
+
+    "transactions": ("Transaction &amp; Pricing Information", """
+<h2>Pricing</h2>
+<p class=muted>The ₹/$ rate shown on the home page and on your order is
+all-inclusive — there are no added fees, spreads, or deductions on our side.
+What you see is what is paid to your bank. Your own wallet's network fee is the
+only cost outside our control.</p>
+<h2>Why the amount has odd paise</h2>
+<p class=muted>Each order is tagged with a unique exact amount (unique cents).
+That is how our scanner matches YOUR deposit to YOUR order automatically,
+without asking for screenshots. It must arrive exactly.</p>
+<h2>Timing</h2>
+<p class=muted>Quotes stay live for the window shown on the order page.
+Deposits are typically verified within seconds of the transaction confirming
+on-chain. Bank payout follows in queue order — see the current estimate on the
+home page.</p>
+<h2>Tracking</h2>
+<p class=muted>Your order page updates live, and every order stays available
+under “My orders” on the browser you ordered from, including the deposit
+transaction hash with a public block-explorer link.</p>
+<h2 id=complaints>Complaints</h2>
+<p class=muted>Message support (buttons on every page) with your order ID
+(#ORD…). Include your transaction hash for deposit issues. Complaints are
+handled by the desk's admins directly — the same people who run payouts — and
+are typically answered the same day.</p>"""),
+
+    "aml": ("AML / Clean-Funds Policy", """
+<h2>Clean funds only</h2>
+<p class=muted>Every rupee paid out by this desk comes from verified,
+legitimate sources — mutual and stock-market funds, cash deposits, credit-card
+and payment-gateway funds. We stand behind this guarantee to protect your bank
+account from freezes and holds.</p>
+<h2>What we require from you</h2>
+<p class=muted>Sell only crypto you own, and only to a bank account in your
+name. We may pause any order to ask about the source of funds, and we decline
+orders that appear linked to fraud, scams, gambling proceeds, sanctioned
+parties, or any unlawful activity.</p>
+<h2>Monitoring</h2>
+<p class=muted>Orders are screened for unusual patterns (volume, frequency,
+mismatched details). Records of orders and payouts are retained. Where the law
+requires it, suspicious activity is reported to the relevant authorities.</p>
+<h2>Our discretion</h2>
+<p class=muted>We may refuse service to anyone, hold a payout pending review,
+or return a verified deposit instead of paying it out, when we judge that
+completing the order would break this policy.</p>"""),
+}
+
+
+async def legal_page(request: web.Request):
+    slug = request.match_info["slug"]
+    doc = _LEGAL.get(slug)
+    if doc is None:
+        raise web.HTTPNotFound()
+    title, body_html = doc
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+    body = (f"<h1>{title}</h1>{body_html}"
+            f"<p class='muted small'>🆘 Questions about this policy? "
+            f"{_support_html(support)}</p>"
+            + _fabs_html(support, whatsapp))
+    return _page(f"{html.unescape(title)} — P2P Desk", body)
+
+
 # ── app ───────────────────────────────────────────────────────────────────────
 
 async def start_site(bot):
@@ -1198,6 +1419,7 @@ async def start_site(bot):
         web.get("/sell", sell_get),
         web.post("/sell", sell_post),
         web.get("/my", my_orders),
+        web.get("/legal/{slug}", legal_page),
         web.get("/o/{token}", order_page),
         web.get("/o/{token}/status.json", order_status),
         web.get("/o/{token}/qr.png", order_qr),
