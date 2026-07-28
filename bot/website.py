@@ -335,6 +335,11 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .rates tr:last-child td{border-bottom:0}
 .rates .r{text-align:right;font-weight:900;font-size:1.12rem;color:var(--accent-dark)}
 .hero-badges{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 4px}
+.brands{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 2px}
+.brands .b{display:inline-flex;align-items:center;gap:7px;background:var(--surface);
+ border:1.5px solid var(--border);border-radius:999px;padding:9px 14px;font-weight:800;
+ font-size:.9rem;box-shadow:0 1px 2px rgba(14,19,48,.06)}
+.brands .d{width:10px;height:10px;border-radius:50%}
 .step{display:flex;gap:12px;margin:14px 0}
 .step .n{flex:0 0 32px;height:32px;border-radius:50%;background:var(--navy);
  color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center}
@@ -581,6 +586,13 @@ scanner verifies it on-chain in seconds, no screenshots needed.</span></div></di
 <div class=step><div class=n>3</div><div><b>Get paid in INR</b><br>
 <span class='muted small'>Verified deposits enter the payout queue and our admins pay
 your bank directly — typically {_esc(settings.eta_text)}. Proof shared on every deal.</span></div></div></div>
+<div class=card><h2 style="margin-top:0">👛 Sell from any wallet or exchange</h2>
+<p class='muted small' style="margin:0 0 4px">Withdraw USDT from wherever you hold it and
+send it to your order address — it works the same from every app:</p>
+<div class=brands><span class=b><span class=d style='background:#f0b90b'></span>Binance</span><span class=b><span class=d style='background:#3375bb'></span>Trust Wallet</span><span class=b><span class=d style='background:#0e1330'></span>OKX</span><span class=b><span class=d style='background:#f7a600'></span>Bybit</span><span class=b><span class=d style='background:#24ae8f'></span>KuCoin</span><span class=b><span class=d style='background:#2980fe'></span>TokenPocket</span><span class=b><span class=d style='background:#3067f0'></span>WazirX</span><span class=b><span class=d style='background:#4a24ae'></span>CoinDCX</span></div>
+<p class='muted small' style="margin:8px 0 0">…and any other wallet or exchange that can
+send USDT on your chosen network. Pick the network on the sell form and match it when
+you withdraw.</p></div>
 <div class=card><h2 style="margin-top:0">🛡 100% Clean Funds — our guarantee</h2>
 <p class='muted small' style="margin:0">Every rupee we pay out comes from verified,
 legitimate sources — mutual &amp; stock-market funds, cash deposits, credit-card and
@@ -599,6 +611,11 @@ order automatically — a different amount may not auto-detect and needs support
 <details><summary>I paid but the page expired — is my money lost?</summary>
 <p class='muted small'>No. Open the order from <a href="/my">My orders</a> and submit your
 transaction hash (TXID) — we verify it on-chain and pay out if it checks out.</p></details>
+<details><summary>Can I sell straight from Binance or another exchange?</summary>
+<p class='muted small'>Yes. Place your order here, then in your exchange or wallet
+withdraw the exact USDT amount to the address we show — choosing the same network
+(TRC20 or BEP20) you picked on the order. No transfer to any special wallet needed
+first.</p></details>
 <details><summary>Do I need an account?</summary><p class='muted small'>No signup. Your
 orders are tied to this browser automatically — find them any time under
 <a href="/my">My orders</a>.</p></details>
