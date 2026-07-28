@@ -136,6 +136,29 @@ class Ticket(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class Account(Base):
+    """Website customer accounts — the signup gate in front of the sell flow.
+    Each account owns a stable negative user id, -(2^48 + id), so its orders,
+    bank cards and tickets follow the login across devices while never
+    colliding with anonymous browser uids (magnitude < 2^47) or Telegram ids
+    (positive). Google users have google_sub set and no password; manual
+    users have pw_salt/pw_hash (PBKDF2) and usually a phone."""
+
+    __tablename__ = "accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(190), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    phone: Mapped[str] = mapped_column(String(20), default="")
+    provider: Mapped[str] = mapped_column(String(10), default="email")  # email / google
+    google_sub: Mapped[str | None] = mapped_column(String(64), index=True)
+    pw_salt: Mapped[str] = mapped_column(String(32), default="")
+    pw_hash: Mapped[str] = mapped_column(String(64), default="")
+    stock: Mapped[str] = mapped_column(String(8), default="")   # daily USDT stock tier
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_login: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Setting(Base):
     """Chat-managed runtime settings: per-service rates, deposit address."""
 

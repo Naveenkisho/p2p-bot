@@ -24,6 +24,7 @@ for real money:
 
 import asyncio
 import logging
+import time
 
 import aiohttp
 from aiogram import Bot
@@ -95,13 +96,16 @@ def transfer_amount(tx: dict) -> float | None:
 
 
 async def fetch_transfers(http: aiohttp.ClientSession, address: str,
-                          min_ts: int) -> list[dict]:
-    """All confirmed inbound USDT transfers to `address` newer than min_ts,
-    oldest-first, following TronGrid pagination up to a page cap."""
+                          min_ts: int, confirmed: bool = True) -> list[dict]:
+    """Inbound USDT transfers to `address` newer than min_ts, oldest-first,
+    following TronGrid pagination up to a page cap. confirmed=True returns
+    only solidified transfers (safe to credit); confirmed=False returns the
+    just-broadcast ones wallets show instantly — used ONLY to tell the
+    customer "we see it", never to credit."""
     url = f"{settings.trongrid_url}/v1/accounts/{address}/transactions/trc20"
     params = {
         "only_to": "true",
-        "only_confirmed": "true",
+        "only_confirmed" if confirmed else "only_unconfirmed": "true",
         "limit": str(settings.scan_page_limit),
         "contract_address": settings.usdt_contract,
         "order_by": "block_timestamp,asc",
@@ -156,6 +160,7 @@ async def _credit_amount(bot: Bot, txid: str, amount: float, address: str,
                 return
             session.add(SeenTx(txid=txid, amount=amount, order_id=order.id))
             await session.commit()
+            deposit_seen.pop(order.id, None)   # sighting fulfilled — confirmed
             await notify_deposit_received(bot, order.id)
             return
 
@@ -201,6 +206,75 @@ async def _credit_or_hold(bot: Bot, tx: dict, address: str) -> None:
     if (tx.get("to") or "") != address:
         return
     await _credit_amount(bot, txid, amount, address, "TRC20")
+
+
+# ── instant sighting of unconfirmed deposits ─────────────────────────────────
+# TRON "confirmed" means ~19 blocks (about a minute) — wallets feel instant
+# because they display the unconfirmed transaction straight away. This gives
+# our customers the same moment: the second the transfer appears on-chain the
+# order is marked "deposit detected — confirming" (order page banner + one DM
+# for Telegram users). CREDIT still happens only from the confirmed sweep —
+# an unconfirmed sighting never moves an order or queues a payout.
+
+# order_id -> (txid, first_seen_monotonic). Kept for an order's whole life so
+# a single sighting is announced exactly once: the entry is dropped when the
+# deposit confirms (credit) or the order expires — NOT on a short timer, which
+# would let a slow-to-solidify transfer re-announce itself. The TTL below is
+# only a memory backstop, set above the largest deposit window the panel allows
+# (24h) so it never fires while an order can still be awaiting.
+deposit_seen: dict[int, tuple[str, float]] = {}
+_SEEN_TTL = 26 * 3600
+_SEEN_CAP = 5000
+
+
+def _prune_seen() -> None:
+    now = time.monotonic()
+    for oid in [oid for oid, (_, t0) in deposit_seen.items()
+                if now - t0 > _SEEN_TTL]:
+        deposit_seen.pop(oid, None)
+    if len(deposit_seen) > _SEEN_CAP:       # hard cap: drop the oldest entries
+        for oid, _ in sorted(deposit_seen.items(), key=lambda kv: kv[1][1]
+                             )[:len(deposit_seen) - _SEEN_CAP]:
+            deposit_seen.pop(oid, None)
+
+
+async def _note_unconfirmed(bot: Bot, tx: dict, address: str) -> None:
+    """Match one unconfirmed transfer to its awaiting order by unique amount
+    and announce the sighting. No state transition, no SeenTx row — if the
+    transfer never solidifies, nothing was promised or credited."""
+    txid = tx.get("transaction_id")
+    amount = transfer_amount(tx)
+    if not txid or amount is None or amount <= 0:
+        return
+    if (tx.get("to") or "") != address:
+        return
+    async with Session() as session:
+        if await session.get(SeenTx, txid) is not None:
+            return                     # confirmed sweep already handled it
+        candidates = (await session.scalars(
+            select(Order).where(
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value,
+                Order.usd_amount >= amount - AMOUNT_TOLERANCE,
+                Order.usd_amount <= amount + AMOUNT_TOLERANCE,
+            ).order_by(Order.id))).all()
+    if len(candidates) != 1:           # ambiguity is the confirmed path's job
+        return
+    order = candidates[0]
+    if order.id in deposit_seen:
+        return
+    deposit_seen[order.id] = (txid, time.monotonic())
+    log.info("deposit sighted unconfirmed for order %s (%.2f USDT)",
+             order.id, amount)
+    try:
+        from .helpers import notify_user
+        await notify_user(
+            bot, order.user_id,
+            f"⚡ <b>Deposit detected on-chain!</b>\n"
+            f"{texts.usd_str(amount)} USDT is confirming now — usually under "
+            f"a minute. It will be credited to {texts.tag(order.id)} "
+            f"automatically the moment it confirms.")
+    except Exception:
+        log.exception("deposit-seen DM failed for order %s", order.id)
 
 
 # ── BEP20 / BSC (second chain) ─────────────────────────────────────────────────
@@ -345,6 +419,7 @@ async def expire_stale_orders(bot: Bot) -> None:
                                            (OrderStatus.AWAITING_DEPOSIT,),
                                            OrderStatus.EXPIRED)
             if updated is not None:
+                deposit_seen.pop(order.id, None)   # sighting is moot once expired
                 user = await session.get(User, order.user_id)
                 card = await session.get(BankCard, order.bank_card_id) \
                     if order.bank_card_id else None
@@ -431,12 +506,37 @@ async def scan_once(bot: Bot, http: aiohttp.ClientSession) -> None:
         await _bootstrap_addresses(session, http)
         plan = {a: await address_watermark(session, a)
                 for a in await addresses_to_scan(session)}
+        # addresses that actually have an awaiting order right now — the ONLY
+        # ones worth the extra unconfirmed call (the desk address with nothing
+        # pending would just burn quota)
+        awaiting = set((await session.scalars(
+            select(Order.deposit_address).where(
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value))).all())
     for address, watermark in plan.items():
-        transfers = await fetch_transfers(http, address, watermark)
+        # each address in its own try/except: a throttle on one (or a TronGrid
+        # hiccup) must not skip the remaining addresses, the BEP20 sweep,
+        # reminders, or order expiry below
+        try:
+            transfers = await fetch_transfers(http, address, watermark)
+        except Exception:
+            log.warning("confirmed fetch failed for one address; other work "
+                        "continues", exc_info=True)
+            continue
         for tx in transfers:
             if int(tx.get("block_timestamp", 0) or 0) <= watermark:
                 continue
             await _credit_or_hold(bot, tx, address)
+        # instant feedback: sight the not-yet-confirmed transfers too, but only
+        # where an order is actually waiting on this address
+        if address in awaiting:
+            try:
+                for tx in await fetch_transfers(http, address, watermark,
+                                                confirmed=False):
+                    await _note_unconfirmed(bot, tx, address)
+            except Exception:
+                log.warning("unconfirmed sweep failed; confirmed path "
+                            "unaffected", exc_info=True)
+    _prune_seen()
     await scan_bsc_once(bot, http)          # BEP20, if configured
     await remind_pending_orders(bot)
     await expire_stale_orders(bot)
@@ -459,10 +559,21 @@ async def check_order_now(bot: Bot, order_id: int) -> str | None:
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
             transfers = await fetch_transfers(http, address, watermark)
-        for tx in transfers:
-            if int(tx.get("block_timestamp", 0) or 0) <= watermark:
-                continue
-            await _credit_or_hold(bot, tx, address)
+            # credit the CONFIRMED transfers first — this is what the tap is
+            # really for. The unconfirmed "we see it" sweep is best-effort and
+            # isolated so its failure (e.g. a 429 on the doubled call) can
+            # never discard an already-fetched confirmed deposit.
+            for tx in transfers:
+                if int(tx.get("block_timestamp", 0) or 0) <= watermark:
+                    continue
+                await _credit_or_hold(bot, tx, address)
+            try:
+                for tx in await fetch_transfers(http, address, watermark,
+                                                confirmed=False):
+                    await _note_unconfirmed(bot, tx, address)
+            except Exception:
+                log.warning("on-demand unconfirmed sweep failed; confirmed "
+                            "path unaffected", exc_info=True)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
             await scan_bsc_once(bot, http)   # also sweep BEP20 on demand (once)
     except Exception:

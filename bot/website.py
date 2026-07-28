@@ -16,19 +16,25 @@ new-order throttle, all user data HTML-escaped, order pages only via token.
 Bind 127.0.0.1 and put nginx + TLS in front (this is a public site).
 """
 
+import asyncio
 import hashlib
 import hmac
 import html
 import json
 import logging
+import re
 import secrets
 import time
 from collections import deque
 from datetime import timedelta, timezone
 from functools import lru_cache
+from pathlib import Path
+from urllib.parse import quote
 
+import aiohttp
 from aiohttp import web
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from . import texts
 from .config import SERVICES, settings
@@ -55,7 +61,7 @@ from .helpers import (
     try_transition,
     txid_used_elsewhere,
 )
-from .models import BankCard, Order, OrderStatus, Ticket, User
+from .models import Account, BankCard, Order, OrderStatus, Ticket, User, utcnow
 from .qr import qr_png
 
 log = logging.getLogger(__name__)
@@ -221,10 +227,170 @@ def _bucket_record(store: dict, key: str, window: int) -> None:
             store.pop(k, None)
 
 
+# ── customer accounts (signup gate) ──────────────────────────────────────────
+# Selling requires an account: Google sign-in (ID token verified server-side)
+# or email + phone + password. Each account owns a stable negative uid,
+# -(2^48 + account.id) — anonymous browser uids stay below 2^47 in magnitude,
+# Telegram ids are positive, so the three ranges can never collide. The uid
+# goes into the SAME signed cookie the site already uses, and the browser's
+# anonymous orders/cards/tickets are re-parented onto the account at login so
+# history follows the person, not the device.
+
+_ACCT_BASE = 1 << 48
+_STOCK_TIERS = ("100", "200", "500", "1000", "2000+")
+
+_signup_times: dict[str, deque] = {}
+_SIGNUP_MAX_PER_HOUR = 8
+_login_times: dict[str, deque] = {}
+_LOGIN_MAX_PER_HOUR = 20
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _acct_uid(acct_id: int) -> int:
+    return -(_ACCT_BASE + acct_id)
+
+
+async def _account_from_request(request: web.Request) -> Account | None:
+    """The signed-in account, or None for anonymous/visitor cookies."""
+    uid = await _uid_from_cookie(request)
+    if uid is None or uid > -_ACCT_BASE:
+        return None
+    async with Session() as s:
+        return await s.get(Account, -uid - _ACCT_BASE)
+
+
+def _hash_pw_sync(password: str, salt_hex: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode(),
+                               bytes.fromhex(salt_hex), 200_000).hex()
+
+
+async def _hash_pw(password: str, salt_hex: str) -> str:
+    """PBKDF2 is ~100ms of CPU — run it off the shared event loop so a burst
+    of sign-in attempts can't stall the bot, panel and deposit scanner."""
+    return await asyncio.to_thread(_hash_pw_sync, password, salt_hex)
+
+
+# A throwaway salt for the "email doesn't exist" branch of sign-in, so a wrong
+# email costs the same PBKDF2 as a wrong password — no timing oracle for
+# whether an email is registered.
+_DUMMY_SALT = secrets.token_hex(16)
+
+
+def _valid_phone(phone: str) -> bool:
+    digits = re.sub(r"[\s\-()]", "", phone).lstrip("+")
+    return digits.isdigit() and 7 <= len(digits) <= 15
+
+
+def _norm_phone(phone: str) -> str:
+    """Store phones with separators stripped (keep a leading +)."""
+    plus = phone.lstrip().startswith("+")
+    digits = re.sub(r"[\s\-()]", "", phone).lstrip("+")
+    return ("+" if plus else "") + digits
+
+
+def _safe_next(nxt: str) -> str:
+    """Only same-site paths — never an absolute/protocol-relative URL, so the
+    post-login redirect can't be pointed at another site."""
+    return nxt if nxt.startswith("/") and not nxt.startswith("//") else "/sell"
+
+
+async def _google_claims(credential: str) -> dict | None:
+    """Verify a Google ID token. Google's tokeninfo endpoint checks the
+    signature/expiry; we check the token is OURS (aud), from Google (iss),
+    and carries a verified email — anything less and sign-in is refused."""
+    if not credential or len(credential) > 4096:
+        return None
+    try:
+        async with aiohttp.ClientSession(trust_env=True) as sess:
+            async with sess.get("https://oauth2.googleapis.com/tokeninfo",
+                                params={"id_token": credential},
+                                timeout=aiohttp.ClientTimeout(total=10)) as r:
+                if r.status != 200:
+                    return None
+                claims = await r.json()
+    except Exception:
+        log.warning("google tokeninfo lookup failed", exc_info=True)
+        return None
+    if claims.get("aud") != settings.google_client_id:
+        return None
+    if claims.get("iss") not in ("accounts.google.com",
+                                 "https://accounts.google.com"):
+        return None
+    if str(claims.get("email_verified")).lower() != "true":
+        return None
+    if not claims.get("email") or not claims.get("sub"):
+        return None
+    return claims
+
+
+async def _ensure_user_row(s, uid: int, name: str) -> None:
+    if await s.get(User, uid) is None:
+        s.add(User(id=uid, username="web", first_name=(name or "Web")[:60]))
+        await s.flush()
+
+
+async def _adopt_anon(s, anon_uid: int | None, acct_uid: int) -> None:
+    """Re-parent this browser's anonymous history onto the account, and carry a
+    ban with it so signing up can't launder away an admin's ban. Only ever
+    anonymous-negative → account-negative; Telegram uids are untouchable."""
+    if (anon_uid is None or anon_uid >= 0 or anon_uid <= -_ACCT_BASE
+            or anon_uid == acct_uid):
+        return
+    anon = await s.get(User, anon_uid)
+    if anon is not None and anon.banned:
+        acct_user = await s.get(User, acct_uid)
+        if acct_user is not None:
+            acct_user.banned = True     # the ban follows the person, not the uid
+    for model in (Order, BankCard, Ticket):
+        await s.execute(update(model).where(model.user_id == anon_uid)
+                        .values(user_id=acct_uid))
+
+
+async def _login_account(request: web.Request, resp, acct: Account,
+                         anon_uid: int | None) -> None:
+    """Issue the account's session cookie + adopt the browser's anon history."""
+    uid = _acct_uid(acct.id)
+    async with Session() as s:
+        await _ensure_user_row(s, uid, acct.name or acct.email)
+        await _adopt_anon(s, anon_uid, uid)
+        row = await s.get(Account, acct.id)
+        if row is not None:
+            row.last_login = utcnow()
+        await s.commit()
+    _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
+
+
+async def _notify_signup(request: web.Request, acct: Account) -> None:
+    """Ping the admins about a completed signup (best-effort)."""
+    bot = request.app.get("bot")
+    if bot is None:
+        return
+    try:
+        from .helpers import notify_admins
+        via = "Google" if acct.provider == "google" else "email"
+        lines = [f"🆕 <b>Website signup</b> — {html.escape(acct.email)}",
+                 f"Name: {html.escape(acct.name or '—')}",
+                 f"Phone: {html.escape(acct.phone or '—')}",
+                 f"Daily stock: {html.escape(acct.stock or '—')} USDT",
+                 f"Via: {via} · full list in the panel → Signups"]
+        await notify_admins(bot, "\n".join(lines))
+    except Exception:
+        log.exception("signup admin notify failed")
+
+
 # ── HTML shell ────────────────────────────────────────────────────────────────
 
 def _esc(v) -> str:
     return html.escape("" if v is None else str(v))
+
+
+def _ld(obj) -> str:
+    """A JSON-LD <script> block. `<` is JSON-escaped so no value inside the
+    object (article titles, business names) can ever close the script tag
+    early and turn into live markup."""
+    return ("<script type='application/ld+json'>"
+            + json.dumps(obj).replace("<", "\\u003c") + "</script>")
 
 
 @web.middleware
@@ -290,6 +456,31 @@ h2{font-size:1.12rem;font-weight:800;letter-spacing:-.01em;margin:28px 0 10px}
  border-radius:999px}
 .topbar a.nav:hover{background:var(--surface-2);color:var(--text)}
 .topbar a.nav.hot{background:var(--navy);color:#fff;padding:9px 16px;margin-left:2px}
+.topbar a.nav.me{border:1.5px solid var(--border);color:var(--text);
+ padding:8px 14px;margin-left:2px;max-width:150px;overflow:hidden;
+ text-overflow:ellipsis;white-space:nowrap}
+.stockpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));
+ gap:8px;margin:8px 0 4px}
+.stockpick label{display:block;margin:0;cursor:pointer}
+.stockpick input{position:absolute;opacity:0;width:0;height:0}
+.stockpick span{display:block;text-align:center;padding:12px 4px;border-radius:14px;
+ border:1.5px solid var(--border);background:var(--surface-2);font-weight:800;
+ font-size:.92rem;color:var(--text)}
+.stockpick input:checked+span{border-color:var(--accent);background:var(--accent-soft);
+ box-shadow:0 0 0 3px var(--accent-soft)}
+.authwrap{display:grid;gap:10px}
+.authtabs{display:flex;gap:8px;margin:14px 0 2px}
+.authtabs a{flex:1;text-align:center;padding:11px 8px;border-radius:999px;
+ border:1.5px solid var(--border);font-weight:800;font-size:.92rem;color:var(--muted)}
+.authtabs a.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+.gwrap{display:flex;justify-content:center;margin:14px 0 6px;min-height:44px}
+.orline{display:flex;align-items:center;gap:12px;color:var(--faint);
+ font-size:.8rem;font-weight:700;letter-spacing:.06em;margin:12px 0}
+.orline:before,.orline:after{content:"";flex:1;height:1px;background:var(--border)}
+.linkbtn{display:inline;width:auto;padding:0;border:0;background:none;
+ color:var(--accent-dark);font:inherit;font-weight:600;cursor:pointer;
+ box-shadow:none;text-decoration:underline}
+.linkbtn:hover{background:none;color:var(--accent);transform:none;box-shadow:none}
 .card{background:transparent;border:0;border-radius:0;box-shadow:none;
  padding:14px 0;margin:6px 0;overflow-wrap:anywhere}
 .card.sep+.card.sep{border-top:1px solid var(--border);padding-top:22px;margin-top:14px}
@@ -503,8 +694,10 @@ details summary::marker{color:var(--accent-dark)}
 _TAIL = """<div class=bigfoot>
 <div class=cols>
 <div><h3>Trade</h3>
-<a href="/sell">Sell USDT</a><a href="/my">My orders</a>
+<a href="/sell">Sell USDT</a><a href="/signup">Sign up / Sign in</a>
+<a href="/my">My orders</a>
 <a href="/#rates">Live rates</a><a href="/#faq">FAQ</a>
+<a href="/learn">Guides: USDT to INR</a>
 <a href="/support">Create a ticket</a>
 <a href="/guarantee">Clean-funds guarantee</a>
 <a href="/about">About &amp; contact</a></div>
@@ -550,7 +743,7 @@ the network shown. By using this site you agree to the
 
 
 def _page(title: str, body: str, desc: str = "", wide: bool = False,
-          path: str = "", noindex: bool = False) -> web.Response:
+          path: str = "", noindex: bool = False, acct: str = "") -> web.Response:
     desc = desc or "Sell USDT for INR — instant bank payout, on-chain verified."
     head_extra = ""
     if noindex:
@@ -564,6 +757,12 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
                    "<meta property=og:type content=website>"
                    "<meta property=og:site_name content='P2P Desk'>"
                    "<meta name=twitter:card content=summary>")
+    if acct:
+        label = acct if len(acct) <= 18 else acct[:16] + "…"
+        acct_link = (f"<a class='nav me' href='/my' title='{_esc(acct)}'>"
+                     f"{_esc(label)}</a>")
+    else:
+        acct_link = "<a class='nav me' href='/signup'>Sign up</a>"
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name=description content="{_esc(desc)}">{head_extra}
@@ -574,8 +773,10 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
 <a class=nav href="/">Home</a>
 <a class=nav href="/#rates">Rates</a>
 <a class=nav href="/guarantee">Guarantee</a>
+<a class=nav href="/learn">Learn</a>
 <a class=nav href="/my">My orders</a>
 <a class=nav href="/support">Support</a>
+{acct_link}
 <a class="nav hot" href="/sell">Sell USDT</a></div>
 {body}
 {_TAIL}
@@ -744,15 +945,16 @@ transaction hash (TXID) — we verify it on-chain and pay out if it checks out.<
 withdraw the exact USDT amount to the address we show — choosing the same network
 (TRC20 or BEP20) you picked on the order. No transfer to any special wallet needed
 first.</p></details>
-<details><summary>Do I need an account?</summary><p class='muted small'>No signup. Your
-orders are tied to this browser automatically — find them any time under
+<details><summary>Do I need an account?</summary><p class='muted small'>Yes — a free
+30-second signup (Google or email) before your first order. Your orders, tickets and
+saved banks then follow your account on any device, under
 <a href="/my">My orders</a>.</p></details>
 </div></div>
 <div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}
 <span class=muted>— mention your order ID (#ORD…)</span></span>
 <a class="btn ghost" style="margin-top:12px;max-width:340px" href="/support">Create a support ticket</a></div>
 {_fabs_html(support, whatsapp)}"""
-    faq_ld = json.dumps({
+    faq_ld = ({
         "@context": "https://schema.org", "@type": "FAQPage",
         "mainEntity": [
             {"@type": "Question", "name": q, "acceptedAnswer":
@@ -767,8 +969,9 @@ orders are tied to this browser automatically — find them any time under
                  "Yes — place the order, then withdraw the exact USDT amount from "
                  "your exchange to the address shown, on the same network."),
                 ("Do I need an account to sell USDT here?",
-                 "No signup — orders are tied to your browser and listed under "
-                 "My orders."),
+                 "Yes — a free 30-second signup with Google or email before "
+                 "your first order. Your orders and saved banks then follow "
+                 "your account on any device."),
             ]]})
     org = {"@context": "https://schema.org", "@type": "Organization",
            "name": settings.biz_name or "P2P Desk"}
@@ -776,14 +979,363 @@ orders are tied to this browser automatically — find them any time under
         org["url"] = settings.site_url
     if settings.biz_email:
         org["email"] = settings.biz_email
-    body += ("<script type='application/ld+json'>" + faq_ld + "</script>"
-             "<script type='application/ld+json'>" + json.dumps(org) + "</script>")
+    body += _ld(faq_ld) + _ld(org)
+    acct = await _account_from_request(request)
     return _page("Sell USDT for INR at Live Rates — Instant Bank Payout | P2P Desk",
                  body,
                  "Sell USDT for INR at live rates. On-chain verified deposits, "
-                 "instant bank payout via UPI/IMPS/CDM across India. No signup. "
-                 "100% clean funds guarantee.",
-                 wide=True, path="/")
+                 "instant bank payout via UPI/IMPS/CDM across India. Free "
+                 "signup. 100% clean funds guarantee.",
+                 wide=True, path="/", acct=acct.email if acct else "")
+
+
+# ── signup / sign-in pages ───────────────────────────────────────────────────
+
+def _uq(s: str) -> str:
+    return quote(s, safe="/")
+
+
+def _stock_pick(sel: str = "") -> str:
+    tiles = "".join(
+        f"<label><input type=radio name=stock value='{t}' required "
+        f"{'checked' if t == sel else ''}><span>{t}<br>"
+        f"<span class='muted small' style='font-weight:600'>USDT/day</span></span></label>"
+        for t in _STOCK_TIERS)
+    return f"<div class=stockpick>{tiles}</div>"
+
+
+def _google_button(csrf: str, nxt: str) -> str:
+    """The official Sign-in-with-Google button (Google Identity Services).
+    The JS callback drops the returned ID token into a hidden form and posts
+    it to /auth/google, where it is verified server-side against our client
+    id. Rendered only when a client id is configured."""
+    if not settings.google_client_id:
+        return ""
+    cid = _esc(settings.google_client_id)
+    return (
+        f"<form id=gform method=post action=/auth/google style=display:none>"
+        f"<input type=hidden name=csrf value='{csrf}'>"
+        f"<input type=hidden name=next value='{_esc(nxt)}'>"
+        f"<input type=hidden name=credential></form>"
+        f"<div id=g_id_onload data-client_id=\"{cid}\" "
+        "data-callback=\"onGoogleCred\" data-auto_prompt=\"false\"></div>"
+        "<div class=gwrap><div class=\"g_id_signin\" data-type=standard "
+        "data-shape=pill data-size=large data-text=continue_with "
+        "data-logo_alignment=left></div></div>"
+        "<script>function onGoogleCred(r){"
+        "var f=document.getElementById('gform');"
+        "f.credential.value=r.credential;f.submit();}</script>"
+        "<script src=\"https://accounts.google.com/gsi/client\" async defer>"
+        "</script><div class=orline>OR</div>")
+
+
+def _auth_body(csrf: str, nxt: str, mode: str, error: str, p: dict) -> str:
+    """Tabs + Google button + the signup or sign-in form (no heading)."""
+    err = f"<p class=err>{_esc(error)}</p>" if error else ""
+    tabs = (f"<div class=authtabs>"
+            f"<a href='/signup?next={_uq(nxt)}'"
+            f"{' class=on' if mode == 'up' else ''}>Create account</a>"
+            f"<a href='/signup?mode=in&amp;next={_uq(nxt)}'"
+            f"{' class=on' if mode == 'in' else ''}>Sign in</a></div>")
+    g = _google_button(csrf, nxt)
+    if mode == "in":
+        form = f"""<form method=post action=/signin><div class=card>
+<input type=hidden name=csrf value='{csrf}'>
+<input type=hidden name=next value='{_esc(nxt)}'>
+<label>Email</label>
+<input name=email type=email autocomplete=email required
+ value="{_esc(p.get('email', ''))}">
+<label>Password</label>
+<input name=password type=password autocomplete=current-password required>
+<div style=margin-top:16px><button class=btn>Sign in</button></div>
+</div></form>"""
+    else:
+        form = f"""<form method=post action=/signup><div class=card>
+<input type=hidden name=csrf value='{csrf}'>
+<input type=hidden name=next value='{_esc(nxt)}'>
+<label>Your name</label>
+<input name=name autocomplete=name required maxlength=120
+ value="{_esc(p.get('name', ''))}">
+<label>Email</label>
+<input name=email type=email autocomplete=email required
+ value="{_esc(p.get('email', ''))}">
+<label>Phone (with country code)</label>
+<input name=phone inputmode=tel placeholder="+91…" required
+ value="{_esc(p.get('phone', ''))}">
+<label>Password (8+ characters)</label>
+<input name=password type=password autocomplete=new-password minlength=8 required>
+<label>How much USDT do you sell per day?</label>
+{_stock_pick(p.get('stock', ''))}
+<div style=margin-top:16px><button class=btn>Create account →</button></div>
+<p class='muted small' style='margin:10px 0 0'>By signing up you agree to the
+<a href='/legal/terms'>Terms of Use</a> and
+<a href='/legal/privacy'>Privacy Policy</a>.</p>
+</div></form>"""
+    return tabs + err + g + form
+
+
+async def signup_get(request: web.Request, error: str = "",
+                     prefill: dict | None = None, mode: str = ""):
+    p = prefill or {}
+    mode = mode or ("in" if request.query.get("mode") == "in" else "up")
+    nxt = _safe_next(str(p.get("next", "") or request.query.get("next", "")
+                         or "/sell"))
+    if not error:
+        acct = await _account_from_request(request)
+        if acct is not None:      # already signed in — nothing to do here
+            raise web.HTTPFound(f"/signup/stock?next={_uq(nxt)}"
+                                if not acct.stock else nxt)
+    uid, is_new = await _ensure_uid(request)
+    csrf = await _csrf(f"auth:{uid}")
+    head = ("<h1>Welcome <span class=g>back</span></h1>"
+            "<p class='muted lead'>Sign in to sell and see your orders and "
+            "saved banks on any device.</p>" if mode == "in" else
+            "<h1>Create your <span class=g>account</span></h1>"
+            "<p class='muted lead'>One quick signup and the desk is yours — "
+            "sell USDT, track every order live, and reuse your saved banks "
+            "from any device.</p>")
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+    body = head + _auth_body(csrf, nxt, mode, error, p) + _fabs_html(support, whatsapp)
+    resp = _page(("Sign in — P2P Desk" if mode == "in"
+                  else "Create your account — P2P Desk"), body,
+                 "Sign up free to sell USDT for INR — instant bank payouts, "
+                 "orders tracked live.", noindex=True)
+    if is_new:
+        _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
+    return resp
+
+
+async def signup_post(request: web.Request):
+    data = await request.post()
+    uid = await _uid_from_cookie(request)
+    if uid is None:
+        return await signup_get(request, "Please enable cookies and try again.")
+    nxt = _safe_next(str(data.get("next", "")))
+    p = {k: str(data.get(k, "")).strip()
+         for k in ("name", "email", "phone", "stock")}
+    p["next"] = nxt
+    if not hmac.compare_digest(str(data.get("csrf", "")),
+                               await _csrf(f"auth:{uid}")):
+        return await signup_get(request, "That form expired — please try again.", p)
+    password = str(data.get("password", ""))
+    email = p["email"].lower()
+    if not _EMAIL_RE.match(email) or len(email) > 190:
+        return await signup_get(request, "Please enter a valid email address.", p)
+    if not p["name"] or len(p["name"]) > 120:
+        return await signup_get(request, "Please enter your name.", p)
+    if not _valid_phone(p["phone"]):
+        return await signup_get(request, "Please enter a valid phone number "
+                                "with country code, e.g. +91 98765 43210.", p)
+    if not 8 <= len(password) <= 128:
+        return await signup_get(request, "Password must be 8+ characters.", p)
+    if p["stock"] not in _STOCK_TIERS:
+        return await signup_get(request, "Please pick how much USDT you sell "
+                                "per day.", p)
+    ip = _client_ip(request)
+    if _bucket_throttled(_signup_times, ip, _SIGNUP_MAX_PER_HOUR, 3600):
+        return await signup_get(request, "Too many signups from this "
+                                "connection — please try again later.", p)
+    _bucket_record(_signup_times, ip, 3600)
+    salt = secrets.token_hex(16)
+    try:
+        async with Session() as s:
+            existing = await s.scalar(select(Account)
+                                      .where(Account.email == email))
+            if existing is not None:
+                if existing.pw_hash:
+                    return await signup_get(
+                        request, "That email is already registered — sign in "
+                        "instead.", p, mode="in")
+                return await signup_get(
+                    request, "That email signed up with Google — use the "
+                    "Google button below.", p)
+            acct = Account(email=email, name=p["name"],
+                           phone=_norm_phone(p["phone"]),
+                           provider="email", pw_salt=salt,
+                           pw_hash=await _hash_pw(password, salt),
+                           stock=p["stock"])
+            s.add(acct)
+            await s.commit()
+    except IntegrityError:      # signup race on the same email
+        return await signup_get(request, "That email is already registered — "
+                                "sign in instead.", p, mode="in")
+    resp = web.HTTPFound(nxt)
+    await _login_account(request, resp, acct, uid)
+    await _notify_signup(request, acct)
+    log.info("web signup #%s via email from %s", acct.id, ip)
+    return resp
+
+
+async def signin_post(request: web.Request):
+    data = await request.post()
+    uid = await _uid_from_cookie(request)
+    if uid is None:
+        return await signup_get(request, "Please enable cookies and try again.",
+                                mode="in")
+    nxt = _safe_next(str(data.get("next", "")))
+    email = str(data.get("email", "")).strip().lower()
+    p = {"email": email, "next": nxt}
+    if not hmac.compare_digest(str(data.get("csrf", "")),
+                               await _csrf(f"auth:{uid}")):
+        return await signup_get(request, "That form expired — please try "
+                                "again.", p, mode="in")
+    ip = _client_ip(request)
+    if _bucket_throttled(_login_times, ip, _LOGIN_MAX_PER_HOUR, 3600):
+        return await signup_get(request, "Too many attempts — please wait a "
+                                "while.", p, mode="in")
+    _bucket_record(_login_times, ip, 3600)
+    async with Session() as s:
+        acct = await s.scalar(select(Account).where(Account.email == email))
+    password = str(data.get("password", ""))
+    if acct is not None and not acct.pw_hash:
+        # spend the same PBKDF2 as a real check so this branch isn't a faster,
+        # tell-tale response, then point them at the right button
+        await _hash_pw(password, _DUMMY_SALT)
+        return await signup_get(request, "That email signed up with Google — "
+                                "use the Google button below.", p, mode="in")
+    # always run one PBKDF2 (dummy salt when the email is unknown) so a wrong
+    # email and a wrong password take the same time — no account-enumeration
+    # timing oracle
+    salt = acct.pw_salt if acct else _DUMMY_SALT
+    calc = await _hash_pw(password, salt)
+    if acct is None or not hmac.compare_digest(acct.pw_hash, calc):
+        return await signup_get(request, "Email or password is incorrect.",
+                                p, mode="in")
+    resp = web.HTTPFound(f"/signup/stock?next={_uq(nxt)}"
+                         if not acct.stock else nxt)
+    await _login_account(request, resp, acct, uid)
+    return resp
+
+
+async def auth_google(request: web.Request):
+    if not settings.google_client_id:
+        raise web.HTTPNotFound()
+    data = await request.post()
+    uid = await _uid_from_cookie(request)
+    if uid is None:
+        return await signup_get(request, "Please enable cookies and try again.")
+    nxt = _safe_next(str(data.get("next", "")))
+    if not hmac.compare_digest(str(data.get("csrf", "")),
+                               await _csrf(f"auth:{uid}")):
+        return await signup_get(request, "That form expired — please try again.")
+    ip = _client_ip(request)
+    if _bucket_throttled(_login_times, ip, _LOGIN_MAX_PER_HOUR, 3600):
+        return await signup_get(request, "Too many attempts — please wait a while.")
+    _bucket_record(_login_times, ip, 3600)
+    claims = await _google_claims(str(data.get("credential", "")))
+    if claims is None:
+        return await signup_get(request, "Google sign-in could not be verified "
+                                "— please try again.")
+    email = str(claims["email"]).lower()
+    sub = str(claims["sub"])
+    name = str(claims.get("name") or "")[:120]
+    try:
+        async with Session() as s:
+            acct = await s.scalar(select(Account)
+                                  .where(Account.google_sub == sub))
+            if acct is None:
+                acct = await s.scalar(select(Account)
+                                      .where(Account.email == email))
+                if acct is not None:
+                    # Google proved ownership of this email (email_verified);
+                    # any pre-existing email+password row for it was created
+                    # WITHOUT verification, so it may be an attacker squatting
+                    # the victim's address. Take the account over for Google
+                    # and DROP the unverified password — otherwise the squatter
+                    # keeps password access to the account the real owner now
+                    # uses (account pre-hijacking).
+                    acct.google_sub = sub
+                    acct.provider = "google"
+                    acct.pw_hash = ""
+                    acct.pw_salt = ""
+                    if not acct.name:
+                        acct.name = name
+                else:
+                    acct = Account(email=email, name=name, provider="google",
+                                   google_sub=sub)
+                    s.add(acct)
+                await s.commit()
+    except IntegrityError:      # two first-logins racing — re-read the winner
+        async with Session() as s:
+            acct = await s.scalar(select(Account)
+                                  .where(Account.google_sub == sub))
+        if acct is None:
+            return await signup_get(request, "Google sign-in could not be "
+                                    "verified — please try again.")
+    resp = web.HTTPFound(f"/signup/stock?next={_uq(nxt)}"
+                         if not acct.stock else nxt)
+    await _login_account(request, resp, acct, uid)
+    log.info("web google sign-in #%s from %s", acct.id, ip)
+    return resp
+
+
+async def stock_get(request: web.Request, error: str = ""):
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup")
+    nxt = _safe_next(str(request.query.get("next", "") or "/sell"))
+    if acct.stock and not error:
+        raise web.HTTPFound(nxt)
+    csrf = await _csrf(f"auth:{_acct_uid(acct.id)}")
+    err = f"<p class=err>{_esc(error)}</p>" if error else ""
+    body = f"""<h1>One last <span class=g>step</span></h1>
+<p class='muted lead'>How much USDT do you plan to sell per day? This helps the
+desk keep enough INR float ready so your payouts never wait.</p>{err}
+<form method=post action=/signup/stock><div class=card>
+<input type=hidden name=csrf value='{csrf}'>
+<input type=hidden name=next value='{_esc(nxt)}'>
+<label>Daily selling stock (USDT)</label>
+{_stock_pick()}
+<div style=margin-top:16px><button class=btn>Start selling →</button></div>
+</div></form>"""
+    return _page("Almost done — P2P Desk", body, noindex=True, acct=acct.email)
+
+
+async def stock_post(request: web.Request):
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup")
+    data = await request.post()
+    nxt = _safe_next(str(data.get("next", "")))
+    if not hmac.compare_digest(str(data.get("csrf", "")),
+                               await _csrf(f"auth:{_acct_uid(acct.id)}")):
+        return await stock_get(request, "That form expired — please try again.")
+    tier = str(data.get("stock", ""))
+    if tier not in _STOCK_TIERS:
+        return await stock_get(request, "Please pick one of the options.")
+    first = not acct.stock
+    async with Session() as s:
+        row = await s.get(Account, acct.id)
+        if row is None:
+            raise web.HTTPFound("/signup")
+        row.stock = tier
+        await s.commit()
+        acct = row
+    if first:
+        await _notify_signup(request, acct)
+    raise web.HTTPFound(nxt)
+
+
+async def logout(request: web.Request):
+    # POST + CSRF so a third-party page can't force-logout a visitor with a
+    # cross-site GET (e.g. an <img src=/logout>).
+    uid = await _uid_from_cookie(request)
+    if uid is not None:
+        data = await request.post()
+        if not hmac.compare_digest(str(data.get("csrf", "")),
+                                   await _csrf(f"auth:{uid}")):
+            raise web.HTTPFound("/my")
+    resp = web.HTTPFound("/")
+    resp.del_cookie(COOKIE)
+    return resp
+
+
+def _logout_form(uid: int, csrf: str, label: str = "Sign out") -> str:
+    return (f"<form method=post action=/logout style='display:inline'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<button class=linkbtn>{_esc(label)}</button></form>")
 
 
 # ── sell flow ─────────────────────────────────────────────────────────────────
@@ -798,6 +1350,8 @@ async def _sell_form(request: web.Request, error: str = "",
         support = await get_support(s)
         whatsapp = await get_whatsapp(s)
     uid, is_new = await _ensure_uid(request)
+    acct = await _account_from_request(request)
+    me = acct.email if acct else ""
     saved_cards = []
     if not is_new:
         async with Session() as s:
@@ -817,7 +1371,7 @@ async def _sell_form(request: web.Request, error: str = "",
         resp = _page("Desk closed", f"<h1>Desk closed</h1><div class='banner danger'>"
                      f"The desk isn't taking orders right now ({_esc(reason)}). "
                      f"Check back soon or message support: {_support_html(support)}</div>"
-                     + _fabs_html(support, whatsapp))
+                     + _fabs_html(support, whatsapp), acct=me)
     else:
         limits = {}
         async with Session() as s:
@@ -936,17 +1490,51 @@ if(pick)pick.addEventListener('change',updBank);updBank();
         resp = _page("Sell USDT for INR — Live Rate & Instant Quote | P2P Desk",
                      body, "Get your USDT deposit address and a locked INR rate "
                      "in one step. UPI, IMPS, CDM payouts across India.",
-                     path="/sell")
+                     path="/sell", acct=me)
+    if is_new:
+        _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
+    return resp
+
+
+async def _sell_gate(request: web.Request, error: str = "") -> web.Response:
+    """The signup gate shown on /sell for visitors without an account — same
+    URL and SEO meta as the sell page, with the auth forms where the order
+    form will appear once they're signed in."""
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+    uid, is_new = await _ensure_uid(request)
+    csrf = await _csrf(f"auth:{uid}")
+    body = ("<h1>Sell USDT.<br><span class=g>Sign in to start.</span></h1>"
+            "<p class='muted lead'>Create your free account — or sign in — and "
+            "the sell form opens right here. Your orders, tickets and saved "
+            "banks then follow your account on any device.</p>"
+            + _auth_body(csrf, "/sell", "up", error, {})
+            + _fabs_html(support, whatsapp))
+    resp = _page("Sell USDT for INR — Live Rate & Instant Quote | P2P Desk",
+                 body, "Get your USDT deposit address and a locked INR rate "
+                 "in one step. UPI, IMPS, CDM payouts across India.",
+                 path="/sell")
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
 
 
 async def sell_get(request: web.Request):
+    acct = await _account_from_request(request)
+    if acct is None:
+        return await _sell_gate(request)
+    if not acct.stock:
+        raise web.HTTPFound("/signup/stock?next=/sell")
     return await _sell_form(request)
 
 
 async def sell_post(request: web.Request):
+    acct = await _account_from_request(request)
+    if acct is None:
+        return await _sell_gate(request, "Please sign in to continue.")
+    if not acct.stock:
+        raise web.HTTPFound("/signup/stock?next=/sell")
     data = await request.post()
     uid = await _uid_from_cookie(request)
     if uid is None:
@@ -1134,6 +1722,9 @@ to our address is accepted.</p>
 <span class=muted>→ {_esc(bank_label)}</span><br>
 <span class='muted small'>⏳ Quote expires in <span id=cd class=count>--:--</span>
 · auto-verified in seconds after it confirms</span></div>
+<div id=seenbn class="banner ok" style="display:none"><b>Deposit detected
+on-chain!</b> It's confirming now — usually under a minute. This page updates
+by itself the moment it credits.</div>
 <div class=card>
 <b>{net_dot} On {_esc(net_label)} — copy the address</b>
 <span class=addr id=addr>{_esc(show_addr)}</span>
@@ -1168,7 +1759,9 @@ function checkNow(){{var b=document.getElementById('checkbtn');b.disabled=true;b
 document.getElementById('checking').style.display='block';
 fetch('/o/{_esc(token)}/check',{{method:'POST',headers:{{'X-CSRF':'{csrf}'}}}});}}
 setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
-.then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},6000);
+.then(function(j){{if(j.status!=='{st}')location.reload();
+else if(j.seen)document.getElementById('seenbn').style.display='block';}})
+.catch(function(){{}});}},6000);
 </script>"""
         return _page(f"Order {texts.tag(order.id)} — send USDT", body + fabs,
                      noindex=True)
@@ -1240,7 +1833,10 @@ async def order_status(request: web.Request):
     order = await _order_by_token(request.match_info["token"])
     if order is None:
         raise web.HTTPNotFound()
-    return web.json_response({"status": order.status})
+    from . import scanner
+    seen = (order.status == OrderStatus.AWAITING_DEPOSIT.value
+            and order.id in scanner.deposit_seen)
+    return web.json_response({"status": order.status, "seen": seen})
 
 
 async def order_qr(request: web.Request):
@@ -1374,8 +1970,18 @@ def _short_tx(txid: str | None) -> str:
 
 async def my_orders(request: web.Request):
     uid = await _uid_from_cookie(request)
+    acct = await _account_from_request(request)
+    me = acct.email if acct else ""
+    if acct:
+        lo = _logout_form(uid, await _csrf(f"auth:{uid}"))
+        me_line = (f"<p class='muted small'>Signed in as <b>{_esc(me)}</b> · "
+                   f"{lo}</p>")
+    else:
+        me_line = ("<p class='muted small'><a href='/signup?mode=in&next=/my'>"
+                   "Sign in</a> to see your orders from every device.</p>")
     if uid is None:
-        return _page("My orders", "<h1>My orders</h1><div class=banner>No orders on "
+        return _page("My orders", "<h1>My orders</h1>" + me_line +
+                     "<div class=banner>No orders on "
                      "this device yet — they appear here after your first order.</div>"
                      "<a class=btn href='/sell'>Sell USDT</a>", noindex=True)
     async with Session() as s:
@@ -1387,8 +1993,10 @@ async def my_orders(request: web.Request):
         cards = {c.id: c for c in (await s.scalars(
             select(BankCard).where(BankCard.id.in_(card_ids)))).all()} if card_ids else {}
     if not orders:
-        return _page("My orders", "<h1>My orders</h1><div class=banner>No orders yet."
-                     "</div><a class=btn href='/sell'>Sell USDT</a>", noindex=True)
+        return _page("My orders", "<h1>My orders</h1>" + me_line +
+                     "<div class=banner>No orders yet."
+                     "</div><a class=btn href='/sell'>Sell USDT</a>",
+                     noindex=True, acct=me)
     cls = {OrderStatus.COMPLETED.value: "ok", OrderStatus.PENDING_PAYOUT.value: "warn",
            OrderStatus.DEPOSIT_RECEIVED.value: "info",
            OrderStatus.AWAITING_DEPOSIT.value: "info",
@@ -1455,9 +2063,9 @@ async def my_orders(request: web.Request):
         tk = (f"<h2>My tickets</h2><div class=card>{rows_t}"
               "<a class='btn ghost' style='margin-top:12px' href='/support'>"
               "New ticket</a></div>")
-    return _page("My orders", f"<h1>My orders</h1>{''.join(blocks)}"
+    return _page("My orders", f"<h1>My orders</h1>{me_line}{''.join(blocks)}"
                  "<a class=btn href='/sell'>New order</a>" + tk
-                 + _fabs_html(support, whatsapp), noindex=True)
+                 + _fabs_html(support, whatsapp), noindex=True, acct=me)
 
 
 
@@ -1481,6 +2089,9 @@ async def support_get(request: web.Request, error: str = "",
                       prefill: dict | None = None):
     p = prefill or {}
     uid, is_new = await _ensure_uid(request)
+    acct = await _account_from_request(request)
+    if acct and not p.get("contact"):
+        p["contact"] = acct.email        # signed-in default; still editable
     async with Session() as s:
         support = await get_support(s)
         whatsapp = await get_whatsapp(s)
@@ -1521,14 +2132,15 @@ hash (TXID) so we can check the chain right away.</p>
 <label>Describe what happened</label>
 <textarea name=message rows=5 required
  placeholder="What you sent, when, and what you expected">{_esc(p.get('message', ''))}</textarea>
-<label>How do we reach you? (Telegram @username / WhatsApp number)</label>
-<input name=contact placeholder="@yourname or +91…" required
+<label>How do we reach you? (email / Telegram @username / WhatsApp number)</label>
+<input name=contact placeholder="you@email.com, @yourname or +91…" required
  value="{_esc(p.get('contact', ''))}">
 <div style="margin-top:16px"><button class=btn>Create ticket</button></div>
 </div></form>
 <p class='muted small'>Prefer chat? {_support_html(support)}</p>
 {_fabs_html(support, whatsapp)}"""
-    resp = _page("Support — P2P Desk", body, path="/support")
+    resp = _page("Support — P2P Desk", body, path="/support",
+                 acct=acct.email if acct else "")
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
@@ -1650,10 +2262,11 @@ deal gets a proof card. If anything about a payout ever concerns you, raise a
 <a href="/support">support ticket</a> — admins see tickets instantly.</p>
 <a class="btn cta-mid" href="/sell">Sell USDT with the guarantee</a>
 {_fabs_html(support, whatsapp)}"""
+    acct = await _account_from_request(request)
     return _page("100% Clean-Funds Guarantee — P2P Desk", body,
                  "Every payout from verified clean sources — market funds, cash "
                  "deposits, card settlements. Your account is never at risk.",
-                 wide=True, path="/guarantee")
+                 wide=True, path="/guarantee", acct=acct.email if acct else "")
 
 
 # ── legal / disclosure pages ─────────────────────────────────────────────────
@@ -1797,10 +2410,169 @@ async def legal_page(request: web.Request):
             f"<p class='muted small'>Questions about this policy? "
             f"{_support_html(support)}</p>"
             + _fabs_html(support, whatsapp))
+    acct = await _account_from_request(request)
     return _page(f"{html.unescape(title)} — P2P Desk", body,
-                 path=f"/legal/{slug}")
+                 path=f"/legal/{slug}", acct=acct.email if acct else "")
 
 
+
+
+# ── learn: SEO article pages ─────────────────────────────────────────────────
+# Articles are plain .md files in content/articles/, read from disk at request
+# time — publishing a new article is `git pull` on the server, no restart.
+# Front matter (title/desc/keyword/date) sits above a `---` line; the body is
+# a small, escape-first markdown subset (##, ###, -, **bold**, [text](url)).
+
+_CONTENT_DIR = Path(__file__).resolve().parent.parent / "content" / "articles"
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+
+
+def _read_article(path: Path) -> dict | None:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    meta_raw, sep, body = raw.partition("\n---\n")
+    if not sep:
+        return None
+    meta = {}
+    for line in meta_raw.splitlines():
+        k, colon, v = line.partition(":")
+        if colon:
+            meta[k.strip().lower()] = v.strip()
+    if not meta.get("title"):
+        return None
+    return {"slug": path.stem, "title": meta["title"],
+            "desc": meta.get("desc", ""), "keyword": meta.get("keyword", ""),
+            "date": meta.get("date", ""), "body": body}
+
+
+def _articles() -> list[dict]:
+    if not _CONTENT_DIR.is_dir():
+        return []
+    arts = []
+    for p in sorted(_CONTENT_DIR.glob("*.md")):
+        if not _SLUG_RE.match(p.stem):
+            continue
+        art = _read_article(p)
+        if art:
+            arts.append(art)
+    arts.sort(key=lambda a: (a["date"], a["slug"]), reverse=True)
+    return arts
+
+
+def _md_html(md: str) -> str:
+    """Tiny escape-first markdown renderer. Everything is HTML-escaped BEFORE
+    any markup is applied, and links only keep hrefs that are same-site paths
+    or https — so article files can never inject script, whatever they say."""
+    def inline(s: str) -> str:
+        s = _esc(s)
+        s = _MD_BOLD_RE.sub(r"<b>\1</b>", s)
+        def link(m):
+            txt, url = m.group(1), m.group(2)
+            if url.startswith("/") or url.startswith("https://"):
+                return f"<a href='{url}'>{txt}</a>"
+            return txt
+        return _MD_LINK_RE.sub(link, s)
+    out: list[str] = []
+    para: list[str] = []
+    items: list[str] = []
+    def flush_para():
+        if para:
+            out.append("<p class=muted>" + inline(" ".join(para)) + "</p>")
+            para.clear()
+    def flush_list():
+        if items:
+            out.append("<ul class=muted>"
+                       + "".join(f"<li>{inline(i)}</li>" for i in items)
+                       + "</ul>")
+            items.clear()
+    for line in md.splitlines():
+        t = line.strip()
+        if not t:
+            flush_para(); flush_list()
+        elif t.startswith("### "):
+            flush_para(); flush_list()
+            out.append(f"<h3>{inline(t[4:])}</h3>")
+        elif t.startswith("## "):
+            flush_para(); flush_list()
+            out.append(f"<h2>{inline(t[3:])}</h2>")
+        elif t.startswith("- "):
+            flush_para()
+            items.append(t[2:])
+        else:
+            flush_list()
+            para.append(t)
+    flush_para(); flush_list()
+    return "".join(out)
+
+
+async def learn_index(request: web.Request):
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+    acct = await _account_from_request(request)
+    arts = _articles()
+    cards = "".join(
+        f"<div class='card sep'><a href='/learn/{a['slug']}'>"
+        f"<b style='font-size:1.06rem'>{_esc(a['title'])}</b></a>"
+        f"<p class='muted small' style='margin:6px 0 8px'>{_esc(a['desc'])}</p>"
+        f"<a class=small href='/learn/{a['slug']}'>Read the guide →</a></div>"
+        for a in arts) or ("<div class=banner>Guides are being written — "
+                           "check back soon.</div>")
+    body = ("<h1>Selling USDT in India,<br><span class=g>explained properly."
+            "</span></h1>"
+            "<p class='muted lead'>Practical guides on turning USDT into rupees "
+            "in your bank — rates, safety, bank freezes, networks, timing — "
+            "written by the desk that does this all day.</p>"
+            + cards
+            + "<a class='btn cta-mid' href='/sell'>Sell USDT now</a>"
+            + _fabs_html(support, whatsapp))
+    return _page("USDT to INR Guides — Sell USDT in India | P2P Desk", body,
+                 "Guides on selling USDT for INR in India: best rates, staying "
+                 "safe, avoiding bank freezes, TRC20 vs BEP20, and how instant "
+                 "payouts work.", path="/learn",
+                 acct=acct.email if acct else "")
+
+
+async def learn_page(request: web.Request):
+    slug = request.match_info["slug"]
+    if not _SLUG_RE.match(slug):
+        raise web.HTTPNotFound()
+    art = None
+    p = _CONTENT_DIR / f"{slug}.md"
+    if p.is_file():
+        art = _read_article(p)
+    if art is None:
+        raise web.HTTPNotFound()
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+    acct = await _account_from_request(request)
+    ld = {"@context": "https://schema.org", "@type": "Article",
+          "headline": art["title"], "description": art["desc"],
+          "author": {"@type": "Organization",
+                     "name": settings.biz_name or "P2P Desk"}}
+    if art["date"]:
+        ld["datePublished"] = art["date"]
+    if settings.site_url:
+        ld["mainEntityOfPage"] = (settings.site_url.rstrip("/")
+                                  + f"/learn/{slug}")
+    body = (f"<p class='muted small' style='margin:24px 0 0'>"
+            f"<a href='/learn'>← All guides</a></p>"
+            f"<h1>{_esc(art['title'])}</h1>"
+            + _md_html(art["body"])
+            + "<div class=card><b>Ready to sell?</b><p class='muted small' "
+              "style='margin:6px 0 10px'>Live rates, on-chain verification and "
+              "bank payout typically in "
+            + _esc(settings.eta_text) + ". Backed by the "
+              "<a href='/guarantee'>100% clean-funds guarantee</a>.</p>"
+              "<a class=btn href='/sell'>Sell USDT now</a></div>"
+            + _ld(ld) + _fabs_html(support, whatsapp))
+    return _page(f"{art['title']} | P2P Desk", body, art["desc"],
+                 path=f"/learn/{slug}", acct=acct.email if acct else "")
 
 
 # ── about / robots / sitemap ─────────────────────────────────────────────────
@@ -1844,18 +2616,20 @@ every payout comes from verified clean sources — the
 Policy</a> and <a href="/legal/aml">AML policy</a> set out the rules we hold both
 sides to.</p>
 {_fabs_html(support, whatsapp)}"""
+    acct = await _account_from_request(request)
     return _page("About & Contact — P2P Desk", body,
                  "Who runs this USDT-to-INR desk, how to reach us, and the rules "
-                 "we operate by.", path="/about")
+                 "we operate by.", path="/about", acct=acct.email if acct else "")
 
 
-_SITE_PATHS = ["/", "/sell", "/guarantee", "/support", "/about",
+_SITE_PATHS = ["/", "/sell", "/guarantee", "/learn", "/support", "/about",
                "/legal/terms", "/legal/privacy", "/legal/risks",
                "/legal/transactions", "/legal/aml"]
 
 
 async def robots_txt(request: web.Request):
-    lines = ["User-agent: *", "Disallow: /o/", "Disallow: /my", "Allow: /"]
+    lines = ["User-agent: *", "Disallow: /o/", "Disallow: /my",
+             "Disallow: /auth/", "Allow: /"]
     if settings.site_url:
         lines.append(f"Sitemap: {settings.site_url.rstrip('/')}/sitemap.xml")
     return web.Response(text="\n".join(lines) + "\n", content_type="text/plain")
@@ -1865,7 +2639,8 @@ async def sitemap_xml(request: web.Request):
     base = settings.site_url.rstrip("/")
     if not base:
         raise web.HTTPNotFound(text="set P2P_SITE_URL to enable the sitemap")
-    urls = "".join(f"<url><loc>{base}{p}</loc></url>" for p in _SITE_PATHS)
+    paths = _SITE_PATHS + [f"/learn/{a['slug']}" for a in _articles()]
+    urls = "".join(f"<url><loc>{base}{p}</loc></url>" for p in paths)
     xml = ('<?xml version="1.0" encoding="UTF-8"?>'
            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
            f"{urls}</urlset>")
@@ -1887,6 +2662,15 @@ async def start_site(bot):
         web.get("/sell", sell_get),
         web.post("/sell", sell_post),
         web.get("/my", my_orders),
+        web.get("/signup", signup_get),
+        web.post("/signup", signup_post),
+        web.post("/signin", signin_post),
+        web.post("/auth/google", auth_google),
+        web.get("/signup/stock", stock_get),
+        web.post("/signup/stock", stock_post),
+        web.post("/logout", logout),
+        web.get("/learn", learn_index),
+        web.get("/learn/{slug}", learn_page),
         web.get("/legal/{slug}", legal_page),
         web.get("/support", support_get),
         web.get("/guarantee", guarantee_page),

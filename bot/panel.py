@@ -54,7 +54,7 @@ from .db import (
     set_setting,
 )
 from .helpers import is_bep20, is_trc20
-from .models import Ticket, Order, OrderStatus, User
+from .models import Account, Ticket, Order, OrderStatus, User
 from .qr import qr_png
 from sqlalchemy import and_, func, or_, select
 
@@ -385,6 +385,7 @@ def _nav(active: str) -> str:
             "<nav>" + link("/", "Orders", "orders")
             + link("/pay", "Manual pay", "pay")
             + link("/tickets", "Tickets", "tickets")
+            + link("/signups", "Signups", "signups")
             + link("/broadcast", "Broadcast", "broadcast")
             + link("/settings", "Settings", "settings")
             + "</nav><span class=sp></span>"
@@ -1214,6 +1215,57 @@ async def ticket_act(request: web.Request):
             await s.commit()
     raise web.HTTPFound("/tickets")
 
+
+@_authed
+async def signups_get(request: web.Request):
+    """Website accounts — every successful signup with its contact details,
+    declared daily stock, and what the account has actually traded."""
+    acct_base = 1 << 48        # mirrors website._acct_uid
+    async with Session() as s:
+        accounts = (await s.scalars(
+            select(Account).order_by(Account.id.desc()).limit(300))).all()
+        uids = [-(acct_base + a.id) for a in accounts]
+        stats = {}
+        if uids:
+            rows = (await s.execute(
+                select(Order.user_id, func.count(Order.id),
+                       func.sum(Order.usd_amount))
+                .where(Order.user_id.in_(uids),
+                       Order.status == OrderStatus.COMPLETED.value)
+                .group_by(Order.user_id))).all()
+            stats = {r[0]: (r[1], r[2] or 0.0) for r in rows}
+    total = len(accounts)
+    google_n = sum(1 for a in accounts if a.google_sub)
+    cards = []
+    for a in accounts:
+        n, vol = stats.get(-(acct_base + a.id), (0, 0.0))
+        prov = ("<span class='badge ok'>Google</span>" if a.google_sub
+                else "<span class=badge>email</span>")
+        stock = (f"<span class='badge warn'>{_esc(a.stock)} USDT/day</span>"
+                 if a.stock else "<span class=badge>stock not picked</span>")
+        phone = (f"<div><span class=muted>Phone:</span> <b>{_esc(a.phone)}</b></div>"
+                 if a.phone else "")
+        traded = (f"<div><span class=muted>Traded:</span> {n} completed "
+                  f"orders · {vol:,.2f} USDT</div>" if n else
+                  "<div><span class=muted>Traded:</span> nothing yet</div>")
+        cards.append(f"""
+<div class=card>
+<b>#{a.id}</b> <b>{_esc(a.email)}</b> {prov} {stock}
+<span class='muted small'> · joined {a.created_at:%d %b %Y %H:%M} UTC</span>
+<div style='margin:8px 0'>
+<div><span class=muted>Name:</span> <b>{_esc(a.name or "—")}</b></div>
+{phone}{traded}
+<div><span class=muted>Last login:</span> {a.last_login:%d %b %Y %H:%M} UTC</div>
+</div></div>""")
+    body = (_nav("signups") + "<h1>👤 Signups</h1>"
+            f"<p class=muted>{total} accounts · {google_n} via Google · "
+            f"{total - google_n} via email</p>"
+            + ("".join(cards) or "<div class=card><span class=muted>No "
+               "signups yet — they appear the moment someone registers on "
+               "the website.</span></div>"))
+    return _page("Signups", body)
+
+
 async def start_panel(bot):
     """Start the web panel if a password is configured; returns the AppRunner
     (or None when disabled) so main() can clean it up."""
@@ -1231,6 +1283,7 @@ async def start_panel(bot):
         web.get("/pay", pay_get),
         web.get("/tickets", tickets_get),
         web.post("/tickets/{id:\\d+}/{act}", ticket_act),
+        web.get("/signups", signups_get),
         web.post("/pay", pay_post),
         web.get("/broadcast", broadcast_get),
         web.post("/broadcast", broadcast_post),

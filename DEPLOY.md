@@ -267,3 +267,37 @@ Fully compatible. Different process, different database, its own systemd
 service, and no inbound port for the bot itself — so it doesn't touch the other
 app's files, ports, or nginx. If you also run the panel, just give it its own
 nginx server block (a different `server_name` or port) from the other app.
+
+## 8. Website accounts (signup gate) + Google sign-in
+
+Selling on the website now requires a free account (Google or email+password).
+Everything works with zero config; the Google button additionally needs:
+
+```
+# .env
+P2P_GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+```
+
+In Google Cloud Console → APIs & Services → Credentials → your OAuth web
+client → **Authorized JavaScript origins**, add your site's https origin
+(e.g. `https://indiaxchange.net`). Without that, Google refuses to render the
+button on your domain. Leave `P2P_GOOGLE_CLIENT_ID` blank to run
+email+password signup only.
+
+Every successful signup appears in the admin panel under **Signups** (email,
+name, phone for manual signups, declared daily USDT stock, per-account traded
+volume) and pings the admins on Telegram.
+
+## 9. SEO articles that publish without a restart
+
+Pages under `/learn` are rendered from `content/articles/*.md` **at request
+time** — publishing a new article is just a `git pull`, no restart. To make
+articles go live automatically as they land on `main`:
+
+```bash
+# hourly content pull (ff-only can never rewrite local state)
+(crontab -l 2>/dev/null; echo '17 * * * * cd /opt/p2p-bot && git pull --ff-only -q') | crontab -
+```
+
+Code changes still need `systemctl restart p2p-bot` — the running process
+keeps its loaded Python until restarted; only article content is read fresh.
