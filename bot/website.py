@@ -19,15 +19,16 @@ Bind 127.0.0.1 and put nginx + TLS in front (this is a public site).
 import hashlib
 import hmac
 import html
+import json
 import logging
 import secrets
 import time
 from collections import deque
-from datetime import timezone
+from datetime import timedelta, timezone
 from functools import lru_cache
 
 from aiohttp import web
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import texts
 from .config import SERVICES, settings
@@ -248,37 +249,47 @@ def _gen_qr(address: str) -> bytes | None:
 _STYLE = """
 *{box-sizing:border-box}
 :root{
- --bg:#f2f4f8;--surface:#ffffff;--surface-2:#f7f9fc;--border:#e3e7ee;
- --text:#131722;--muted:#5b6577;--faint:#8b95a6;
- --accent:#1a7f4e;--accent-ink:#ffffff;--accent-soft:#e4f3eb;
+ --bg:#f4f7fb;--surface:#ffffff;--surface-2:#f6f9fd;--border:#e2e8f1;
+ --text:#0f1728;--muted:#526077;--faint:#8794a8;
+ --accent:#0e7a4a;--accent-ink:#ffffff;--accent-soft:#e2f4ea;
  --gold:#b45309;--danger:#b42318;--danger-soft:#fce9e6;
  --ok:#15803d;--ok-soft:#e6f5ec;--warn:#b45309;--warn-soft:#fbefdd;
  --info:#1d4ed8;--info-soft:#e7eefe;
  --shadow:0 1px 2px rgba(16,24,40,.05),0 6px 18px rgba(16,24,40,.07);
- --radius:16px;color-scheme:light dark}
-@media (prefers-color-scheme:dark){:root{
- --bg:#0b0e12;--surface:#151a21;--surface-2:#1b212a;--border:#28303b;
- --text:#e8ebf2;--muted:#98a1b2;--faint:#697487;
- --accent:#37c07c;--accent-ink:#07130c;--accent-soft:#12291c;
- --gold:#f5b544;--danger:#f6837a;--danger-soft:#2a1716;
- --ok:#57d98a;--ok-soft:#132419;--warn:#f5b544;--warn-soft:#2a2212;
- --info:#66a6ff;--info-soft:#122036;
- --shadow:0 1px 2px rgba(0,0,0,.5)}}
+ --radius:16px;color-scheme:light}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--text);line-height:1.55;
+body{margin:0;color:var(--text);line-height:1.55;
+ background:linear-gradient(180deg,#e8f4ee 0%,var(--bg) 240px);
  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
  font-feature-settings:"tnum" 1;-webkit-font-smoothing:antialiased}
 .wrap{max-width:680px;margin:0 auto;padding:0 16px 56px}
 a{color:var(--accent);text-decoration:none}
 h1{font-size:1.65rem;font-weight:800;letter-spacing:-.02em;margin:20px 0 8px;text-wrap:balance}
 h2{font-size:1.08rem;font-weight:700;margin:26px 0 10px}
-.topbar{display:flex;align-items:center;gap:10px;padding:14px 0}
+.topbar{display:flex;align-items:center;gap:4px;padding:14px 0;flex-wrap:wrap}
 .topbar .brand{font-weight:800;font-size:1.05rem;letter-spacing:-.01em;color:var(--text);
- display:flex;align-items:center;gap:8px}
+ display:flex;align-items:center;gap:8px;margin-right:4px}
 .topbar .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);
  box-shadow:0 0 0 4px var(--accent-soft)}
 .topbar .sp{flex:1}
-.topbar a.nav{color:var(--muted);font-weight:600;font-size:.92rem;padding:6px 10px}
+.topbar a.nav{color:var(--muted);font-weight:600;font-size:.86rem;padding:7px 9px;
+ border-radius:9px}
+.topbar a.nav:hover{background:var(--surface);color:var(--text)}
+.topbar a.nav.hot{background:var(--accent);color:var(--accent-ink)}
+.stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:14px 0}
+.stats .stat{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+ padding:12px 8px;text-align:center;box-shadow:var(--shadow)}
+.stats .v{font-size:1.15rem;font-weight:800;letter-spacing:-.01em}
+.stats .k{font-size:.72rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+ color:var(--faint)}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;
+ border-bottom:1px solid var(--border);font-size:.92rem}
+.kv:last-child{border-bottom:0}
+.kv .k{color:var(--muted);flex-shrink:0}
+.kv .v{text-align:right;font-weight:600;overflow-wrap:anywhere}
+.hint{font-size:.85rem;color:var(--muted);margin:6px 0 0;font-weight:600}
+.hint.bad{color:var(--danger)}
+.hint .inr{color:var(--accent);font-weight:800}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
  padding:18px;margin:14px 0;box-shadow:var(--shadow);overflow-wrap:anywhere}
 .muted{color:var(--muted)} .small{font-size:.88rem} .faint{color:var(--faint)}
@@ -345,10 +356,16 @@ def _page(title: str, body: str, desc: str = "") -> web.Response:
 <title>{_esc(title)}</title><style>{_STYLE}</style></head><body>
 <div class=wrap>
 <div class=topbar><a href="/" class=brand><span class=dot></span>P2P Desk</a>
-<span class=sp></span><a class=nav href="/my">My orders</a>
-<a class=nav href="/sell">Sell USDT</a></div>
+<span class=sp></span>
+<a class=nav href="/">Home</a>
+<a class=nav href="/#rates">Rates</a>
+<a class=nav href="/my">My orders</a>
+<a class=nav href="/#support">Support</a>
+<a class="nav hot" href="/sell">Sell USDT</a></div>
 {body}
-<p class=footer>Deposits verified on-chain · every payout handled by our admins</p>
+<p class=footer>Deposits verified on-chain · every payout handled by our admins<br>
+<a href="/">Home</a> · <a href="/sell">Sell USDT</a> · <a href="/my">My orders</a>
+ · <a href="/#faq">FAQ</a> · <a href="/#support">Support</a></p>
 </div></body></html>"""
     return web.Response(text=doc, content_type="text/html", headers={
         "X-Content-Type-Options": "nosniff",
@@ -371,14 +388,32 @@ async def home(request: web.Request):
         rates = await get_rates(s)
         is_open, _ = await desk_state(s)
         support = await get_support(s)
+        two_chains = await bep20_active(s)
+        limits = {k: await get_service_limits(s, k) for k in rates}
+        done_n = await s.scalar(
+            select(func.count()).select_from(Order)
+            .where(Order.status == OrderStatus.COMPLETED.value)) or 0
+        paid_inr = await s.scalar(
+            select(func.sum(Order.inr_amount))
+            .where(Order.status == OrderStatus.COMPLETED.value)) or 0.0
     rows = "".join(
-        f"<tr><td>{_esc(SERVICES.get(k, k))}</td>"
+        f"<tr><td><b>{_esc(SERVICES.get(k, k))}</b><br>"
+        f"<span class='muted small'>{limits[k][0]:g}$ – {limits[k][1]:g}$ per order</span></td>"
         f"<td class=r>₹{v:g}<span class='muted small'> /$</span></td></tr>"
         for k, v in rates.items())
     open_badge = ("<span class='badge ok'>● Desk open now</span>" if is_open
                   else "<span class='badge danger'>● Desk closed — check back soon</span>")
     cta = ("<a class=btn href='/sell'>💵 Sell USDT now</a>" if is_open
            else "<button class=btn disabled style='opacity:.6'>Desk closed</button>")
+    stats = ""
+    if done_n >= 5:
+        stats = f"""
+<div class=stats>
+<div class=stat><div class=v>{done_n:,}</div><div class=k>orders paid</div></div>
+<div class=stat><div class=v>₹{paid_inr:,.0f}</div><div class=k>paid out</div></div>
+<div class=stat><div class=v>~{_esc(settings.eta_text)}</div><div class=k>payout time</div></div>
+</div>"""
+    nets = "TRC20 (TRON) and BEP20 (BSC)" if two_chains else "TRC20 (TRON)"
     body = f"""
 <h1>Sell USDT. Get INR in your bank.</h1>
 <p class=muted>Send USDT, we verify it <b>on-chain automatically</b>, and our admins
@@ -388,25 +423,48 @@ now on the web.</p>
 <span class=badge>🛡 100% clean funds</span>
 <span class=badge>⚡ Auto-verified deposits</span>
 <span class=badge>📸 Proof on every deal</span></div>
-<div class=card><h2 style="margin-top:0">📈 Live rates</h2>
-<table class=rates>{rows or "<tr><td class=muted>No rates live right now.</td></tr>"}</table></div>
+{stats}
+<div class=card id=rates><h2 style="margin-top:0">📈 Live rates</h2>
+<table class=rates>{rows or "<tr><td class=muted>No rates live right now.</td></tr>"}</table>
+<p class='muted small' style="margin:10px 0 0">Rates are live — the rate you see when you
+order is the rate you're paid at. Networks accepted: <b>{nets}</b>.</p></div>
 {cta}
 <h2>How it works</h2>
 <div class=card>
 <div class=step><div class=n>1</div><div><b>Choose method &amp; amount</b><br>
-<span class='muted small'>Pick your payout method and how much USDT you're selling.</span></div></div>
+<span class='muted small'>Pick your payout method, enter the USDT amount (each method
+shows its min/max), and your bank details for the INR payout.</span></div></div>
 <div class=step><div class=n>2</div><div><b>Send the exact USDT amount</b><br>
 <span class='muted small'>We show a deposit address + QR. Send the exact amount — our
-scanner verifies it on-chain in seconds.</span></div></div>
+scanner verifies it on-chain in seconds, no screenshots needed.</span></div></div>
 <div class=step><div class=n>3</div><div><b>Get paid in INR</b><br>
 <span class='muted small'>Verified deposits enter the payout queue and our admins pay
-your bank directly. Proof shared on every deal.</span></div></div></div>
+your bank directly — typically {_esc(settings.eta_text)}. Proof shared on every deal.</span></div></div></div>
 <div class=card><h2 style="margin-top:0">🛡 100% Clean Funds — our guarantee</h2>
 <p class='muted small' style="margin:0">Every rupee we pay out comes from verified,
 legitimate sources — mutual &amp; stock-market funds, cash deposits, credit-card and
 payment-gateway funds. Your account is never at risk of a freeze or hold.</p></div>
-<div class=card><b>🆘 Support</b><br><span class=small>{_support_html(support)}
-<span class=muted>— mention your order ID (#ORD…)</span></span></div>"""
+<h2 id=faq>Frequently asked</h2>
+<div class=card>
+<details><summary>How fast do I get paid?</summary><p class='muted small'>Your deposit is
+verified on-chain within seconds of confirming. Payout to your bank is typically
+{_esc(settings.eta_text)} after verification, handled by our admins in queue order.</p></details>
+<details><summary>Which networks can I send USDT on?</summary><p class='muted small'>
+{nets}. Pick the network on the sell form — the address and QR we show match your
+choice. Send only USDT, only on the network you picked.</p></details>
+<details><summary>Why must the amount be exact?</summary><p class='muted small'>Each order
+gets a unique amount (unique paise). That's how our scanner matches YOUR deposit to YOUR
+order automatically — a different amount may not auto-detect and needs support.</p></details>
+<details><summary>I paid but the page expired — is my money lost?</summary>
+<p class='muted small'>No. Open the order from <a href="/my">My orders</a> and submit your
+transaction hash (TXID) — we verify it on-chain and pay out if it checks out.</p></details>
+<details><summary>Do I need an account?</summary><p class='muted small'>No signup. Your
+orders are tied to this browser automatically — find them any time under
+<a href="/my">My orders</a>.</p></details>
+</div>
+<div class=card id=support><b>🆘 Support</b><br><span class=small>{_support_html(support)}
+<span class=muted>— mention your order ID (#ORD…)</span></span></div>
+{cta if rows else ""}"""
     return _page("Sell USDT for INR — P2P Desk", body,
                  "Sell USDT for INR at live rates. On-chain verified deposits, "
                  "instant bank payout via UPI/IMPS/CDM. 100% clean funds.")
@@ -435,9 +493,12 @@ async def _sell_form(request: web.Request, error: str = "",
                 limits[k] = await get_service_limits(s, k)
         opts = "".join(
             f"<option value='{_esc(k)}' {'selected' if p.get('service') == k else ''}>"
-            f"{_esc(SERVICES.get(k, k))} — ₹{v:g}/$"
-            f" (min {limits[k][0]:g}$, max {limits[k][1]:g}$)</option>"
+            f"{_esc(SERVICES.get(k, k))} — ₹{v:g}/$</option>"
             for k, v in rates.items())
+        # per-method limits + rates for the live hint under the amount box
+        meta_js = json.dumps({k: {"lo": limits[k][0], "hi": limits[k][1],
+                                  "rate": rates[k],
+                                  "name": SERVICES.get(k, k)} for k in rates})
         net_html = ""
         if two_chains:
             trc_sel = "checked" if p.get("network", "TRC20") == "TRC20" else ""
@@ -459,9 +520,10 @@ The quote stays live for {ttl} minutes after you submit.</p>
 <form method=post action=/sell><div class=card>
 <input type=hidden name=csrf value='{csrf}'>
 {net_html}
-<label>Payout method</label><select name=service>{opts}</select>
+<label>Payout method</label><select name=service id=svc>{opts}</select>
 <label>Amount to sell (USD $)</label>
-<input name=usd inputmode=decimal placeholder="e.g. 100" value="{_esc(p.get('usd', ''))}" required>
+<input name=usd id=usd inputmode=decimal placeholder="e.g. 100" value="{_esc(p.get('usd', ''))}" required>
+<p class=hint id=amthint></p>
 <h2>Bank for your INR payout</h2>
 <label>Account holder name</label>
 <input name=holder value="{_esc(p.get('holder', ''))}" required>
@@ -471,9 +533,32 @@ The quote stays live for {ttl} minutes after you submit.</p>
 <input name=account inputmode=numeric value="{_esc(p.get('account', ''))}" required>
 <label>IFSC</label>
 <input name=ifsc value="{_esc(p.get('ifsc', ''))}" required>
-<div style="margin-top:18px"><button class=btn>Get my deposit address →</button></div>
+<div style="margin-top:18px"><button class=btn id=go>Get my deposit address →</button></div>
 </div></form>
 <p class='muted small'>🆘 Questions? {_support_html(support)}</p>"""
+        # the live limits/preview script is a plain string (no f-string) so the
+        # JS braces stay readable; META carries lo/hi/rate/name per method
+        body += ("<script>var META=" + meta_js + """;
+var svc=document.getElementById('svc'),usd=document.getElementById('usd'),
+    hint=document.getElementById('amthint'),go=document.getElementById('go');
+function inr(n){return '\\u20b9'+n.toLocaleString('en-IN',{maximumFractionDigits:0})}
+function upd(){
+  var m=META[svc.value];if(!m){hint.textContent='';return}
+  var raw=(usd.value||'').replace(/[,$\\s]/g,''),v=parseFloat(raw);
+  usd.min=m.lo;usd.max=m.hi;
+  var base=m.name+': min '+m.lo+'$ \\u2013 max '+m.hi+'$ \\u00b7 \\u20b9'+m.rate+'/$';
+  if(!raw||isNaN(v)){hint.className='hint';hint.textContent=base;go.disabled=false;go.style.opacity=1;return}
+  if(v<m.lo){hint.className='hint bad';
+    hint.textContent='\\u26a0 Minimum for '+m.name+' is '+m.lo+'$ \\u2014 enter '+m.lo+'$ or more.';
+    go.disabled=true;go.style.opacity=.55;return}
+  if(v>m.hi){hint.className='hint bad';
+    hint.textContent='\\u26a0 Maximum for '+m.name+' is '+m.hi+'$ \\u2014 enter '+m.hi+'$ or less.';
+    go.disabled=true;go.style.opacity=.55;return}
+  hint.className='hint';
+  hint.innerHTML=base+' \\u00b7 you\\u2019ll receive \\u2248 <span class=inr>'+inr(v*m.rate)+'</span>';
+  go.disabled=false;go.style.opacity=1}
+svc.addEventListener('change',upd);usd.addEventListener('input',upd);upd();
+</script>""")
         resp = _page("Sell USDT — P2P Desk", body)
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
@@ -707,6 +792,7 @@ back later from <a href="/my">My orders</a>. 🆘 {_support_html(support)}</p>
 <div class="banner ok"><b>₹{order.inr_amount:,.2f} sent to {_esc(bank_label)}.</b><br>
 <span class=small>Thanks for trading with us — proof is shared on every deal.</span></div>
 <a class=btn href="/sell">💵 Sell more USDT</a>
+<a class="btn ghost" href="/my">📋 All my orders</a>
 <p class='muted small'>🆘 {_support_html(support)}</p>"""
         return _page(f"Order {texts.tag(order.id)} — paid", body)
 
@@ -865,6 +951,19 @@ async def order_claim(request: web.Request):
 
 # ── my orders ─────────────────────────────────────────────────────────────────
 
+def _ist(dt) -> str:
+    if not dt:
+        return "—"
+    ist = dt.replace(tzinfo=timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist.strftime("%d %b %Y, %I:%M %p") + " IST"
+
+
+def _short_tx(txid: str | None) -> str:
+    if not txid or txid == "manual":
+        return ""
+    return f"{txid[:10]}…{txid[-6:]}"
+
+
 async def my_orders(request: web.Request):
     uid = await _uid_from_cookie(request)
     if uid is None:
@@ -874,6 +973,9 @@ async def my_orders(request: web.Request):
     async with Session() as s:
         orders = (await s.scalars(select(Order).where(Order.user_id == uid)
                                   .order_by(Order.id.desc()).limit(20))).all()
+        card_ids = [o.bank_card_id for o in orders if o.bank_card_id]
+        cards = {c.id: c for c in (await s.scalars(
+            select(BankCard).where(BankCard.id.in_(card_ids)))).all()} if card_ids else {}
     if not orders:
         return _page("My orders", "<h1>My orders</h1><div class=banner>No orders yet."
                      "</div><a class=btn href='/sell'>💵 Sell USDT</a>")
@@ -881,14 +983,56 @@ async def my_orders(request: web.Request):
            OrderStatus.DEPOSIT_RECEIVED.value: "info",
            OrderStatus.AWAITING_DEPOSIT.value: "info",
            OrderStatus.CANCELLED.value: "danger", OrderStatus.EXPIRED.value: "danger"}
-    rows = "".join(
-        f"<a class=card style='display:block;color:inherit' href='/o/{_esc(o.web_token)}'>"
-        f"<b>{texts.tag(o.id)}</b> <span class='badge {cls.get(o.status, '')}'>"
-        f"{_esc(o.status.replace('_', ' '))}</span><br>"
-        f"<span class=small>{texts.usd_str(o.usd_amount)} USDT → ₹{o.inr_amount:,.2f}"
-        f" · {_esc(SERVICES.get(o.service, o.service))}</span></a>"
-        for o in orders if o.web_token)
-    return _page("My orders", f"<h1>My orders</h1>{rows}"
+    nice = {OrderStatus.AWAITING_DEPOSIT.value: "waiting for your USDT",
+            OrderStatus.DEPOSIT_RECEIVED.value: "deposit verified",
+            OrderStatus.PENDING_PAYOUT.value: "payout in progress",
+            OrderStatus.COMPLETED.value: "paid",
+            OrderStatus.EXPIRED.value: "expired",
+            OrderStatus.CANCELLED.value: "cancelled",
+            OrderStatus.REFUND_REQUESTED.value: "refund requested",
+            OrderStatus.REFUNDED.value: "refunded"}
+    blocks = []
+    for o in orders:
+        if not o.web_token:
+            continue
+        card = cards.get(o.bank_card_id)
+        net_label = "BEP20 (BSC)" if o.network == "BEP20" else "TRC20 (TRON)"
+        addr = o.display_address or o.deposit_address or ""
+        kv = [
+            ("Date", _ist(o.created_at)),
+            ("You sent", f"{texts.usd_str(o.usd_amount)} USDT · {_esc(net_label)}"),
+            ("Rate", f"₹{o.rate_inr:g}/$"),
+            ("You receive", f"₹{o.inr_amount:,.2f} via "
+                            f"{_esc(SERVICES.get(o.service, o.service))}"),
+        ]
+        if addr:
+            kv.append(("Deposit address", f"<code>{_esc(addr[:14])}…{_esc(addr[-6:])}</code>"))
+        tx = _short_tx(o.txid)
+        if tx:
+            link = (f" · <a href='{_esc(explorer_tx(o.txid))}' target=_blank "
+                    f"rel=noopener>explorer</a>")
+            kv.append(("Deposit TX", f"<code>{_esc(tx)}</code>{link}"))
+        if o.claim_txid:
+            kv.append(("Claim TX", f"<code>{_esc(_short_tx(o.claim_txid))}</code> "
+                                   "<span class='muted small'>(under review)</span>"))
+        rows = "".join(f"<div class=kv><span class=k>{k}</span>"
+                       f"<span class=v>{v}</span></div>" for k, v in kv)
+        bank = ""
+        if card:
+            det = "".join(
+                f"<div class=kv><span class=v style='text-align:left;font-weight:500'>"
+                f"{_esc(line.strip())}</span></div>"
+                for line in card.details.splitlines() if line.strip())
+            bank = (f"<details><summary>🏦 Payout bank — {_esc(card.label)}</summary>"
+                    f"<div style='margin-top:8px'>{det}</div></details>")
+        blocks.append(
+            f"<div class=card><b>{texts.tag(o.id)}</b> "
+            f"<span class='badge {cls.get(o.status, '')}'>"
+            f"{_esc(nice.get(o.status, o.status.replace('_', ' ')))}</span>"
+            f"<div style='margin-top:10px'>{rows}</div>{bank}"
+            f"<a class='btn ghost' style='margin-top:12px' "
+            f"href='/o/{_esc(o.web_token)}'>Open live order page →</a></div>")
+    return _page("My orders", f"<h1>My orders</h1>{''.join(blocks)}"
                  "<a class=btn href='/sell'>💵 New order</a>")
 
 
