@@ -28,6 +28,7 @@ from ..db import (
     get_rates,
     get_setting,
     get_support,
+    get_whatsapp,
     set_setting,
 )
 from ..helpers import (
@@ -64,6 +65,7 @@ async def admin_help(message: Message) -> None:
         "/setbep20 0x… — set the BEP20 (BSC) address (or 'off'); /setbsckey KEY — "
         "BscScan/Etherscan key to detect BEP20\n"
         "/setsupport @help1 @help2 — set the support contact(s) users see\n"
+        "/setwhatsapp +91… — WhatsApp button on the website (off = hide)\n"
         "/setchannel @channel — proof channel for completed orders (off = disable)\n"
         "/testproof — post a sample card to the proof channel\n"
         "/panel (or /orders) — tabbed live order panel\n"
@@ -271,6 +273,32 @@ async def cmd_setsupport(message: Message, command: CommandObject) -> None:
             return
         await set_setting(session, "support", " ".join(handles))
     await message.answer(f"✅ Support contact(s) now shown to users: {esc(' '.join(handles))}")
+
+
+@router.message(Command("setwhatsapp"))
+async def cmd_setwhatsapp(message: Message, command: CommandObject) -> None:
+    """WhatsApp number for the website's floating support button."""
+    import re as _re
+    arg = (command.args or "").strip()
+    async with Session() as session:
+        if not arg:
+            current = await get_whatsapp(session)
+            await message.answer("Usage: <code>/setwhatsapp +919876543210</code> "
+                                 "(or <code>off</code> to hide the button)\n"
+                                 f"Current: {esc(current) or '— (hidden)'}")
+            return
+        if arg.lower() == "off":
+            await set_setting(session, "support_whatsapp", "")
+            await message.answer("✅ WhatsApp button hidden on the website.")
+            return
+        digits = _re.sub(r"\D", "", arg)
+        if not (8 <= len(digits) <= 15):
+            await message.answer("That doesn't look like a full number — include the "
+                                 "country code, e.g. <code>/setwhatsapp +919876543210</code>")
+            return
+        await set_setting(session, "support_whatsapp", digits)
+    await message.answer(f"✅ WhatsApp support button now live on the website "
+                         f"(wa.me/{esc(digits)}).")
 
 
 @router.message(Command("setchannel"))

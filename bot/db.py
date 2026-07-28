@@ -241,6 +241,15 @@ async def get_support(session: AsyncSession) -> str:
     return (await get_setting(session, "support")) or settings.support_handle
 
 
+async def get_whatsapp(session: AsyncSession) -> str:
+    """WhatsApp support number — chat-managed via /setwhatsapp, env fallback.
+    A saved row (even blank, via /setwhatsapp off) is authoritative."""
+    row = await session.get(Setting, "support_whatsapp")
+    if row is not None:
+        return (row.value or "").strip()
+    return settings.support_whatsapp.strip()
+
+
 async def get_lang(session: AsyncSession, user_id: int) -> str:
     user = await session.get(User, user_id)
     return user.lang if user and user.lang else "en"

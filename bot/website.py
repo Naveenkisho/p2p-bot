@@ -44,6 +44,7 @@ from .db import (
     get_service_limits,
     get_setting,
     get_support,
+    get_whatsapp,
     set_setting,
 )
 from .helpers import (
@@ -378,6 +379,21 @@ details{margin:12px 0}
 details summary{cursor:pointer;color:var(--text);font-weight:700;padding:4px 0}
 details summary::marker{color:var(--accent-dark)}
 .footer{margin-top:38px;color:var(--faint);font-size:.82rem;text-align:center}
+.fabs{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;
+ gap:10px;z-index:60;align-items:flex-end}
+.fab{display:inline-flex;align-items:center;gap:8px;border-radius:999px;
+ padding:12px 18px;font-weight:800;font-size:.92rem;color:#fff;
+ box-shadow:0 10px 26px rgba(14,19,48,.28)}
+.fab:hover{filter:brightness(1.06);color:#fff}
+.fab.wa{background:#25d366}
+.fab.tg{background:#229ed9}
+.cardpick{display:flex;flex-direction:column;gap:8px}
+.cardpick label{margin:0;border:1.5px solid var(--border);border-radius:16px;
+ padding:13px 15px;font-weight:800;color:var(--text);cursor:pointer;background:var(--surface);
+ font-size:.98rem}
+.cardpick input{display:none}
+.cardpick label:has(input:checked){border-color:var(--accent);background:var(--accent-soft);
+ box-shadow:0 0 0 3px var(--accent-soft)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 """
 
@@ -407,6 +423,22 @@ def _page(title: str, body: str, desc: str = "") -> web.Response:
     })
 
 
+def _fabs_html(support: str, whatsapp: str) -> str:
+    """Floating Telegram / WhatsApp support buttons, bottom-right on every page.
+    Rendered only for the channels that are actually configured."""
+    fabs = ""
+    if whatsapp:
+        digits = "".join(ch for ch in whatsapp if ch.isdigit())
+        if digits:
+            fabs += (f"<a class='fab wa' href='https://wa.me/{digits}' "
+                     "target=_blank rel=noopener>\U0001f4ac WhatsApp</a>")
+    first = next((h for h in (support or "").split() if h.startswith("@")), "")
+    if first:
+        fabs += (f"<a class='fab tg' href='https://t.me/{_esc(first.lstrip('@'))}' "
+                 "target=_blank rel=noopener>\u2708\ufe0f Telegram</a>")
+    return f"<div class=fabs>{fabs}</div>" if fabs else ""
+
+
 def _support_html(support: str) -> str:
     links = " · ".join(
         f"<a href='https://t.me/{_esc(h.lstrip('@'))}' target=_blank rel=noopener>{_esc(h)}</a>"
@@ -421,6 +453,7 @@ async def home(request: web.Request):
         rates = await get_rates(s)
         is_open, _ = await desk_state(s)
         support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
         two_chains = await bep20_active(s)
         limits = {k: await get_service_limits(s, k) for k in rates}
         done_n = await s.scalar(
@@ -497,7 +530,8 @@ orders are tied to this browser automatically — find them any time under
 </div>
 <div class=card id=support><b>🆘 Support</b><br><span class=small>{_support_html(support)}
 <span class=muted>— mention your order ID (#ORD…)</span></span></div>
-{cta if rows else ""}"""
+{cta if rows else ""}
+{_fabs_html(support, whatsapp)}"""
     return _page("Sell USDT for INR — P2P Desk", body,
                  "Sell USDT for INR at live rates. On-chain verified deposits, "
                  "instant bank payout via UPI/IMPS/CDM. 100% clean funds.")
@@ -513,12 +547,28 @@ async def _sell_form(request: web.Request, error: str = "",
         is_open, reason = await desk_state(s)
         two_chains = await bep20_active(s)
         support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
     uid, is_new = await _ensure_uid(request)
+    saved_cards = []
+    if not is_new:
+        async with Session() as s:
+            rows_ = (await s.scalars(
+                select(BankCard).where(BankCard.user_id == uid)
+                .order_by(BankCard.id.desc()).limit(12))).all()
+        seen = set()
+        for c in rows_:                      # newest first, dedupe by content
+            key = c.details.strip()
+            if key not in seen:
+                seen.add(key)
+                saved_cards.append(c)
+            if len(saved_cards) >= 4:
+                break
     csrf = await _csrf(f"sell:{uid}")
     if not is_open:
         resp = _page("Desk closed", f"<h1>Desk closed</h1><div class='banner danger'>"
                      f"The desk isn't taking orders right now ({_esc(reason)}). "
-                     f"Check back soon or message support: {_support_html(support)}</div>")
+                     f"Check back soon or message support: {_support_html(support)}</div>"
+                     + _fabs_html(support, whatsapp))
     else:
         limits = {}
         async with Session() as s:
@@ -545,6 +595,24 @@ async def _sell_form(request: web.Request, error: str = "",
         async with Session() as s:
             ttl = await get_deposit_ttl(s)
         err = f"<p class=err>{_esc(error)}</p>" if error else ""
+        picked = p.get("card_id", "")
+        if saved_cards:
+            if picked not in ("new",) and picked not in {str(c.id) for c in saved_cards}:
+                # preselect the newest saved bank so a repeat seller taps nothing
+                picked = str(saved_cards[0].id)
+            copts = "".join(
+                f"<label><input type=radio name=card_id value={c.id} "
+                f"{'checked' if str(c.id) == picked else ''}>"
+                f"🏦 {_esc(c.label)}</label>"
+                for c in saved_cards)
+            copts += (f"<label><input type=radio name=card_id value=new "
+                      f"{'checked' if picked == 'new' else ''}>"
+                      "➕ Add a new bank</label>")
+            card_pick = f"<div class=cardpick id=cardpick>{copts}</div>"
+            nb_style = " style=display:none" if picked != "new" else ""
+        else:
+            card_pick = ""
+            nb_style = ""
         body = f"""
 <h1>Sell USDT</h1>
 <p class='muted small'>Fill this once — your deposit address and exact amount come next.
@@ -565,14 +633,17 @@ The quote stays live for {ttl} minutes after you submit.</p>
 <span class=chip><span class="ic inr">₹</span>INR</span></div>
 <p class=hint id=amthint></p>
 <h2>Bank for your INR payout</h2>
+{card_pick}
+<div id=newbank{nb_style}>
 <label>Account holder name</label>
-<input name=holder value="{_esc(p.get('holder', ''))}" required>
+<input name=holder value="{_esc(p.get('holder', ''))}">
 <label>Bank name</label>
-<input name=bank value="{_esc(p.get('bank', ''))}" required>
+<input name=bank value="{_esc(p.get('bank', ''))}">
 <label>Account number</label>
-<input name=account inputmode=numeric value="{_esc(p.get('account', ''))}" required>
+<input name=account inputmode=numeric value="{_esc(p.get('account', ''))}">
 <label>IFSC</label>
-<input name=ifsc value="{_esc(p.get('ifsc', ''))}" required>
+<input name=ifsc value="{_esc(p.get('ifsc', ''))}">
+</div>
 <div style="margin-top:18px"><button class=btn id=go>Get my deposit address →</button></div>
 </div></form>
 <p class='muted small'>🆘 Questions? {_support_html(support)}</p>"""
@@ -600,7 +671,17 @@ function upd(){
   recv.textContent=inr(v*m.rate);
   go.disabled=false;go.style.opacity=1}
 svc.addEventListener('change',upd);usd.addEventListener('input',upd);upd();
+var pick=document.getElementById('cardpick'),nb=document.getElementById('newbank');
+function bankReq(on){['holder','bank','account','ifsc'].forEach(function(n){
+  var el=document.getElementsByName(n)[0];if(el)el.required=on});}
+function updBank(){
+  if(!pick){bankReq(true);return}
+  var sel=pick.querySelector('input:checked');
+  var isNew=!sel||sel.value==='new';
+  nb.style.display=isNew?'':'none';bankReq(isNew);}
+if(pick)pick.addEventListener('change',updBank);updBank();
 </script>""")
+        body += _fabs_html(support, whatsapp)
         resp = _page("Sell USDT — P2P Desk", body)
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
@@ -619,7 +700,8 @@ async def sell_post(request: web.Request):
     if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"sell:{uid}")):
         return await _sell_form(request, "That form expired — please try again.")
     prefill = {k: str(data.get(k, "")).strip()
-               for k in ("service", "usd", "holder", "bank", "account", "ifsc", "network")}
+               for k in ("service", "usd", "holder", "bank", "account", "ifsc",
+                         "network", "card_id")}
     ip = _client_ip(request)
     if _throttled(ip):
         return await _sell_form(request, "Too many orders from this connection — "
@@ -633,18 +715,23 @@ async def sell_post(request: web.Request):
         usd = round(float(prefill["usd"].replace(",", "").lstrip("$")), 2)
     except ValueError:
         return await _sell_form(request, "Amount must be a number.", prefill)
-    # bank name first — make_bank_label derives "<Bank> ••1234" from line 0
-    details = (f"{prefill['bank']}\nA/c holder: {prefill['holder']}\n"
-               f"A/C {prefill['account']}\nIFSC {prefill['ifsc']}")
-    if not (prefill["holder"] and prefill["bank"] and prefill["ifsc"]
-            and prefill["account"].isdigit() and len(prefill["account"]) >= 6):
-        return await _sell_form(request, "Please check the bank details — the account "
-                                "number should be digits only (6+).", prefill)
-    bank_err = bank_details_error(details)
-    if bank_err:
-        return await _sell_form(request, bank_err, prefill)
-    if len(prefill["holder"]) > 80 or len(prefill["bank"]) > 60 or len(prefill["ifsc"]) > 20:
-        return await _sell_form(request, "Those bank details look too long.", prefill)
+    # a digit card_id means "use my saved bank" — its ownership is verified in
+    # the session below; anything else is a new-bank submission and validates here
+    reuse_card_id = int(prefill["card_id"]) if prefill["card_id"].isdigit() else None
+    details = ""
+    if reuse_card_id is None:
+        # bank name first — make_bank_label derives "<Bank> ••1234" from line 0
+        details = (f"{prefill['bank']}\nA/c holder: {prefill['holder']}\n"
+                   f"A/C {prefill['account']}\nIFSC {prefill['ifsc']}")
+        if not (prefill["holder"] and prefill["bank"] and prefill["ifsc"]
+                and prefill["account"].isdigit() and len(prefill["account"]) >= 6):
+            return await _sell_form(request, "Please check the bank details — the account "
+                                    "number should be digits only (6+).", prefill)
+        bank_err = bank_details_error(details)
+        if bank_err:
+            return await _sell_form(request, bank_err, prefill)
+        if len(prefill["holder"]) > 80 or len(prefill["bank"]) > 60 or len(prefill["ifsc"]) > 20:
+            return await _sell_form(request, "Those bank details look too long.", prefill)
 
     async with Session() as s:
         is_open, reason = await desk_state(s)
@@ -687,9 +774,22 @@ async def sell_post(request: web.Request):
             await try_transition(s, prev.id, (OrderStatus.AWAITING_DEPOSIT,),
                                  OrderStatus.EXPIRED)
 
-        card = BankCard(user_id=uid, label=make_bank_label(details), details=details)
-        s.add(card)
-        await s.flush()
+        if reuse_card_id is not None:
+            card = await s.get(BankCard, reuse_card_id)
+            if card is None or card.user_id != uid:
+                # not theirs (or gone) — never pay out to a guessed card id
+                return await _sell_form(request, "Please pick your bank again.",
+                                        {**prefill, "card_id": ""})
+        else:
+            card = await s.scalar(select(BankCard)
+                                  .where(BankCard.user_id == uid,
+                                         BankCard.details == details)
+                                  .order_by(BankCard.id.desc()))
+            if card is None:
+                card = BankCard(user_id=uid, label=make_bank_label(details),
+                                details=details)
+                s.add(card)
+                await s.flush()
         order = Order(
             user_id=uid, side="sell", service=service, usd_amount=usd,
             rate_inr=rate, inr_amount=usd * rate, bank_card_id=card.id,
@@ -739,6 +839,7 @@ async def order_page(request: web.Request):
         raise web.HTTPNotFound(text="Order not found")
     async with Session() as s:
         support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
         ttl = await get_deposit_ttl(s)
         pos = (await queue_position(s, order.id)
                if order.status == OrderStatus.PENDING_PAYOUT.value else 0)
@@ -746,6 +847,7 @@ async def order_page(request: web.Request):
                 if order.bank_card_id else None)
     bank_label = (card.label if card
                   else SERVICES.get(order.service, order.service))
+    fabs = _fabs_html(support, whatsapp)
     csrf = await _csrf(f"o:{token}")
     st = order.status
     amt = texts.usd_str(order.usd_amount)
@@ -809,7 +911,7 @@ fetch('/o/{_esc(token)}/check',{{method:'POST',headers:{{'X-CSRF':'{csrf}'}}}});
 setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},6000);
 </script>"""
-        return _page(f"Order {texts.tag(order.id)} — send USDT", body)
+        return _page(f"Order {texts.tag(order.id)} — send USDT", body + fabs)
 
     if st in (OrderStatus.DEPOSIT_RECEIVED.value, OrderStatus.PENDING_PAYOUT.value):
         qtxt = (f"You're <b>#{pos}</b> in the payout queue." if pos
@@ -826,7 +928,7 @@ setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 back later from <a href="/my">My orders</a>. 🆘 {_support_html(support)}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
-        return _page(f"Order {texts.tag(order.id)} — verified", body)
+        return _page(f"Order {texts.tag(order.id)} — verified", body + fabs)
 
     if st == OrderStatus.COMPLETED.value:
         body = f"""
@@ -836,7 +938,7 @@ back later from <a href="/my">My orders</a>. 🆘 {_support_html(support)}</p>
 <a class=btn href="/sell">💵 Sell more USDT</a>
 <a class="btn ghost" href="/my">📋 All my orders</a>
 <p class='muted small'>🆘 {_support_html(support)}</p>"""
-        return _page(f"Order {texts.tag(order.id)} — paid", body)
+        return _page(f"Order {texts.tag(order.id)} — paid", body + fabs)
 
     if st in (OrderStatus.EXPIRED.value, OrderStatus.CANCELLED.value):
         head = ("⌛ This quote expired" if st == OrderStatus.EXPIRED.value
@@ -858,14 +960,14 @@ back later from <a href="/my">My orders</a>. 🆘 {_support_html(support)}</p>
 <p class='muted small'>🆘 {_support_html(support)} — mention {tagline}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
-        return _page(f"Order {texts.tag(order.id)}", body)
+        return _page(f"Order {texts.tag(order.id)}", body + fabs)
 
     # refund / rejected / anything else — simple status card
     body = f"""
 <h1>Order {tagline}</h1>
 <div class=banner>Status: <b>{_esc(st.replace('_', ' '))}</b></div>
 <p class='muted small'>🆘 {_support_html(support)} — mention {tagline}</p>"""
-    return _page(f"Order {texts.tag(order.id)}", body)
+    return _page(f"Order {texts.tag(order.id)}", body + fabs)
 
 
 
@@ -1015,6 +1117,8 @@ async def my_orders(request: web.Request):
     async with Session() as s:
         orders = (await s.scalars(select(Order).where(Order.user_id == uid)
                                   .order_by(Order.id.desc()).limit(20))).all()
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
         card_ids = [o.bank_card_id for o in orders if o.bank_card_id]
         cards = {c.id: c for c in (await s.scalars(
             select(BankCard).where(BankCard.id.in_(card_ids)))).all()} if card_ids else {}
@@ -1075,7 +1179,8 @@ async def my_orders(request: web.Request):
             f"<a class='btn ghost' style='margin-top:12px' "
             f"href='/o/{_esc(o.web_token)}'>Open live order page →</a></div>")
     return _page("My orders", f"<h1>My orders</h1>{''.join(blocks)}"
-                 "<a class=btn href='/sell'>💵 New order</a>")
+                 "<a class=btn href='/sell'>💵 New order</a>"
+                 + _fabs_html(support, whatsapp))
 
 
 # ── app ───────────────────────────────────────────────────────────────────────
