@@ -267,13 +267,20 @@ body{margin:0;color:var(--text);line-height:1.55;
  background:radial-gradient(90% 340px at 50% 0,#e4faee 0%,#ffffff 78%) no-repeat,var(--bg);
  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
  font-feature-settings:"tnum" 1;-webkit-font-smoothing:antialiased}
-.wrap{max-width:680px;margin:0 auto;padding:0 16px 56px}
+.wrap{max-width:680px;margin:0 auto;
+ padding:0 16px calc(120px + env(safe-area-inset-bottom,0px))}
 a{color:var(--accent-dark);text-decoration:none;font-weight:600}
 h1{font-size:2rem;font-weight:900;letter-spacing:-.035em;line-height:1.12;
  margin:26px 0 10px;text-wrap:balance}
 h1 .g{color:var(--accent-dark)}
 h2{font-size:1.12rem;font-weight:800;letter-spacing:-.01em;margin:28px 0 10px}
-.topbar{display:flex;align-items:center;gap:2px;padding:14px 0;flex-wrap:wrap}
+.topbar{display:flex;align-items:center;gap:2px;padding:12px 0;flex-wrap:nowrap;
+ overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+ position:sticky;top:0;z-index:40;background:rgba(255,255,255,.88);
+ backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+ margin:0 -16px;padding-left:16px;padding-right:16px}
+.topbar::-webkit-scrollbar{display:none}
+.topbar a{flex-shrink:0}
 .topbar .brand{font-weight:900;font-size:1.08rem;letter-spacing:-.02em;color:var(--text);
  display:flex;align-items:center;gap:8px;margin-right:4px}
 .topbar .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);
@@ -451,8 +458,8 @@ details summary::marker{color:var(--accent-dark)}
 .bigfoot .cols{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
 .bigfoot .legal{color:#7d88a6;font-size:.78rem;line-height:1.6;margin-top:18px;
  border-top:1px solid rgba(255,255,255,.10);padding-top:16px}
-.fabs{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;
- gap:10px;z-index:60;align-items:flex-end}
+.fabs{position:fixed;right:14px;bottom:max(14px,env(safe-area-inset-bottom,14px));
+ display:flex;flex-direction:column;gap:10px;z-index:60;align-items:flex-end}
 .fab{display:inline-flex;align-items:center;gap:8px;border-radius:999px;
  padding:12px 18px;font-weight:800;font-size:.92rem;color:#fff;
  box-shadow:0 10px 26px rgba(14,19,48,.28)}
@@ -466,6 +473,12 @@ details summary::marker{color:var(--accent-dark)}
 .cardpick input{display:none}
 .cardpick label:has(input:checked){border-color:var(--accent);background:var(--accent-soft);
  box-shadow:0 0 0 3px var(--accent-soft)}
+@media (max-width:380px){
+ h1{font-size:1.7rem}
+ .swapbox input,.swapbox .out{font-size:1.3rem}
+ .darkband .v{font-size:1.3rem}
+ .marq .lg{font-size:1.15rem}
+}
 @media (min-width:960px){
  .wrap.wide{max-width:1040px}
  .wide h1{font-size:2.7rem}
@@ -480,8 +493,9 @@ details summary::marker{color:var(--accent-dark)}
  .wide .cta-mid{max-width:420px;margin-left:auto;margin-right:auto}
  .bigfoot .cols{grid-template-columns:1fr 1fr 1fr}
 }
-.bigfoot{margin:44px calc(50% - 50vw) 0;border-radius:0;
- padding:34px max(22px,calc(50vw - 500px)) 26px}
+.bigfoot{margin:44px calc(50% - 50vw) calc(-120px - env(safe-area-inset-bottom,0px));
+ border-radius:0;
+ padding:34px max(22px,calc(50vw - 500px)) calc(120px + env(safe-area-inset-bottom,0px))}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 """
 
@@ -536,7 +550,7 @@ the network shown. By using this site you agree to the
 
 def _page(title: str, body: str, desc: str = "", wide: bool = False) -> web.Response:
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name=description content="{_esc(desc or 'Sell USDT for INR — instant bank payout, on-chain verified.')}">
 <title>{_esc(title)}</title><style>{_STYLE}</style></head><body>
 <div class="wrap{' wide' if wide else ''}">
