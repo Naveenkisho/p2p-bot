@@ -413,23 +413,21 @@ details{margin:12px 0}
 details summary{cursor:pointer;color:var(--text);font-weight:700;padding:4px 0}
 details summary::marker{color:var(--accent-dark)}
 .footer{margin-top:0;color:#8b95b8;font-size:.82rem;text-align:center}
-.darkband{margin:26px calc(50% - 50vw);background:var(--navy);
- padding:26px max(16px,calc(50vw - 520px));
- display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.darkband .cell{background:linear-gradient(160deg,#1b2248 0%,#141a3a 60%);
- border-radius:18px;padding:20px 6px;text-align:center;
- border:1px solid rgba(255,255,255,.08);
- box-shadow:0 14px 30px rgba(0,0,0,.30),0 2px 6px rgba(0,0,0,.2);
+.darkband{margin:24px 0;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.darkband .cell{background:#fff;border:1px solid var(--border);
+ border-radius:20px;padding:24px 12px;text-align:center;
+ box-shadow:0 12px 28px rgba(14,19,48,.10),0 2px 6px rgba(14,19,48,.05);
  animation:floaty 5s ease-in-out infinite;
  transition:transform .18s,box-shadow .18s}
 .darkband .cell:nth-child(2),.darkband .cell:nth-child(5){animation-delay:1.6s}
 .darkband .cell:nth-child(3),.darkband .cell:nth-child(4){animation-delay:3.2s}
 .darkband .cell:hover{transform:translateY(-6px);
- box-shadow:0 22px 44px rgba(0,0,0,.38),0 4px 10px rgba(0,0,0,.22)}
-.darkband .k{color:#8b95b8;font-size:.68rem;font-weight:800;letter-spacing:.07em;
- text-transform:uppercase;margin-bottom:4px}
-.darkband .v{color:#fff;font-size:1.45rem;font-weight:900;letter-spacing:-.02em;
- font-variant-numeric:tabular-nums}
+ box-shadow:0 20px 44px rgba(14,19,48,.15),0 4px 10px rgba(14,19,48,.07)}
+.darkband .k{color:var(--faint);font-size:.68rem;font-weight:800;letter-spacing:.07em;
+ text-transform:uppercase;margin-bottom:6px}
+.darkband .v{color:var(--navy);font-size:1.5rem;font-weight:900;letter-spacing:-.02em;
+ font-variant-numeric:tabular-nums;white-space:nowrap}
+.darkband .v.sm{font-size:1.02rem;white-space:normal}
 .rv{opacity:0;transform:translateY(16px);
  transition:opacity .6s cubic-bezier(.2,.7,.3,1),transform .6s cubic-bezier(.2,.7,.3,1)}
 .rv.in{opacity:1;transform:none}
@@ -466,8 +464,7 @@ details summary::marker{color:var(--accent-dark)}
  .wide .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 34px;align-items:start}
  .wide .cols2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch}
  .wide .cols2 .card{margin:0}
- .wide .darkband{grid-template-columns:repeat(6,1fr);
-  padding-left:max(16px,calc(50vw - 520px));padding-right:max(16px,calc(50vw - 520px))}
+ .wide .darkband{grid-template-columns:repeat(6,1fr)}
  .wide .darkband .v{font-size:1.6rem}
  .wide .cta-mid{max-width:420px;margin-left:auto;margin-right:auto}
  .bigfoot .cols{grid-template-columns:1fr 1fr 1fr}
@@ -513,7 +510,7 @@ the network shown. By using this site you agree to the
    var n=parseFloat(el.dataset.cu),pre=el.dataset.pre||'',suf=el.dataset.suf||'',
        dec=parseInt(el.dataset.dec||'0'),t0=null;
    if(!isFinite(n))return;
-   function fr(t){if(!t0)t0=t;var p=Math.min(1,(t-t0)/900);p=1-Math.pow(1-p,3);
+   function fr(t){if(!t0)t0=t;var p=Math.min(1,(t-t0)/2400);p=1-Math.pow(1-p,3);
      var v=n*p;
      el.textContent=pre+v.toLocaleString('en-IN',
        {minimumFractionDigits:dec,maximumFractionDigits:dec})+suf;
@@ -628,9 +625,9 @@ async def home(request: web.Request):
 <div class=cell><div class=k>USDT settled</div>{_big(usdt_vol, "", plus)}</div>
 <div class=cell><div class=k>Quotes serviced</div>{_big(quotes_n, "", plus)}</div>
 <div class=cell><div class=k>Payout time</div>
-<div class=v>~{_esc(settings.eta_text)}</div></div>
+<div class="v sm">{_esc(settings.eta_text)}</div></div>
 <div class=cell><div class=k>Verification</div>
-<div class=v>On-chain</div></div>
+<div class="v sm">On-chain</div></div>
 </div>"""
     nets = "TRC20 (TRON) and BEP20 (BSC)" if two_chains else "TRC20 (TRON)"
     body = f"""
