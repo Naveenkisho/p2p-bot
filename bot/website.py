@@ -402,7 +402,12 @@ async def _sec_headers(request: web.Request, handler):
         resp = exc          # HTTPException is itself a Response — decorate + return
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
-    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    # strict-origin-when-cross-origin: same-origin requests keep the full path
+    # (fine), but anything leaving our origin sends ONLY the bare origin — so a
+    # secret /o/<token> path never leaks in a Referer, while Google Identity
+    # Services still receives the origin it must match against the OAuth
+    # client's authorized origins (no-referrer silently breaks the button).
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     if _is_https(request):
         resp.headers.setdefault("Strict-Transport-Security",
                                 "max-age=63072000; includeSubDomains")
@@ -784,7 +789,9 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
     return web.Response(text=doc, content_type="text/html", headers={
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
-        "Referrer-Policy": "no-referrer",
+        # see _sec_headers: keeps token paths out of cross-origin referers while
+        # letting Google Identity Services validate the origin
+        "Referrer-Policy": "strict-origin-when-cross-origin",
     })
 
 
