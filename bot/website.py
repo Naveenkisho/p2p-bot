@@ -341,16 +341,14 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .marq{overflow:hidden;position:relative;margin:14px -20px 4px;
  -webkit-mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent);
  mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent)}
-.marq .track{display:flex;gap:44px;width:max-content;align-items:center;
- padding:10px 0;animation:marq 30s linear infinite}
+.marq .track{display:flex;gap:52px;width:max-content;align-items:center;
+ padding:12px 0;animation:marq 28s linear infinite}
+.marq .track.rev{animation:marq 34s linear infinite reverse}
 .marq:hover .track{animation-play-state:paused}
 @keyframes marq{to{transform:translateX(-50%)}}
-.marq .lg{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;
- font-weight:900;font-size:1.12rem;letter-spacing:-.015em;
- color:#67728a;opacity:.6;filter:grayscale(1);
- transition:opacity .18s,filter .18s}
-.marq .lg:hover{opacity:1;filter:none}
-.marq .lg .mk{font-size:1rem}
+.marq .lg{display:inline-flex;align-items:center;gap:9px;white-space:nowrap;
+ font-weight:900;font-size:1.35rem;letter-spacing:-.02em}
+.marq .lg .mk{font-size:1.15rem}
 .brands{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 2px}
 .brands .b{display:inline-flex;align-items:center;gap:8px;background:var(--surface);
  border:1.5px solid var(--border);border-radius:999px;padding:7px 14px 7px 8px;
@@ -647,7 +645,7 @@ your bank directly — typically {_esc(settings.eta_text)}. Proof shared on ever
 <div class=card><h2 style="margin-top:0">Sell from any wallet or exchange</h2>
 <p class='muted small' style="margin:0 0 4px">Withdraw USDT from wherever you hold it and
 send it to your order address — it works the same from every app:</p>
-<div class=marq><div class=track><span class=lg><span class=mk style='color:#f0b90b'>◆</span>BINANCE</span><span class=lg><span class=mk style='color:#3375bb'>⬡</span>Trust Wallet</span><span class=lg><span class=mk style='color:#0e1330'>▣</span>OKX</span><span class=lg>BYBIT</span><span class=lg><span class=mk style='color:#24ae8f'>◈</span>KuCoin</span><span class=lg>TokenPocket</span><span class=lg>WazirX</span><span class=lg>CoinDCX</span><span class=lg>SafePal</span><span class=lg>Bitget</span><span class=lg>MEXC</span><span class=lg>Gate.io</span><span class=lg><span class=mk style='color:#f0b90b'>◆</span>BINANCE</span><span class=lg><span class=mk style='color:#3375bb'>⬡</span>Trust Wallet</span><span class=lg><span class=mk style='color:#0e1330'>▣</span>OKX</span><span class=lg>BYBIT</span><span class=lg><span class=mk style='color:#24ae8f'>◈</span>KuCoin</span><span class=lg>TokenPocket</span><span class=lg>WazirX</span><span class=lg>CoinDCX</span><span class=lg>SafePal</span><span class=lg>Bitget</span><span class=lg>MEXC</span><span class=lg>Gate.io</span></div></div>
+<div class=marq><div class=track><span class=lg style='color:#f0b90b'><span class=mk>◆</span>BINANCE</span><span class=lg style='color:#3375bb'><span class=mk>⬡</span>Trust Wallet</span><span class=lg style='color:#0e1330'><span class=mk>▣</span>OKX</span><span class=lg style='color:#f7a600'>BYBIT</span><span class=lg style='color:#24ae8f'><span class=mk>◈</span>KuCoin</span><span class=lg style='color:#2980fe'>TokenPocket</span><span class=lg style='color:#f0b90b'><span class=mk>◆</span>BINANCE</span><span class=lg style='color:#3375bb'><span class=mk>⬡</span>Trust Wallet</span><span class=lg style='color:#0e1330'><span class=mk>▣</span>OKX</span><span class=lg style='color:#f7a600'>BYBIT</span><span class=lg style='color:#24ae8f'><span class=mk>◈</span>KuCoin</span><span class=lg style='color:#2980fe'>TokenPocket</span></div><div class='track rev'><span class=lg style='color:#3067f0'>WazirX</span><span class=lg style='color:#4a24ae'>CoinDCX</span><span class=lg style='color:#4a7dff'>SafePal</span><span class=lg style='color:#00b5b8'>Bitget</span><span class=lg style='color:#1972e2'>MEXC</span><span class=lg style='color:#2354e6'>Gate.io</span><span class=lg style='color:#3067f0'>WazirX</span><span class=lg style='color:#4a24ae'>CoinDCX</span><span class=lg style='color:#4a7dff'>SafePal</span><span class=lg style='color:#00b5b8'>Bitget</span><span class=lg style='color:#1972e2'>MEXC</span><span class=lg style='color:#2354e6'>Gate.io</span></div></div>
 <p class='muted small' style="margin:8px 0 0">…and any other wallet or exchange that can
 send USDT on your chosen network. Pick the network on the sell form and match it when
 you withdraw.</p></div>
