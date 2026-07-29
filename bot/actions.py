@@ -204,6 +204,38 @@ async def reject_refund(bot: Bot, order_id: int) -> tuple[bool, str]:
                   else "Refund rejected, but couldn't DM the user ⚠️")
 
 
+async def decline_order(bot: Bot, order_id: int) -> tuple[bool, str]:
+    """Admin declines an order that never received a deposit — clears it out of
+    the Pending list. Only valid before any funds arrive (AWAITING_DEPOSIT or an
+    already-EXPIRED quote); an order with a received deposit must be refunded,
+    not declined, so money is never stranded. The order becomes CANCELLED, which
+    is still claimable — a customer who paid late can recover it with their TXID."""
+    async with Session() as session:
+        order = await session.get(Order, order_id)
+        if order is None:
+            return False, "Order not found."
+        card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
+        updated = await try_transition(
+            session, order.id,
+            (OrderStatus.AWAITING_DEPOSIT, OrderStatus.EXPIRED),
+            OrderStatus.CANCELLED)
+        if updated is None:
+            return False, ("Can only decline an order with no deposit yet — this "
+                           "one already has funds; use Refund instead.")
+        uid = order.user_id
+        user = await session.get(User, uid)
+        lang = user.lang if user and user.lang else "en"
+        delivered = await notify_user(bot, uid, texts.order_cancelled(order.id, lang))
+        await notify_admins(bot, f"🚫 Order {texts.tag(order.id)} declined by admin "
+                                 "(no deposit received).")
+        if user is not None:
+            await update_order_cards(bot, session, updated, user, card, None)
+    from .scanner import deposit_seen
+    deposit_seen.pop(order_id, None)
+    return True, ("Order declined ✅" if (delivered or is_web_user(uid))
+                  else "Order declined — couldn't DM the user ⚠️")
+
+
 def compose_announcement(raw_text: str) -> str:
     """Wrap an admin's plain message as a safe HTML announcement."""
     return "📢 <b>Announcement</b>\n\n" + html.escape(raw_text.strip())

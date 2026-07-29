@@ -29,6 +29,7 @@ from .actions import (
     complete_order,
     compose_announcement,
     confirm_deposit,
+    decline_order,
     launch_broadcast,
     record_manual_order,
     refund_order,
@@ -622,7 +623,12 @@ async def order_detail(request: web.Request):
         act += (f"<form method=post action='/order/{order.id}/confirm' class=row>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 f"<input name=txid placeholder='tx hash (optional)' style='width:auto'>"
-                f"<button class=warn>📥 Confirm deposit</button></form>")
+                f"<button class=warn>📥 Confirm deposit</button></form>"
+                f"<form method=post action='/order/{order.id}/decline' "
+                f"onsubmit=\"return confirm('Decline this order? Use only when no "
+                f"deposit was received.')\">"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                f"<button class=danger>🚫 Decline (no deposit)</button></form>")
     if order.status == OrderStatus.REFUND_REQUESTED.value:
         act += (f"<form method=post action='/order/{order.id}/refund'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
@@ -1362,6 +1368,7 @@ async def start_panel(bot):
         web.post("/order/{id:\\d+}/refund", _order_action(refund_order)),
         web.post("/order/{id:\\d+}/reject", _order_action(reject_refund)),
         web.post("/order/{id:\\d+}/confirm", _order_action(confirm_deposit, needs_txid=True)),
+        web.post("/order/{id:\\d+}/decline", _order_action(decline_order)),
     ])
     ssl_context = None
     scheme = "http"
