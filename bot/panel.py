@@ -884,6 +884,7 @@ async def settings_get(request: web.Request):
         bsc_key_set = bool(await get_bscscan_key(s))   # honors /setbsckey off over an env key
         support = await get_setting(s, "support") or ""
         support_email = await get_support_email(s)
+        instant_credit = (await get_setting(s, "instant_credit")) == "1"
         admin_ids = await get_setting(s, "admin_ids")
         admin_ids = admin_ids if admin_ids is not None else settings.admin_ids
         admin_chat = await get_setting(s, "admin_chat_id") or ""
@@ -929,6 +930,14 @@ async def settings_get(request: web.Request):
             + "<h2>Deposit &amp; payout</h2><div class=card>"
             "<label>⏳ Deposit window — minutes a quote stays live before it expires</label>"
             f"<input name=deposit_ttl inputmode=numeric value='{_esc(ttl_min)}'>"
+            "<label style='display:flex;gap:10px;align-items:flex-start;margin-top:14px'>"
+            f"<input type=checkbox name=instant_credit value=1 style='width:auto;margin-top:3px'"
+            f"{' checked' if instant_credit else ''}>"
+            "<span>⚡ <b>Instant credit</b> — credit a deposit the moment it's "
+            "detected on-chain (already mined, ~1 min before final confirmation) "
+            "instead of waiting for confirmation. Faster payouts, but you accept "
+            "the small risk of a rare chain reversal in that window. Unique-cents "
+            "keeps matching exact.</span></label>"
             "<label>🔷 TRC20 (TRON) deposit address</label>"
             f"<input name=addr value='{_esc(addr)}'>"
             "<label>🟡 BEP20 (BSC) deposit address — 0x… (blank = off)</label>"
@@ -1018,6 +1027,10 @@ async def settings_post(request: web.Request):
                 await set_setting(s, "deposit_ttl_min", str(int(ttl_raw)))
             else:
                 errors.append("deposit window must be a number of minutes (2–1440)")
+
+        # checkbox: present in POST only when ticked
+        await set_setting(s, "instant_credit",
+                          "1" if data.get("instant_credit") else "0")
 
         addr = str(data.get("addr", "")).strip()
         if addr:

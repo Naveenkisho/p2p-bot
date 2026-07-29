@@ -251,6 +251,7 @@ async def _note_unconfirmed(bot: Bot, tx: dict, address: str) -> None:
     async with Session() as session:
         if await session.get(SeenTx, txid) is not None:
             return                     # confirmed sweep already handled it
+        instant = (await get_setting(session, "instant_credit")) == "1"
         candidates = (await session.scalars(
             select(Order).where(
                 Order.status == OrderStatus.AWAITING_DEPOSIT.value,
@@ -260,6 +261,15 @@ async def _note_unconfirmed(bot: Bot, tx: dict, address: str) -> None:
     if len(candidates) != 1:           # ambiguity is the confirmed path's job
         return
     order = candidates[0]
+    # instant-credit mode (opt-in): the deposit is already mined into a block
+    # (TronGrid "unconfirmed" = mined but not yet solidified), and unique-cents
+    # makes the amount→order match exact, so credit it now instead of waiting
+    # ~1 min for solidification. _credit_amount writes a SeenTx row, so when the
+    # same tx later lands in the confirmed sweep it is deduped, never double-paid.
+    if instant:
+        deposit_seen.pop(order.id, None)
+        await _credit_amount(bot, txid, amount, address, "TRC20")
+        return
     if order.id in deposit_seen:
         return
     deposit_seen[order.id] = (txid, time.monotonic())
