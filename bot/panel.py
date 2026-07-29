@@ -51,6 +51,7 @@ from .db import (
     get_rates,
     get_setting,
     get_support,
+    get_support_email,
     set_network_qr,
     set_setting,
 )
@@ -882,6 +883,7 @@ async def settings_get(request: web.Request):
         bep20 = await get_bep20_address(s) or ""
         bsc_key_set = bool(await get_bscscan_key(s))   # honors /setbsckey off over an env key
         support = await get_setting(s, "support") or ""
+        support_email = await get_support_email(s)
         admin_ids = await get_setting(s, "admin_ids")
         admin_ids = admin_ids if admin_ids is not None else settings.admin_ids
         admin_chat = await get_setting(s, "admin_chat_id") or ""
@@ -936,6 +938,9 @@ async def settings_get(request: web.Request):
             "<input type=password name=bscscan_key autocomplete=off placeholder='••••••'>"
             "<label>Support usernames (space-separated, e.g. @a @b)</label>"
             f"<input name=support value='{_esc(support)}'>"
+            "<label>Support email (shown on the website; blank = hidden)</label>"
+            f"<input name=support_email type=email value='{_esc(support_email)}' "
+            "placeholder='support@yourdomain.com'>"
             "<label>Proof channel (@channel or -100… id, blank to disable)</label>"
             f"<input name=proof value='{_esc(proof)}'>"
             "</div><h2>Admins</h2><div class=card>"
@@ -1046,6 +1051,13 @@ async def settings_post(request: web.Request):
                 await set_setting(s, "support", " ".join(handles))
             else:
                 errors.append("support handles must each start with @")
+
+        semail = str(data.get("support_email", "")).strip()
+        if semail == "" or ("@" in semail and "." in semail.split("@")[-1]
+                            and " " not in semail and len(semail) <= 120):
+            await set_setting(s, "support_email", semail)
+        else:
+            errors.append("support email looks invalid")
 
         proof = str(data.get("proof", "")).strip()
         await set_setting(s, "proof_channel",

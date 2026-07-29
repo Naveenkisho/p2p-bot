@@ -50,6 +50,7 @@ from .db import (
     get_service_limits,
     get_setting,
     get_support,
+    get_support_email,
     get_whatsapp,
     set_setting,
 )
@@ -462,6 +463,16 @@ def _gen_qr(address: str) -> bytes | None:
     return qr_png(address)
 
 
+_FAVICON = (
+    "<link rel=icon type='image/svg+xml' href='data:image/svg+xml;base64,"
+    "PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMi"
+    "AzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzBlMTMzMCcv"
+    "PjxjaXJjbGUgY3g9JzE2JyBjeT0nMTYnIHI9JzknIGZpbGw9J25vbmUnIHN0cm9rZT0nIzAwYz"
+    "I2Zicgc3Ryb2tlLXdpZHRoPScyLjQnLz48dGV4dCB4PScxNicgeT0nMjEnIGZvbnQtZmFtaWx5"
+    "PSdBcmlhbCxzYW5zLXNlcmlmJyBmb250LXNpemU9JzEzJyBmb250LXdlaWdodD0nOTAwJyBmaW"
+    "xsPScjMDBjMjZmJyB0ZXh0LWFuY2hvcj0nbWlkZGxlJz7igrk8L3RleHQ+PC9zdmc+'>")
+
+
 _STYLE = """
 *{box-sizing:border-box}
 :root{
@@ -845,7 +856,7 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
         '<a href="/my">My orders</a><a href="/support">Support</a>')
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name=description content="{_esc(desc)}">{head_extra}
+<meta name=description content="{_esc(desc)}">{_FAVICON}{head_extra}
 <title>{_esc(title)}</title><style>{_STYLE}</style></head><body>
 <div class="wrap{' wide' if wide else ''}">
 <div class=topbar><a href="/" class=brand><span class=dot></span>P2P Desk</a>
@@ -894,6 +905,13 @@ def _support_html(support: str) -> str:
     return links or _esc(support)
 
 
+def _email_html(email: str, prefix: str = " · ") -> str:
+    email = (email or "").strip()
+    if not email:
+        return ""
+    return (f"{prefix}<a href='mailto:{_esc(email)}'>{_esc(email)}</a>")
+
+
 # ── landing ───────────────────────────────────────────────────────────────────
 
 async def home(request: web.Request):
@@ -902,6 +920,7 @@ async def home(request: web.Request):
         is_open, _ = await desk_state(s)
         support = await get_support(s)
         whatsapp = await get_whatsapp(s)
+        support_email = await get_support_email(s)
         two_chains = await bep20_active(s)
         limits = {k: await get_service_limits(s, k) for k in rates}
         done_n = await s.scalar(
@@ -1034,7 +1053,7 @@ first.</p></details>
 saved banks then follow your account on any device, under
 <a href="/my">My orders</a>.</p></details>
 </div></div>
-<div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}
+<div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}{_email_html(support_email)}
 <span class=muted>— mention your order ID (#ORD…)</span></span>
 <a class="btn ghost" style="margin-top:12px;max-width:340px" href="/support">Create a support ticket</a></div>
 {_fabs_html(support, whatsapp)}"""
@@ -2179,6 +2198,7 @@ async def support_get(request: web.Request, error: str = "",
     async with Session() as s:
         support = await get_support(s)
         whatsapp = await get_whatsapp(s)
+        support_email = await get_support_email(s)
         orders = [] if is_new else (await s.scalars(
             select(Order).where(Order.user_id == uid)
             .order_by(Order.id.desc()).limit(10))).all()
@@ -2221,7 +2241,7 @@ hash (TXID) so we can check the chain right away.</p>
  value="{_esc(p.get('contact', ''))}">
 <div style="margin-top:16px"><button class=btn>Create ticket</button></div>
 </div></form>
-<p class='muted small'>Prefer chat? {_support_html(support)}</p>
+<p class='muted small'>Prefer chat? {_support_html(support)}{_email_html(support_email)}</p>
 {_fabs_html(support, whatsapp)}"""
     resp = _page("Support — P2P Desk", body, path="/support",
                  acct=acct.email if acct else "")
