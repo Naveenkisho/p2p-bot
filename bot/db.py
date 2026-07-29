@@ -250,6 +250,16 @@ async def get_whatsapp(session: AsyncSession) -> str:
     return settings.support_whatsapp.strip()
 
 
+async def get_support_email(session: AsyncSession) -> str:
+    """Support email shown on the website (panel-managed). Falls back to the
+    business email so /about and support stay consistent. A saved row is
+    authoritative (blank turns it off)."""
+    row = await session.get(Setting, "support_email")
+    if row is not None:
+        return (row.value or "").strip()
+    return settings.biz_email.strip()
+
+
 async def get_lang(session: AsyncSession, user_id: int) -> str:
     user = await session.get(User, user_id)
     return user.lang if user and user.lang else "en"

@@ -705,13 +705,18 @@ def proof_post(order_id: int, usd: float, rate: float, inr: float,
     """Anonymized completion proof for the public channel. ONLY: order tag,
     USDT amount, rate, INR paid, service, speed. Never names, usernames, IDs,
     bank details, deposit addresses or tx hashes."""
+    speed = ("under a minute" if minutes <= 1 else f"{minutes} minutes")
     return (
-        f"✅ <b>Order {tag(order_id)} completed</b>\n"
-        f"💵 Sold: <b>{usd:g}$ USDT</b> @ 1$/₹{rate:g}\n"
-        f"🏦 Paid: <b>₹{inr:,.0f}</b> via {service_label}\n"
-        f"⚡ Done in <b>{minutes} min</b> 🟢\n"
-        f"🛡 <b>100% clean funds only</b> — zero freeze risk\n"
-        f"📈 Rates change fast — <b>order now!</b>"
+        "🟢 <b>PAYOUT SETTLED</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"💰 <b>₹{inr:,.0f}</b> paid to bank\n"
+        f"💱 {usd:g} USDT sold · <b>{service_label}</b>\n"
+        f"📊 Locked rate: ₹{rate:g}/$\n"
+        f"⚡ Settled in <b>{speed}</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "🛡 100% clean funds · zero freeze risk\n"
+        f"🔖 Ref {tag(order_id)}\n\n"
+        "💸 <b>Sell your USDT now</b> — INR in your bank in minutes."
     )
 
 
