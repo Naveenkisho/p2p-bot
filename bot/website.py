@@ -737,6 +737,11 @@ details summary::marker{color:var(--accent-dark)}
 .fab:hover{filter:brightness(1.06);color:#fff}
 .fab.wa{background:#25d366}
 .fab.tg{background:#229ed9}
+.fab.em{background:var(--navy)}
+.emailpill{display:inline-flex;align-items:center;gap:8px;margin-top:10px;
+ background:var(--accent-soft);color:var(--accent-dark);border:1.5px solid var(--accent);
+ border-radius:999px;padding:11px 18px;font-weight:800;font-size:.95rem}
+.emailpill:hover{background:var(--accent);color:var(--accent-ink)}
 .cardpick{display:flex;flex-direction:column;gap:8px}
 .cardpick label{margin:0;border:1.5px solid var(--border);border-radius:16px;
  padding:13px 15px;font-weight:800;color:var(--text);cursor:pointer;background:var(--surface);
@@ -882,10 +887,24 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
     })
 
 
-def _fabs_html(support: str, whatsapp: str) -> str:
-    """Floating Telegram / WhatsApp support buttons, bottom-right on every page.
-    Rendered only for the channels that are actually configured."""
+# Support email is cached in-process so the floating button (rendered from the
+# sync _fabs_html, called on every page) can show it without each handler having
+# to load it. Refreshed at site start and whenever the panel saves settings.
+_SUPPORT_CACHE = {"email": ""}
+
+
+async def load_support_cache() -> None:
+    async with Session() as s:
+        _SUPPORT_CACHE["email"] = await get_support_email(s)
+
+
+def _fabs_html(support: str, whatsapp: str, email: str = "") -> str:
+    """Floating email / WhatsApp / Telegram support buttons, bottom-right on
+    every page. Rendered only for the channels that are actually configured."""
     fabs = ""
+    email = (email or _SUPPORT_CACHE["email"]).strip()
+    if email:
+        fabs += (f"<a class='fab em' href='mailto:{_esc(email)}'>✉️ Email</a>")
     if whatsapp:
         digits = "".join(ch for ch in whatsapp if ch.isdigit())
         if digits:
@@ -910,6 +929,15 @@ def _email_html(email: str, prefix: str = " · ") -> str:
     if not email:
         return ""
     return (f"{prefix}<a href='mailto:{_esc(email)}'>{_esc(email)}</a>")
+
+
+def _email_pill(email: str) -> str:
+    """A prominent, highlighted email button (support page + support card)."""
+    email = (email or "").strip()
+    if not email:
+        return ""
+    return (f"<a class=emailpill href='mailto:{_esc(email)}'>✉️ Email us — "
+            f"{_esc(email)}</a>")
 
 
 # ── landing ───────────────────────────────────────────────────────────────────
@@ -1053,8 +1081,9 @@ first.</p></details>
 saved banks then follow your account on any device, under
 <a href="/my">My orders</a>.</p></details>
 </div></div>
-<div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}{_email_html(support_email)}
+<div class=card id=support><b>Support</b><br><span class=small>{_support_html(support)}
 <span class=muted>— mention your order ID (#ORD…)</span></span>
+{_email_pill(support_email)}
 <a class="btn ghost" style="margin-top:12px;max-width:340px" href="/support">Create a support ticket</a></div>
 {_fabs_html(support, whatsapp)}"""
     faq_ld = ({
@@ -2219,10 +2248,13 @@ async def support_get(request: web.Request, error: str = "",
         for o in orders if o.web_token)
     err = f"<p class=err>{_esc(error)}</p>" if error else ""
     body = f"""
-<h1>Support ticket</h1>
+<h1>Support</h1>
 <p class='muted small'>Tell us what happened — our admins see tickets instantly and
 reply on the contact you give below. For deposit issues, include your transaction
 hash (TXID) so we can check the chain right away.</p>
+{('<div class=card style="padding-top:0"><b>Email us directly</b><br>'
+  '<span class="muted small">We reply from a real inbox — fastest for detailed '
+  'issues.</span><br>' + _email_pill(support_email) + '</div>') if support_email else ''}
 {err}
 <form method=post action=/support><div class=card>
 <input type=hidden name=csrf value='{csrf}'>
@@ -2786,6 +2818,7 @@ async def start_site(bot):
         log.info("customer website disabled (P2P_SITE_PORT=0)")
         return None
     await load_tracking()          # load marketing-pixel IDs into the cache
+    await load_support_cache()     # load support email for the floating button
     app = web.Application(middlewares=[_sec_headers])
     app["bot"] = bot
     app.add_routes([
