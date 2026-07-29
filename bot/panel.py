@@ -1096,6 +1096,12 @@ async def settings_post(request: web.Request):
                      + "<div class='banner danger'><b>Not saved:</b> "
                      + _esc("; ".join(errors)) + "</div>"
                      "<p><a href=/settings>← Back to settings</a></p>")
+    # keep the website's floating-button support email in sync with this save
+    try:
+        from .website import load_support_cache
+        await load_support_cache()
+    except Exception:
+        log.exception("support cache refresh failed")
     if restart:
         # write is committed; exit so systemd restarts with the new token
         asyncio.get_running_loop().call_later(1.0, os._exit, 0)
