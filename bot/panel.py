@@ -387,7 +387,7 @@ def _nav(active: str) -> str:
             "<nav>" + link("/", "Orders", "orders")
             + link("/pay", "Manual pay", "pay")
             + link("/tickets", "Tickets", "tickets")
-            + link("/signups", "Signups", "signups")
+            + link("/users", "Users", "users")
             + link("/marketing", "Marketing", "marketing")
             + link("/broadcast", "Broadcast", "broadcast")
             + link("/settings", "Settings", "settings")
@@ -1254,54 +1254,134 @@ async def ticket_act(request: web.Request):
     raise web.HTTPFound("/tickets")
 
 
+_ACCT_BASE = 1 << 48        # mirrors website._acct_uid
+
+
+def _user_banks(cards) -> str:
+    """Compact list of a user's saved banks (deduped by details), live from DB —
+    so an add or delete on the customer's side shows here on the next load."""
+    if not cards:
+        return "<div class='muted small'>No bank saved</div>"
+    seen, out = set(), []
+    for c in cards:
+        key = (c.details or "").strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        det = " · ".join(ln.strip() for ln in key.splitlines() if ln.strip())
+        out.append(f"<div style='font-size:.86rem;margin-top:2px'>"
+                   f"<b>{_esc(c.label)}</b> — {_esc(det)}</div>")
+    return "".join(out)
+
+
 @_authed
-async def signups_get(request: web.Request):
-    """Website accounts — every successful signup with its contact details,
-    declared daily stock, and what the account has actually traded."""
-    acct_base = 1 << 48        # mirrors website._acct_uid
+async def users_get(request: web.Request):
+    """Every user — website accounts and Telegram bot users — with their saved
+    banks (live), contact details and trading. Banks reflect adds/deletes
+    automatically since this reads the DB on each load; the page also
+    auto-refreshes every 30 min."""
+    from .models import BankCard
     async with Session() as s:
         accounts = (await s.scalars(
-            select(Account).order_by(Account.id.desc()).limit(300))).all()
-        uids = [-(acct_base + a.id) for a in accounts]
-        stats = {}
-        if uids:
-            rows = (await s.execute(
-                select(Order.user_id, func.count(Order.id),
-                       func.sum(Order.usd_amount))
-                .where(Order.user_id.in_(uids),
-                       Order.status == OrderStatus.COMPLETED.value)
-                .group_by(Order.user_id))).all()
-            stats = {r[0]: (r[1], r[2] or 0.0) for r in rows}
-    total = len(accounts)
-    google_n = sum(1 for a in accounts if a.google_sub)
-    cards = []
-    for a in accounts:
-        n, vol = stats.get(-(acct_base + a.id), (0, 0.0))
+            select(Account).order_by(Account.id.desc()).limit(500))).all()
+        tg_users = (await s.scalars(
+            select(User).where(User.id > 0)
+            .order_by(User.id.desc()).limit(500))).all()
+        acct_uids = [-(_ACCT_BASE + a.id) for a in accounts]
+        tg_uids = [u.id for u in tg_users]
+        all_uids = acct_uids + tg_uids
+        banks: dict[int, list] = {}
+        stats: dict[int, tuple] = {}
+        if all_uids:
+            for c in (await s.scalars(select(BankCard)
+                                      .where(BankCard.user_id.in_(all_uids))
+                                      .order_by(BankCard.id.desc()))).all():
+                banks.setdefault(c.user_id, []).append(c)
+            for r in (await s.execute(
+                    select(Order.user_id, func.count(Order.id),
+                           func.sum(Order.usd_amount))
+                    .where(Order.user_id.in_(all_uids),
+                           Order.status == OrderStatus.COMPLETED.value)
+                    .group_by(Order.user_id))).all():
+                stats[r[0]] = (r[1], r[2] or 0.0)
+
+    emails_n = sum(1 for a in accounts if a.email)
+    phones_n = sum(1 for a in accounts if a.phone)
+
+    def acct_card(a):
+        uid = -(_ACCT_BASE + a.id)
+        n, vol = stats.get(uid, (0, 0.0))
         prov = ("<span class='badge ok'>Google</span>" if a.google_sub
                 else "<span class=badge>email</span>")
         stock = (f"<span class='badge warn'>{_esc(a.stock)} USDT/day</span>"
-                 if a.stock else "<span class=badge>stock not picked</span>")
-        phone = (f"<div><span class=muted>Phone:</span> <b>{_esc(a.phone)}</b></div>"
-                 if a.phone else "")
-        traded = (f"<div><span class=muted>Traded:</span> {n} completed "
-                  f"orders · {vol:,.2f} USDT</div>" if n else
-                  "<div><span class=muted>Traded:</span> nothing yet</div>")
-        cards.append(f"""
-<div class=card>
-<b>#{a.id}</b> <b>{_esc(a.email)}</b> {prov} {stock}
-<span class='muted small'> · joined {a.created_at:%d %b %Y %H:%M} UTC</span>
-<div style='margin:8px 0'>
-<div><span class=muted>Name:</span> <b>{_esc(a.name or "—")}</b></div>
-{phone}{traded}
-<div><span class=muted>Last login:</span> {a.last_login:%d %b %Y %H:%M} UTC</div>
-</div></div>""")
-    body = (_nav("signups") + "<h1>👤 Signups</h1>"
-            f"<p class=muted>{total} accounts · {google_n} via Google · "
-            f"{total - google_n} via email</p>"
-            + ("".join(cards) or "<div class=card><span class=muted>No "
-               "signups yet — they appear the moment someone registers on "
-               "the website.</span></div>"))
-    return _page("Signups", body)
+                 if a.stock else "")
+        return f"""<div class=card>
+<b>{_esc(a.email)}</b> {prov} {stock}
+<span class='muted small'> · joined {a.created_at:%d %b %Y}</span>
+<div style='margin:6px 0'>
+<div><span class=muted>Name:</span> <b>{_esc(a.name or "—")}</b>
+ · <span class=muted>Phone:</span> <b>{_esc(a.phone or "—")}</b></div>
+<div><span class=muted>Traded:</span> {n} completed · {vol:,.0f} USDT</div>
+<div style='margin-top:6px'><span class=muted>Saved banks:</span>
+{_user_banks(banks.get(uid))}</div></div></div>"""
+
+    def tg_card(u):
+        n, vol = stats.get(u.id, (0, 0.0))
+        uname = f"@{_esc(u.username)}" if u.username else "—"
+        ban = " <span class='badge danger'>banned</span>" if u.banned else ""
+        return f"""<div class=card>
+<b>{_esc(u.first_name or 'Telegram user')}</b> {uname}
+<span class='muted small'> · id {u.id}{ban}</span>
+<div style='margin:6px 0'>
+<div><span class=muted>Traded:</span> {n} completed · {vol:,.0f} USDT</div>
+<div style='margin-top:6px'><span class=muted>Saved banks:</span>
+{_user_banks(banks.get(u.id))}</div></div></div>"""
+
+    body = (_nav("users") + "<h1>👥 Users</h1>"
+            f"<p class=muted>{len(accounts)} website accounts "
+            f"({emails_n} emails · {phones_n} phones) · "
+            f"{len(tg_users)} Telegram users. Live — bank adds/deletes show on "
+            "refresh; this page reloads itself every 30 min.</p>"
+            "<div class=row style='gap:8px;margin-bottom:8px'>"
+            "<a class='btn small' href='/users/export/emails'>⬇ Emails CSV</a>"
+            "<a class='btn small' href='/users/export/phones'>⬇ WhatsApp numbers CSV</a>"
+            "<a class='btn small' href='/broadcast'>✉️ Bulk message</a></div>"
+            "<h2>Website accounts</h2>"
+            + ("".join(acct_card(a) for a in accounts)
+               or "<div class=card><span class=muted>No signups yet.</span></div>")
+            + "<h2>Telegram users</h2>"
+            + ("".join(tg_card(u) for u in tg_users)
+               or "<div class=card><span class=muted>No Telegram users yet.</span></div>")
+            + "<script>setTimeout(function(){location.reload()},1800000)</script>")
+    return _page("Users", body)
+
+
+@_authed
+async def users_export(request: web.Request):
+    """CSV of account emails or phone numbers — for a bulk email tool or a
+    WhatsApp Business broadcast list."""
+    kind = request.match_info["kind"]
+    if kind not in ("emails", "phones"):
+        raise web.HTTPNotFound()
+    async with Session() as s:
+        accounts = (await s.scalars(select(Account)
+                                    .order_by(Account.id.desc()))).all()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    if kind == "emails":
+        w.writerow(["email", "name"])
+        for a in accounts:
+            if a.email:
+                w.writerow([a.email, a.name or ""])
+    else:
+        w.writerow(["phone", "name"])
+        for a in accounts:
+            if a.phone:
+                w.writerow([a.phone, a.name or ""])
+    return web.Response(
+        body=("﻿" + buf.getvalue()).encode("utf-8"),
+        content_type="text/csv", charset="utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{kind}.csv"'})
 
 
 @_authed
@@ -1381,7 +1461,8 @@ async def start_panel(bot):
         web.get("/pay", pay_get),
         web.get("/tickets", tickets_get),
         web.post("/tickets/{id:\\d+}/{act}", ticket_act),
-        web.get("/signups", signups_get),
+        web.get("/users", users_get),
+        web.get("/users/export/{kind}", users_export),
         web.get("/marketing", marketing_get),
         web.post("/marketing", marketing_post),
         web.post("/pay", pay_post),
