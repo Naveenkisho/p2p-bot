@@ -1,4 +1,5 @@
 import base64
+import secrets
 
 from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
@@ -91,6 +92,25 @@ async def set_setting(session: AsyncSession, key: str, value: str) -> None:
     else:
         row.value = value
     await session.commit()
+
+
+async def site_secret() -> bytes:
+    """Site-scoped signing secret, created once and kept in the DB. Shared by
+    the website (identity cookie, CSRF) and the bulk sender (unsubscribe
+    tokens) so links signed in one place verify in the other. First-creation is
+    idempotent: if two callers race the insert, the loser rolls back and re-reads
+    so both return the one persisted value (never a 500, never divergence)."""
+    async with Session() as s:
+        val = await get_setting(s, "site_secret")
+        if not val:
+            val = secrets.token_hex(32)
+            s.add(Setting(key="site_secret", value=val))
+            try:
+                await s.commit()
+            except IntegrityError:
+                await s.rollback()
+                val = await get_setting(s, "site_secret")
+    return (val or "").encode()
 
 
 async def get_rates(session: AsyncSession) -> dict[str, float]:

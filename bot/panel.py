@@ -57,6 +57,7 @@ from .db import (
 )
 from .helpers import is_bep20, is_trc20
 from .models import Account, Ticket, Order, OrderStatus, User
+from . import sender
 from .qr import qr_png
 from sqlalchemy import and_, func, or_, select
 
@@ -392,6 +393,7 @@ def _nav(active: str) -> str:
             + link("/tickets", "Tickets", "tickets")
             + link("/users", "Users", "users")
             + link("/marketing", "Marketing", "marketing")
+            + link("/messaging", "Messaging", "messaging")
             + link("/broadcast", "Broadcast", "broadcast")
             + link("/settings", "Settings", "settings")
             + "</nav><span class=sp></span>"
@@ -1346,9 +1348,9 @@ async def users_get(request: web.Request):
             f"{len(tg_users)} Telegram users. Live — bank adds/deletes show on "
             "refresh; this page reloads itself every 30 min.</p>"
             "<div class=row style='gap:8px;margin-bottom:8px'>"
+            "<a class='btn small' href='/messaging'>✉️ Bulk email &amp; SMS</a>"
             "<a class='btn small' href='/users/export/emails'>⬇ Emails CSV</a>"
-            "<a class='btn small' href='/users/export/phones'>⬇ WhatsApp numbers CSV</a>"
-            "<a class='btn small' href='/broadcast'>✉️ Bulk message</a></div>"
+            "<a class='btn small' href='/users/export/phones'>⬇ Phone numbers CSV</a></div>"
             "<div class=duo>"
             f"<div><h2>🌐 Website users ({len(accounts)})</h2>"
             + ("".join(acct_card(a) for a in accounts)
@@ -1449,6 +1451,224 @@ async def marketing_post(request: web.Request):
     raise web.HTTPFound("/marketing?saved=1")
 
 
+# ── Messaging: bulk email (Brevo SMTP) + bulk SMS (MSG91) ────────────────────
+
+def _job_banner(job: dict, label: str) -> str:
+    if job.get("running"):
+        done = job["sent"] + job["failed"]
+        return (f"<div class='banner'>⏳ {label} sending… {done}/{job['total']} "
+                f"({job['sent']} ok, {job['failed']} failed)</div>")
+    if job.get("total") or job.get("finished"):
+        cls = "ok" if job["failed"] == 0 else "warn"
+        err = (f" · first issue: {_esc(job['errors'][0])}"
+               if job.get("errors") else "")
+        return (f"<div class='banner {cls}'>Last {label} run: {job['sent']} sent, "
+                f"{job['failed']} failed of {job['total']}{err}</div>")
+    return ""
+
+
+@_authed
+async def messaging_get(request: web.Request):
+    e = await sender.email_config()
+    sm = await sender.sms_config()
+    e_ready = sender.email_ready(e)
+    s_ready = sender.sms_ready(sm)
+    e_recips = await sender.email_recipients()
+    s_recips = await sender.sms_recipients()
+    e_job = sender.email_status()
+    s_job = sender.sms_status()
+    csrf = await _csrf_for(request)
+    msg = request.query.get("msg", "")
+    ok = request.query.get("ok") == "1"
+    banner = (f"<div class='banner {'ok' if ok else 'warn'}'>{_esc(msg)}</div>"
+              if msg else "")
+
+    e_badge = ("<span class='badge ok'>✓ ready</span>" if e_ready
+               else "<span class='badge warn'>needs setup</span>")
+    s_badge = ("<span class='badge ok'>✓ ready</span>" if s_ready
+               else "<span class='badge warn'>needs setup</span>")
+    pw_ph = "•••••• (set — blank keeps it)" if e["pw"] else "your Brevo SMTP key"
+    key_ph = "•••••• (set — blank keeps it)" if sm["authkey"] else "your MSG91 auth key"
+    site_warn = ("" if settings.site_url else
+                 "<div class='banner warn'>⚠️ Set the site URL (P2P_SITE_URL) so "
+                 "emails can carry a working one-click unsubscribe link — Gmail and "
+                 "Yahoo require it for bulk mail.</div>")
+
+    email_card = (
+        f"<h2>📧 Email — Brevo SMTP {e_badge}</h2>"
+        "<p class=muted>Cloudflare only receives mail — to send, plug in Brevo "
+        "(or any SMTP). Verify your domain in Brevo and add its SPF/DKIM records "
+        "to Cloudflare DNS so you don't land in spam.</p>"
+        + site_warn
+        + _job_banner(e_job, "Email")
+        + "<form method=post action=/messaging/email><div class=card>"
+        f"<input type=hidden name=csrf value='{csrf}'>"
+        "<label>SMTP host</label>"
+        f"<input name=host value='{_esc(e['host'])}' placeholder='smtp-relay.brevo.com'>"
+        "<div class=row style='gap:12px'>"
+        f"<div style='flex:1'><label>Port</label>"
+        f"<input name=port value='{_esc(e['port'])}' placeholder='587'></div>"
+        f"<div style='flex:2'><label>SMTP login</label>"
+        f"<input name=user value='{_esc(e['user'])}' "
+        "placeholder='your Brevo login / SMTP user'></div></div>"
+        "<label>SMTP key / password</label>"
+        f"<input type=password name=pw autocomplete=off placeholder='{pw_ph}'>"
+        "<div class=row style='gap:12px'>"
+        f"<div style='flex:2'><label>From email (verified sender)</label>"
+        f"<input name=from_addr type=email value='{_esc(e['from_addr'])}' "
+        "placeholder='support@yourdomain.com'></div>"
+        f"<div style='flex:1'><label>From name</label>"
+        f"<input name=from_name value='{_esc(e['from_name'])}' "
+        "placeholder='IndiaXchange'></div></div>"
+        "<div class=row style='margin-top:12px'>"
+        "<button name=op value=creds>Save email settings</button></div>"
+        "</div></form>"
+        "<form method=post action=/messaging/email><div class=card>"
+        f"<input type=hidden name=csrf value='{csrf}'>"
+        f"<p class=muted style='margin-top:0'>Sends to <b>{len(e_recips)}</b> "
+        "subscribed email(s). Every message carries a one-click unsubscribe link.</p>"
+        "<label>Subject</label><input name=subject maxlength=200>"
+        "<label>Message</label><textarea name=body rows=8></textarea>"
+        "<label style='display:flex;gap:8px;align-items:center;margin:8px 0'>"
+        "<input type=checkbox name=html value=1 style='width:auto'> "
+        "Body is HTML (leave off for plain text)</label>"
+        "<div class=row style='gap:8px;align-items:flex-end'>"
+        "<div style='flex:1'><label>Send a test to yourself first</label>"
+        "<input name=test_to type=email placeholder='you@example.com'></div>"
+        "<button name=op value=test class='btn small'>Send test</button></div>"
+        "<label style='display:flex;gap:8px;align-items:center;margin:12px 0 8px'>"
+        f"<input type=checkbox name=confirm value=1 style='width:auto'> "
+        f"I understand this emails all {len(e_recips)} subscribers</label>"
+        f"<div class=row><button name=op value=all>📨 Send to all "
+        f"{len(e_recips)}</button></div>"
+        "</div></form>")
+
+    sms_card = (
+        f"<h2>📱 SMS — MSG91 {s_badge}</h2>"
+        "<p class=muted>India requires <b>DLT registration</b> first: register your "
+        "business, a 6-char sender header, and each message template on the DLT "
+        "portal, then paste the MSG91 auth key + your approved template ID below. "
+        "SMS text must match the registered template — the box below fills its "
+        "variable.</p>"
+        + _job_banner(s_job, "SMS")
+        + "<form method=post action=/messaging/sms><div class=card>"
+        f"<input type=hidden name=csrf value='{csrf}'>"
+        "<label>MSG91 auth key</label>"
+        f"<input type=password name=authkey autocomplete=off placeholder='{key_ph}'>"
+        "<div class=row style='gap:12px'>"
+        f"<div style='flex:1'><label>Sender ID (DLT header)</label>"
+        f"<input name=sender value='{_esc(sm['sender'])}' placeholder='IXCHNG'></div>"
+        f"<div style='flex:1'><label>Template ID</label>"
+        f"<input name=template value='{_esc(sm['template'])}' "
+        "placeholder='DLT/MSG91 template id'></div>"
+        f"<div style='flex:1'><label>Variable name</label>"
+        f"<input name=var value='{_esc(sm['var'])}' placeholder='var1'></div>"
+        "</div>"
+        "<div class=row style='margin-top:12px'>"
+        "<button name=op value=creds>Save SMS settings</button></div>"
+        "</div></form>"
+        "<form method=post action=/messaging/sms><div class=card>"
+        f"<input type=hidden name=csrf value='{csrf}'>"
+        f"<p class=muted style='margin-top:0'>Sends to <b>{len(s_recips)}</b> "
+        "valid mobile number(s).</p>"
+        "<label>Message (fills your template's variable)</label>"
+        "<textarea name=message rows=4 maxlength=1000></textarea>"
+        "<div class=row style='gap:8px;align-items:flex-end'>"
+        "<div style='flex:1'><label>Send a test to a number</label>"
+        "<input name=test_to placeholder='9876543210'></div>"
+        "<button name=op value=test class='btn small'>Send test</button></div>"
+        "<label style='display:flex;gap:8px;align-items:center;margin:12px 0 8px'>"
+        f"<input type=checkbox name=confirm value=1 style='width:auto'> "
+        f"I understand this texts all {len(s_recips)} numbers</label>"
+        f"<div class=row><button name=op value=all>📲 Send to all "
+        f"{len(s_recips)}</button></div>"
+        "</div></form>")
+
+    refresh = ("<script>setTimeout(function(){location.reload()},8000)</script>"
+               if (e_job["running"] or s_job["running"]) else "")
+    body = (_nav("messaging") + "<h1>✉️ Messaging</h1>" + banner
+            + "<p class=muted>Reach your signups by email and SMS. Telegram bot "
+            "users have their own free <a href='/broadcast'>Broadcast</a>.</p>"
+            "<div class=duo>"
+            f"<div>{email_card}</div><div>{sms_card}</div></div>"
+            + refresh)
+    return _page("Messaging", body)
+
+
+def _redir_msg(path: str, text: str, ok: bool = False):
+    raise web.HTTPFound(f"{path}?ok={'1' if ok else '0'}&msg=" + quote(text))
+
+
+@_authed
+async def messaging_email_post(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("messaging") + "<p>Invalid CSRF token.</p>")
+    op = str(data.get("op", ""))
+    if op == "creds":
+        port = str(data.get("port", "")).strip() or "587"
+        if not port.isdigit():
+            _redir_msg("/messaging", "Port must be a number.")
+        async with Session() as s:
+            await set_setting(s, "email_smtp_host", str(data.get("host", "")).strip()[:120])
+            await set_setting(s, "email_smtp_port", port)
+            await set_setting(s, "email_smtp_user", str(data.get("user", "")).strip()[:190])
+            await set_setting(s, "email_from", str(data.get("from_addr", "")).strip()[:190])
+            await set_setting(s, "email_from_name", str(data.get("from_name", "")).strip()[:120])
+            pw = str(data.get("pw", ""))
+            if pw.strip():                      # blank keeps the current key
+                await set_setting(s, "email_smtp_pass", pw)
+        _redir_msg("/messaging", "✅ Email settings saved.", ok=True)
+
+    subject = str(data.get("subject", "")).strip()
+    body = str(data.get("body", ""))
+    is_html = bool(data.get("html"))
+    if op == "test":
+        ok, detail = await sender.send_test_email(
+            str(data.get("test_to", "")), subject, body, is_html)
+        _redir_msg("/messaging", detail, ok=ok)
+    if op == "all":
+        if not bool(data.get("confirm")):
+            _redir_msg("/messaging", "Tick the confirm box before sending to everyone.")
+        if not subject or not body.strip():
+            _redir_msg("/messaging", "Add a subject and a message first.")
+        ok, detail = await sender.start_email_broadcast(
+            subject, body, is_html, bot=request.app.get("bot"))
+        _redir_msg("/messaging", detail, ok=ok)
+    _redir_msg("/messaging", "Unknown action.")
+
+
+@_authed
+async def messaging_sms_post(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("messaging") + "<p>Invalid CSRF token.</p>")
+    op = str(data.get("op", ""))
+    if op == "creds":
+        async with Session() as s:
+            await set_setting(s, "sms_msg91_sender", str(data.get("sender", "")).strip()[:16])
+            await set_setting(s, "sms_msg91_template", str(data.get("template", "")).strip()[:64])
+            await set_setting(s, "sms_msg91_var", str(data.get("var", "")).strip()[:32] or "var1")
+            key = str(data.get("authkey", ""))
+            if key.strip():                     # blank keeps the current key
+                await set_setting(s, "sms_msg91_authkey", key.strip())
+        _redir_msg("/messaging", "✅ SMS settings saved.", ok=True)
+
+    message = str(data.get("message", "")).strip()
+    if op == "test":
+        ok, detail = await sender.send_test_sms(str(data.get("test_to", "")), message)
+        _redir_msg("/messaging", detail, ok=ok)
+    if op == "all":
+        if not bool(data.get("confirm")):
+            _redir_msg("/messaging", "Tick the confirm box before texting everyone.")
+        if not message:
+            _redir_msg("/messaging", "Type the message first.")
+        ok, detail = await sender.start_sms_broadcast(
+            message, bot=request.app.get("bot"))
+        _redir_msg("/messaging", detail, ok=ok)
+    _redir_msg("/messaging", "Unknown action.")
+
+
 async def start_panel(bot):
     """Start the web panel if a password is configured; returns the AppRunner
     (or None when disabled) so main() can clean it up."""
@@ -1470,6 +1690,9 @@ async def start_panel(bot):
         web.get("/users/export/{kind}", users_export),
         web.get("/marketing", marketing_get),
         web.post("/marketing", marketing_post),
+        web.get("/messaging", messaging_get),
+        web.post("/messaging/email", messaging_email_post),
+        web.post("/messaging/sms", messaging_sms_post),
         web.post("/pay", pay_post),
         web.get("/broadcast", broadcast_get),
         web.post("/broadcast", broadcast_post),
