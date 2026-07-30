@@ -242,6 +242,9 @@ code{background:var(--surface-2);border:1px solid var(--border);padding:2px 6px;
 .copybtn{margin-top:8px;padding:6px 12px;background:var(--surface-2);color:var(--text);
  border:1px solid var(--border);font-size:.82em;font-weight:600;border-radius:8px;cursor:pointer}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+.duo h2{margin-top:0}
+@media (max-width:820px){.duo{grid-template-columns:1fr}}
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px}
 .tabs a{padding:8px 14px;border-radius:10px;background:var(--surface);border:1px solid var(--border);
  color:var(--muted);font-weight:600;font-size:.9rem}
@@ -1346,13 +1349,15 @@ async def users_get(request: web.Request):
             "<a class='btn small' href='/users/export/emails'>⬇ Emails CSV</a>"
             "<a class='btn small' href='/users/export/phones'>⬇ WhatsApp numbers CSV</a>"
             "<a class='btn small' href='/broadcast'>✉️ Bulk message</a></div>"
-            "<h2>Website accounts</h2>"
+            "<div class=duo>"
+            f"<div><h2>🌐 Website users ({len(accounts)})</h2>"
             + ("".join(acct_card(a) for a in accounts)
                or "<div class=card><span class=muted>No signups yet.</span></div>")
-            + "<h2>Telegram users</h2>"
+            + f"</div><div><h2>✈️ Telegram users ({len(tg_users)})</h2>"
             + ("".join(tg_card(u) for u in tg_users)
                or "<div class=card><span class=muted>No Telegram users yet.</span></div>")
-            + "<script>setTimeout(function(){location.reload()},1800000)</script>")
+            + "</div></div>"
+            "<script>setTimeout(function(){location.reload()},1800000)</script>")
     return _page("Users", body)
 
 
