@@ -21,13 +21,16 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import hmac
 import html as _html
 import json
 import logging
 import re
+import secrets
 import smtplib
 import ssl
 import time
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from urllib.parse import quote
@@ -36,9 +39,9 @@ import aiohttp
 from sqlalchemy import select
 
 from .config import settings
-from .db import Session, get_setting, site_secret
+from .db import Session, get_setting, set_setting, site_secret
 from .helpers import unsub_token
-from .models import Account, Unsubscribe
+from .models import Account, Unsubscribe, User
 
 log = logging.getLogger(__name__)
 
@@ -91,8 +94,9 @@ def sms_ready(cfg: dict) -> bool:
 # ── recipients ───────────────────────────────────────────────────────────────
 
 async def email_recipients() -> list[tuple[str, str]]:
-    """(email, name) for every website account with a valid email, minus any
-    that unsubscribed. De-duplicated case-insensitively."""
+    """(email, name) for every website account with a VERIFIED email, minus any
+    that unsubscribed. De-duplicated case-insensitively. Unverified addresses
+    (no OTP entered) never receive a single message — fake signups are inert."""
     async with Session() as s:
         accounts = (await s.scalars(select(Account))).all()
         unsub = {e.lower() for e in
@@ -102,7 +106,8 @@ async def email_recipients() -> list[tuple[str, str]]:
     for a in accounts:
         raw = (a.email or "").strip()
         low = raw.lower()
-        if raw and _EMAIL_RE.match(raw) and low not in seen and low not in unsub:
+        if (raw and _EMAIL_RE.match(raw) and getattr(a, "email_verified", False)
+                and low not in seen and low not in unsub):
             seen.add(low)
             out.append((raw, a.name or ""))
     return out
@@ -203,6 +208,7 @@ def _send_batch_blocking(cfg: dict, recipients: list[tuple[str, str]],
                          secret: bytes, progress) -> tuple[int, int, list[str]]:
     """Open one SMTP connection and send to every recipient. `progress(sent,
     failed)` is called after each message so the panel can show live counts.
+    An empty `secret` means transactional mail: no unsubscribe link or header.
     Returns (sent, failed, first_errors)."""
     sent = failed = 0
     errors: list[str] = []
@@ -210,7 +216,7 @@ def _send_batch_blocking(cfg: dict, recipients: list[tuple[str, str]],
     try:
         for to_addr, to_name in recipients:
             try:
-                url = _unsub_url(to_addr, secret)
+                url = _unsub_url(to_addr, secret) if secret else ""
                 msg = _build_message(cfg, to_addr, to_name, subject, body,
                                      is_html, url)
                 srv.send_message(msg)
@@ -458,3 +464,481 @@ async def _notify(bot, label: str, job: dict) -> None:
         await notify_admins(bot, line)
     except Exception:
         log.exception("broadcast completion notify failed")
+
+
+# ── transactional emails (order lifecycle) + auto rate updates ───────────────
+# Transactional mail (order confirmations/receipts) goes to the ONE customer an
+# order belongs to, regardless of the marketing unsubscribe list — exactly like
+# an exchange still emails you your receipts after you opt out of promos. It
+# carries no marketing footer. The rate-update blast, by contrast, IS marketing:
+# it reuses start_email_broadcast, so it honours unsubscribes and the one-job
+# lock, and it dedupes + rate-limits itself so an admin fiddling with rates
+# can't accidentally spam the list.
+
+_ACCT_BASE = 1 << 48
+RATE_BLAST_GAP = 30 * 60      # min seconds between auto rate emails
+_rate_retry = {"pending": False}
+
+_BRAND_NAME = "IndiaXchange"
+_C_NAVY = "#0e1330"
+_C_GREEN = "#00c26f"
+_C_GREEN_DARK = "#00a85f"
+_C_INK = "#3c4761"
+_C_SOFT = "#e1f9ee"
+_C_OK = "#0c8f56"
+
+
+def _inr(v: float) -> str:
+    return f"₹{v:,.2f}"
+
+
+def _usd(v: float) -> str:
+    # no thousands separator: this string is what the customer must SEND
+    # exactly — "1,000.07" invites a mistyped amount that never matches
+    return f"{v:.2f}"
+
+
+def brand_wrap(inner: str, contact: str = "") -> str:
+    """Shared email chrome: navy header band with the ₹ mark + wordmark, white
+    card, muted footer. Inline-styled tables so Gmail/Outlook render it."""
+    site = (settings.site_url or "").rstrip("/")
+    contact_line = (f"<a href='mailto:{_html.escape(contact)}' "
+                    f"style='color:{_C_GREEN_DARK};text-decoration:none'>"
+                    f"{_html.escape(contact)}</a>" if contact else "the support desk")
+    return f"""<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f7fa;margin:0;padding:24px 0;font-family:Arial,Helvetica,sans-serif">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e6eaf1">
+<tr><td style="background:{_C_NAVY};padding:20px 28px">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="width:38px;height:38px;border:2px solid {_C_GREEN};border-radius:9px;text-align:center;color:{_C_GREEN};font-size:19px;font-weight:bold;line-height:38px">&#8377;</td>
+<td style="padding-left:12px;color:#ffffff;font-size:19px;font-weight:bold">India<span style="color:{_C_GREEN}">Xchange</span></td>
+</tr></table></td></tr>
+<tr><td style="padding:30px 28px 26px">{inner}</td></tr>
+<tr><td style="padding:18px 28px 22px;border-top:1px solid #e6eaf1">
+<p style="margin:0;color:#8b95a8;font-size:12px;line-height:1.6">
+<strong style="color:#5a657d">{_BRAND_NAME}</strong> &mdash; USDT&nbsp;&rarr;&nbsp;INR trading desk<br>
+Questions? Just reply to this email or write to {contact_line}.{f"<br>{_html.escape(site)}" if site else ""}</p>
+</td></tr></table></td></tr></table>"""
+
+
+def _btn(href: str, label: str) -> str:
+    return (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+            f"<td align='center' style='background:{_C_GREEN};border-radius:10px'>"
+            f"<a href='{_html.escape(href)}' style='display:inline-block;padding:13px 28px;"
+            f"color:#062b1a;font-size:15px;font-weight:bold;text-decoration:none'>"
+            f"{label}</a></td></tr></table>")
+
+
+def _kv_rows(rows: list[tuple[str, str]]) -> str:
+    """Label/value detail table (values pre-escaped by callers where dynamic)."""
+    tr = "".join(
+        f"<tr><td style='padding:7px 14px;color:#5a657d;font-size:14px;white-space:nowrap'>{k}</td>"
+        f"<td style='padding:7px 14px;color:{_C_NAVY};font-size:14px;font-weight:bold' align='right'>{v}</td></tr>"
+        for k, v in rows)
+    return (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+            f"style='background:#f4f7fa;border-radius:12px;margin:14px 0 18px'>{tr}</table>")
+
+
+def _badge(glyph: str, bg: str = _C_GREEN, fg: str = "#ffffff") -> str:
+    """Round status mark built from a text glyph (✓ ↓ ₹) — NOT an emoji, so it
+    renders identically in every mail client and prints cleanly."""
+    return (f"<table role='presentation' cellpadding='0' cellspacing='0' "
+            f"style='margin:0 0 14px'><tr><td style='width:46px;height:46px;"
+            f"background:{bg};border-radius:23px;text-align:center;vertical-align:middle;"
+            f"color:{fg};font-size:22px;font-weight:bold;line-height:46px'>{glyph}</td>"
+            f"</tr></table>")
+
+
+def _ist_now_str() -> str:
+    ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist.strftime("%d %b %Y, %I:%M %p") + " IST"
+
+
+def _ld_order(tag: str, service_label: str, inr: float, status: str) -> str:
+    """schema.org Order markup — lets Gmail render its native 'Ordered from /
+    Items' summary card above the email (the professional look big senders
+    have). Harmless if a client ignores it. Only code-built values go in —
+    never user-typed text — so no escaping/injection surface."""
+    data = {
+        "@context": "http://schema.org",
+        "@type": "Order",
+        "merchant": {"@type": "Organization", "name": _BRAND_NAME},
+        "orderNumber": tag.lstrip("#"),
+        "orderStatus": f"http://schema.org/{status}",
+        "priceCurrency": "INR",
+        "price": f"{inr:.2f}",
+        "acceptedOffer": {
+            "@type": "Offer",
+            "itemOffered": {"@type": "Product",
+                            "name": f"USDT → INR bank payout via {service_label}"},
+            "price": f"{inr:.2f}",
+            "priceCurrency": "INR",
+            "eligibleQuantity": {"@type": "QuantitativeValue", "value": 1},
+        },
+    }
+    if settings.site_url:
+        data["url"] = settings.site_url
+    return ("<script type='application/ld+json'>"
+            + json.dumps(data, ensure_ascii=False) + "</script>")
+
+
+def _receipt_hero(amount_inr: float, paid_at: str, tag: str) -> str:
+    """Payment-receipt hero card — dark panel, the amount front and center,
+    paid date and receipt number, like the receipts big billing systems send."""
+    return f"""<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{_C_NAVY};border-radius:14px;margin:0 0 18px"><tr><td style="padding:24px 26px">
+<p style="margin:0 0 6px;color:#9aa3b8;font-size:13px">Receipt from {_BRAND_NAME}</p>
+<p style="margin:0;color:#ffffff;font-size:36px;font-weight:bold;line-height:1.1">{_inr(amount_inr)}</p>
+<p style="margin:6px 0 0;color:{_C_GREEN};font-size:13px;font-weight:bold">Paid {_html.escape(paid_at)}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:16px;border-top:1px solid #2a3152"><tr>
+<td style="padding-top:12px;color:#9aa3b8;font-size:13px">Receipt number</td>
+<td style="padding-top:12px;color:#ffffff;font-size:13px;font-weight:bold" align="right">{_html.escape(tag)}</td>
+</tr></table></td></tr></table>"""
+
+
+def _rates_box(rates: dict[str, float]) -> str:
+    """Every live payout method's rate in one box (0-rate methods are hidden)."""
+    from .config import SERVICES as _SV
+    live = [(k, rates[k]) for k in _SV if k in rates and rates[k] > 0]
+    rows = "".join(
+        f"<tr><td style='padding:10px 18px;color:{_C_OK};font-size:15px;font-weight:bold'>"
+        f"{_html.escape(_SV.get(k, k))}</td>"
+        f"<td style='padding:10px 18px;color:{_C_OK};font-size:20px;font-weight:bold' align='right'>"
+        f"&#8377;{r:g} <span style='font-size:13px;font-weight:normal'>/ USDT</span></td></tr>"
+        for k, r in live)
+    return (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+            f"style='background:{_C_SOFT};border-radius:12px;margin:0 0 18px'>{rows}</table>")
+
+
+def rate_update_email(rates: dict[str, float]) -> tuple[str, str]:
+    """(subject, html) for the auto 'rates changed' blast — every live payout
+    method's rate in one box, matching what the site shows right now."""
+    from .config import SERVICES as _SV
+    live = [(k, rates[k]) for k in _SV if k in rates and rates[k] > 0]
+    subject = ("USDT → INR rates updated — "
+               + " · ".join(f"{k} ₹{r:g}" for k, r in live)[:120])
+    site = (settings.site_url or "").rstrip("/")
+    inner = f"""{_badge("&#8377;", bg=_C_NAVY, fg=_C_GREEN)}
+<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">Rates just updated</h1>
+<p style="margin:0 0 14px;color:{_C_INK};font-size:15px;line-height:1.6">Live USDT&nbsp;&rarr;&nbsp;INR rates on the desk right now:</p>
+{_rates_box(rates)}
+<p style="margin:0 0 18px;color:{_C_INK};font-size:14px;line-height:1.6">Instant bank payout &mdash; UPI and IMPS land in minutes, every deposit is verified on-chain, and funds are 100% clean. Lock today's rate before it moves:</p>
+{_btn(site + "/sell" if site else "#", "Sell USDT now &rarr;")}"""
+    return subject, inner
+
+
+def order_created_email(tag: str, usd: float, service_label: str, rate: float,
+                        inr: float, bank_label: str, net_label: str,
+                        track_url: str, ttl_min: int) -> tuple[str, str]:
+    subject = f"Order {tag} received — sell {_usd(usd)} USDT via {service_label}"
+    rows = _kv_rows([
+        ("Order", _html.escape(tag)),
+        ("Send exactly", f"{_usd(usd)} USDT <span style='font-weight:normal;color:#5a657d'>({_html.escape(net_label)})</span>"),
+        ("Payout method", _html.escape(service_label)),
+        ("Rate locked", f"&#8377;{rate:g} / USDT"),
+        ("You receive", _inr(inr)),
+        ("Payout bank", _html.escape(bank_label or "—")),
+        ("Deposit window", f"{ttl_min} minutes"),
+        ("Payout after confirmation", _html.escape(settings.eta_text)),
+    ])
+    inner = f"""{_badge("&#10003;")}
+<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">Order received &mdash; watching for your deposit</h1>
+<p style="margin:0 0 6px;color:{_C_INK};font-size:15px;line-height:1.6">Everything you submitted, in one place:</p>
+{rows}
+<p style="margin:0 0 16px;color:{_C_INK};font-size:14px;line-height:1.65">
+Send the <b>exact amount</b> shown &mdash; the cents are unique to this order, so your
+deposit is matched the moment it lands. The deposit address, QR code and a live
+timer are on your order page. We'll email you again the second your deposit is received.</p>
+{_btn(track_url, "Open your order &rarr;")}
+{_ld_order(tag, service_label, inr, "OrderProcessing")}"""
+    return subject, inner
+
+
+def deposit_received_email(tag: str, usd: float, inr: float, service_label: str,
+                           bank_label: str, position: int,
+                           track_url: str) -> tuple[str, str]:
+    """Sent the moment the chain scanner (or an admin confirm) verifies the
+    deposit for an order — the middle step between confirmation and receipt."""
+    subject = f"Deposit received — {_usd(usd)} USDT credited to order {tag}"
+    rows = _kv_rows([
+        ("Order", _html.escape(tag)),
+        ("Deposit verified", f"<span style='color:{_C_OK}'>{_usd(usd)} USDT</span>"),
+        ("Being paid to you", _inr(inr)),
+        ("Payout method", _html.escape(service_label)),
+        ("Payout bank", _html.escape(bank_label or "—")),
+        ("Queue position", f"#{position}"),
+        ("Expected payout", _html.escape(settings.eta_text)),
+    ])
+    inner = f"""{_badge("&#8595;")}
+<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">Your deposit is in &mdash; payout on the way</h1>
+<p style="margin:0 0 6px;color:{_C_INK};font-size:15px;line-height:1.6">We verified your USDT on-chain for order <b>{_html.escape(tag)}</b>. Nothing more to do &mdash; your bank transfer is now in the payout queue:</p>
+{rows}
+<p style="margin:0 0 16px;color:{_C_INK};font-size:14px;line-height:1.6">You'll get one more email with the final receipt the moment the bank transfer is sent. Track it live any time:</p>
+{_btn(track_url, "Track your payout &rarr;")}
+{_ld_order(tag, service_label, inr, "OrderProcessing")}"""
+    return subject, inner
+
+
+def order_completed_email(tag: str, usd: float, rate: float, inr: float,
+                          service_label: str, bank_label: str,
+                          live_rates: dict[str, float] | None = None,
+                          paid_at: str = "") -> tuple[str, str]:
+    subject = f"{_inr(inr)} paid — order {tag} complete"
+    rows = _kv_rows([
+        ("Payout method", _html.escape(service_label)),
+        ("Payout bank", _html.escape(bank_label or "—")),
+        ("USDT received", f"{_usd(usd)} USDT"),
+        ("Rate", f"&#8377;{rate:g} / USDT"),
+        ("Status", f"<span style='color:{_C_OK}'>Complete &mdash; marked in your account</span>"),
+    ])
+    site = (settings.site_url or "").rstrip("/")
+    rates_push = ""
+    if live_rates:
+        rates_push = (f"<p style='margin:0 0 8px;color:{_C_INK};font-size:14px;"
+                      f"line-height:1.6'><b>Selling more today?</b> These rates are "
+                      f"live on the desk right now &mdash; your bank is already "
+                      f"saved, so the next order takes under a minute:</p>"
+                      + _rates_box(live_rates))
+    inner = f"""<h1 style="margin:0 0 12px;color:{_C_NAVY};font-size:23px;line-height:1.25">Payment sent</h1>
+{_receipt_hero(inr, paid_at or _ist_now_str(), tag)}
+{rows}
+{rates_push}
+{_btn(site + "/sell" if site else "#", "Sell again &rarr;")}
+<p style="margin:16px 0 0;color:#8b95a8;font-size:13px;line-height:1.6">If the credit doesn't show in your bank within a few minutes, reply to this email with your order number and we'll check it immediately.</p>
+{_ld_order(tag, service_label, inr, "OrderDelivered")}"""
+    return subject, inner
+
+
+async def account_email_for_uid(uid: int) -> tuple[str, str]:
+    """(email, name) when uid belongs to a signed-up website account with a
+    VERIFIED email; ('','') otherwise (Telegram ids, anon uids, unverified)."""
+    if uid >= 0:
+        return "", ""
+    acct_id = -uid - _ACCT_BASE
+    if acct_id <= 0:
+        return "", ""
+    async with Session() as s:
+        a = await s.get(Account, acct_id)
+    if (a and a.email and _EMAIL_RE.match(a.email.strip())
+            and getattr(a, "email_verified", False)):
+        return a.email.strip(), a.name or ""
+    return "", ""
+
+
+async def email_for_uid(uid: int) -> tuple[str, str]:
+    """Verified email for ANY customer: website accounts (negative uids) or
+    Telegram users who added one with /email + /verify (positive ids)."""
+    if uid < 0:
+        return await account_email_for_uid(uid)
+    async with Session() as s:
+        u = await s.get(User, uid)
+    if (u and u.email and u.email_verified and _EMAIL_RE.match(u.email.strip())):
+        return u.email.strip(), u.first_name or ""
+    return "", ""
+
+
+# ── email OTP (6-digit) — the front door that keeps fake addresses out ───────
+# In-memory per-uid store: {email, code, exp, tries, sends}. A process restart
+# clears pending codes, which only means "request a fresh one" — no data loss.
+
+_otps: dict[int, dict] = {}
+OTP_TTL = 15 * 60
+OTP_MAX_TRIES = 5
+OTP_MAX_SENDS_PER_HOUR = 3
+
+
+def otp_email(code: str) -> tuple[str, str]:
+    subject = f"{code} is your {_BRAND_NAME} verification code"
+    digits = "".join(
+        f"<td style='width:44px;height:56px;background:#f4f7fa;border:1px solid #e6eaf1;"
+        f"border-radius:10px;text-align:center;color:{_C_NAVY};font-size:26px;"
+        f"font-weight:bold'>{d}</td><td style='width:8px'></td>"
+        for d in code)
+    inner = f"""<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">Verify your email</h1>
+<p style="margin:0 0 16px;color:{_C_INK};font-size:15px;line-height:1.6">Enter this code to confirm this address receives your order updates and payment receipts:</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 18px"><tr>{digits}</tr></table>
+<p style="margin:0;color:#8b95a8;font-size:13px;line-height:1.6">The code expires in 15 minutes. If you didn't request it, you can safely ignore this email.</p>"""
+    return subject, inner
+
+
+def _otp_bucket(uid: int) -> dict:
+    b = _otps.get(uid)
+    if b is None or time.time() > b["exp"]:
+        b = {"email": "", "code": "", "exp": 0.0, "tries": 0, "sends": []}
+        _otps[uid] = b
+    return b
+
+
+async def issue_email_otp(uid: int, email: str) -> tuple[bool, str]:
+    """Generate + email a 6-digit code for this uid/email. Rate-limited."""
+    email = (email or "").strip()
+    if not _EMAIL_RE.match(email):
+        return False, "That doesn't look like a valid email address."
+    cfg = await email_config()
+    if not email_ready(cfg):
+        return False, "Email delivery isn't set up yet — ask support."
+    b = _otp_bucket(uid)
+    now = time.time()
+    b["sends"] = [t for t in b["sends"] if now - t < 3600]
+    if len(b["sends"]) >= OTP_MAX_SENDS_PER_HOUR:
+        return False, "Too many codes requested — try again in an hour."
+    b.update({"email": email, "code": f"{secrets.randbelow(1_000_000):06d}",
+              "exp": now + OTP_TTL, "tries": 0})
+    b["sends"].append(now)
+    subj, inner = otp_email(b["code"])
+    await send_transactional(email, "", subj, inner)
+    return True, email
+
+
+def verify_email_otp(uid: int, code: str) -> tuple[bool, str]:
+    """(ok, verified_email | error). Constant-shape checks with attempt cap."""
+    b = _otps.get(uid)
+    if not b or not b["code"] or time.time() > b["exp"]:
+        return False, "That code expired — request a fresh one."
+    if b["tries"] >= OTP_MAX_TRIES:
+        return False, "Too many wrong attempts — request a fresh code."
+    b["tries"] += 1
+    if not hmac.compare_digest((code or "").strip(), b["code"]):
+        return False, "Wrong code — check the email and try again."
+    email = b["email"]
+    _otps.pop(uid, None)
+    return True, email
+
+
+async def send_transactional(to_addr: str, to_name: str, subject: str,
+                             inner_html: str, fail_bot=None,
+                             fail_uid: int = 0) -> bool:
+    """Fire-and-forget single branded email (order confirmations/receipts).
+    Never raises into the order flow; returns False when email isn't set up.
+    Skips the unsubscribe list by design — these are receipts, not marketing —
+    and carries no unsubscribe footer. When fail_bot + a positive fail_uid are
+    given and the SMTP relay rejects the address, the Telegram user is told
+    their email bounced so they can fix it with /email."""
+    cfg = await email_config()
+    if not email_ready(cfg) or not _EMAIL_RE.match((to_addr or "").strip()):
+        return False
+    body = brand_wrap(inner_html, contact=cfg["from_addr"])
+
+    async def _run():
+        def _noop(_s, _f):
+            pass
+        failed = 0
+        try:
+            _sent, failed, _errs = await asyncio.to_thread(
+                _send_batch_blocking, cfg, [((to_addr or "").strip(), to_name)],
+                subject, body, True, b"", _noop)   # secret unused: no unsub link
+        except Exception:
+            failed = 1
+            log.exception("transactional email to %s failed", to_addr)
+        if failed and fail_bot is not None and fail_uid > 0:
+            try:
+                from .helpers import notify_user
+                await notify_user(
+                    fail_bot, fail_uid,
+                    f"⚠️ We couldn't deliver your order email to "
+                    f"<code>{_html.escape(to_addr)}</code> — the address looks "
+                    "wrong. Use /email your@address.com to set the correct one "
+                    "so you keep receiving order updates.")
+            except Exception:
+                log.exception("bounce notice to %s failed", fail_uid)
+
+    _spawn(_run())
+    return True
+
+
+async def maybe_rate_blast(bot=None, prev_rates: dict | None = None) -> str:
+    """Auto-email subscribers when the live rate set actually changes.
+
+    Dedupe: the last-EMAILED rate snapshot is stored in the Setting
+    'rate_email_last'; identical rates never re-send. Anti-spam: at most one
+    rate email per RATE_BLAST_GAP — rapid tweaks collapse into one delayed
+    email carrying the latest rates (a retry task re-checks when the gap ends).
+    First run with no history: prev_rates (captured by the caller BEFORE
+    saving) decides whether this was a real change; with neither history nor
+    prev_rates, the current rates become the baseline silently."""
+    from .db import get_rates
+    async with Session() as s:
+        if (await get_setting(s, "rate_email_auto") or "1") == "0":
+            return "off"
+        rates = await get_rates(s)
+        last_json = await get_setting(s, "rate_email_last") or ""
+    if not rates:
+        return "no live rates"
+    snap = json.dumps({k: v for k, v in sorted(rates.items())})
+    try:
+        last = json.loads(last_json) if last_json else {}
+    except ValueError:
+        last = {}
+    if last:
+        baseline, ts = last.get("snap", ""), float(last.get("ts", 0))
+    elif prev_rates is not None:
+        baseline = json.dumps({k: v for k, v in sorted(prev_rates.items())})
+        ts = 0.0
+        # persist the pre-change baseline NOW — a later retry runs without
+        # prev_rates, and without stored history it would record the changed
+        # rates as the baseline and silently drop the pending email
+        async with Session() as s:
+            await set_setting(s, "rate_email_last",
+                              json.dumps({"snap": baseline, "ts": 0}))
+    else:
+        async with Session() as s:   # first sighting — baseline only, no blast
+            await set_setting(s, "rate_email_last",
+                              json.dumps({"snap": snap, "ts": 0}))
+        return "baseline recorded"
+    if snap == baseline:
+        return "unchanged"
+    cfg = await email_config()
+    if not email_ready(cfg):
+        return "email not configured"   # no retry loop — nothing to send with
+    wait = RATE_BLAST_GAP - (time.time() - ts)
+    if wait > 0:
+        _schedule_rate_retry(wait, bot)
+        return f"cooldown — latest rates go out in ~{int(wait // 60) + 1} min"
+    # re-check right before claiming the broadcast: another coroutine may have
+    # just sent for this exact snapshot while we were reading config above
+    async with Session() as s:
+        recheck = await get_setting(s, "rate_email_last") or ""
+    try:
+        if recheck and json.loads(recheck).get("snap") == snap:
+            return "unchanged"
+    except ValueError:
+        pass
+    subject, inner = rate_update_email(rates)
+    ok, msg = await start_email_broadcast(
+        subject, brand_wrap(inner, contact=cfg.get("from_addr", "")), True, bot=bot)
+    if ok:
+        async with Session() as s:
+            await set_setting(s, "rate_email_last",
+                              json.dumps({"snap": snap, "ts": time.time()}))
+        return "rate email sending"
+    if "already running" in msg:
+        _schedule_rate_retry(120, bot)   # busy is transient — try again shortly
+    return msg   # persistent refusals (no recipients / no site URL): no loop
+
+
+def spawn_rate_blast(bot=None, prev_rates: dict | None = None) -> None:
+    """Fire-and-forget wrapper for the rate-change hooks (panel save and the
+    /setrate command) — never blocks or raises into the caller."""
+    _spawn(maybe_rate_blast(bot, prev_rates))
+
+
+def _schedule_rate_retry(delay: float, bot) -> None:
+    if _rate_retry["pending"]:
+        return
+    _rate_retry["pending"] = True
+
+    async def _later():
+        try:
+            await asyncio.sleep(max(5.0, delay))
+            _rate_retry["pending"] = False
+            await maybe_rate_blast(bot)
+            _rate_retry["attempts"] = 0
+        except Exception:
+            _rate_retry["pending"] = False
+            log.exception("delayed rate blast failed")
+            # one transient error must not drop the pending email for good —
+            # retry a bounded number of times, then give up loudly (logged)
+            _rate_retry["attempts"] = _rate_retry.get("attempts", 0) + 1
+            if _rate_retry["attempts"] <= 3:
+                _schedule_rate_retry(120, bot)
+
+    _spawn(_later())

@@ -44,6 +44,10 @@ class User(Base):
     first_name: Mapped[str | None] = mapped_column(String(128))
     lang: Mapped[str] = mapped_column(String(4), default="en")
     banned: Mapped[bool] = mapped_column(default=False)
+    # optional email for order updates (/email in the bot) — only ever used
+    # after the OTP check sets email_verified, so fake addresses die at the door
+    email: Mapped[str] = mapped_column(String(190), default="")
+    email_verified: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -148,6 +152,9 @@ class Account(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(190), unique=True, index=True)
+    # Google sign-ins are verified by Google; manual signups verify via a
+    # 6-digit OTP. Order/marketing email only ever goes to verified addresses.
+    email_verified: Mapped[bool] = mapped_column(default=False)
     name: Mapped[str] = mapped_column(String(120), default="")
     phone: Mapped[str] = mapped_column(String(20), default="")
     provider: Mapped[str] = mapped_column(String(10), default="email")  # email / google

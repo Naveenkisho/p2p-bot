@@ -24,7 +24,17 @@ _ADDED_COLUMNS = [
     ("orders", "network", "VARCHAR(8) DEFAULT 'TRC20'"),
     ("orders", "display_address", "VARCHAR(64)"),
     ("orders", "web_token", "VARCHAR(48)"),
+    ("users", "email", "VARCHAR(190) DEFAULT ''"),
+    ("users", "email_verified", "BOOLEAN DEFAULT 0"),
+    ("accounts", "email_verified", "BOOLEAN DEFAULT 0"),
 ]
+
+# One-off SQL run only when its column was just added by _migrate. Existing
+# accounts predate OTP verification — grandfather them as verified so an
+# upgrade never silently stops emailing customers who already signed up.
+_ADDED_BACKFILL = {
+    ("accounts", "email_verified"): "UPDATE accounts SET email_verified=1",
+}
 
 
 # Indexes on those late-added columns. create_all() only builds indexes for
@@ -45,6 +55,9 @@ def _migrate(conn) -> None:
         cols = {c["name"] for c in insp.get_columns(table)}
         if col not in cols:
             conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+            fill = _ADDED_BACKFILL.get((table, col))
+            if fill:
+                conn.exec_driver_sql(fill)
     insp = inspect(conn)   # re-reflect: the loop above just changed the schema,
     for name, table, col in _ADDED_INDEXES:   # and the old inspector is cached
         if table not in tables:

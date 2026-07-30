@@ -1300,7 +1300,22 @@ async def signup_post(request: web.Request):
     except IntegrityError:      # signup race on the same email
         return await signup_get(request, "That email is already registered — "
                                 "sign in instead.", p, mode="in")
-    resp = web.HTTPFound(nxt)
+    # OTP-verify the address when email delivery is available; without SMTP
+    # there's no way to send a code, so the flow stays as before (no email is
+    # ever sent to an unverified address either way).
+    from . import sender as _sender
+    if _sender.email_ready(await _sender.email_config()):
+        new_uid = -(_ACCT_BASE + acct.id)
+        await _sender.issue_email_otp(new_uid, acct.email)
+        resp = web.HTTPFound(f"/verify-email?next={_uq(nxt)}")
+    else:
+        async with Session() as s:
+            fresh = await s.get(Account, acct.id)
+            if fresh is not None:
+                fresh.email_verified = True
+                await s.commit()
+        acct.email_verified = True
+        resp = web.HTTPFound(nxt)
     await _login_account(request, resp, acct, uid)
     await _notify_signup(request, acct)
     log.info("web signup #%s via email from %s", acct.id, ip)
@@ -1389,12 +1404,16 @@ async def auth_google(request: web.Request):
                     acct.provider = "google"
                     acct.pw_hash = ""
                     acct.pw_salt = ""
+                    acct.email_verified = True   # Google verified the address
                     if not acct.name:
                         acct.name = name
                 else:
                     acct = Account(email=email, name=name, provider="google",
-                                   google_sub=sub)
+                                   google_sub=sub, email_verified=True)
                     s.add(acct)
+                await s.commit()
+            elif not acct.email_verified:
+                acct.email_verified = True       # repeat Google login backfills
                 await s.commit()
     except IntegrityError:      # two first-logins racing — re-read the winner
         async with Session() as s:
@@ -1408,6 +1427,69 @@ async def auth_google(request: web.Request):
     await _login_account(request, resp, acct, uid)
     log.info("web google sign-in #%s from %s", acct.id, ip)
     return resp
+
+
+async def verify_email_get(request: web.Request, error: str = "", ok: str = ""):
+    """OTP entry after a manual signup — the address only starts receiving
+    order updates once the 6-digit code checks out."""
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup")
+    nxt = _safe_next(request.query.get("next", "/sell"))
+    if acct.email_verified:
+        raise web.HTTPFound(nxt)
+    uid = await _uid_from_cookie(request)
+    csrf = await _csrf(f"auth:{uid}")
+    note = (f"<div class='banner warn'>{_esc(error)}</div>" if error
+            else f"<div class='banner ok'>{_esc(ok)}</div>" if ok else "")
+    body = f"""<div class=authwrap><div class=card style='max-width:430px;margin:40px auto'>
+<h1 style='margin-top:0'>Check your inbox</h1>
+<p class=muted>We sent a 6-digit code to <b>{_esc(acct.email)}</b>. Enter it to
+start receiving your order confirmations and payment receipts by email.</p>{note}
+<form method=post action='/verify-email?next={_uq(nxt)}'>
+<input type=hidden name=csrf value='{csrf}'><input type=hidden name=act value=verify>
+<label>Verification code</label>
+<input name=code inputmode=numeric autocomplete=one-time-code maxlength=6
+ placeholder='123456' style='letter-spacing:6px;font-size:1.3em;text-align:center'>
+<div class=row style='margin-top:12px'><button>Verify email</button></div></form>
+<form method=post action='/verify-email?next={_uq(nxt)}' style='margin-top:10px'>
+<input type=hidden name=csrf value='{csrf}'><input type=hidden name=act value=resend>
+<button class='btn small' style='background:var(--surface-2);color:var(--text)'>Resend code</button>
+</form>
+<p class='muted small' style='margin-top:14px'>Wrong address? <a href='/signup'>Sign up
+again</a> with the right one. You can also <a href='{_esc(nxt)}'>skip for now</a> —
+order emails stay off until the address is verified.</p>
+</div></div>"""
+    return _page("Verify email", body, noindex=True, acct=acct.name or acct.email)
+
+
+async def verify_email_post(request: web.Request):
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup")
+    uid = await _uid_from_cookie(request)
+    data = await request.post()
+    nxt = _safe_next(request.query.get("next", "/sell"))
+    if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"auth:{uid}")):
+        return await verify_email_get(request, error="That form expired — try again.")
+    from . import sender as _sender
+    if str(data.get("act", "")) == "resend":
+        ok, msg = await _sender.issue_email_otp(uid, acct.email)
+        return await verify_email_get(
+            request, ok=f"Fresh code sent to {acct.email}." if ok else "",
+            error="" if ok else msg)
+    ok, result = _sender.verify_email_otp(uid, str(data.get("code", "")))
+    if not ok:
+        return await verify_email_get(request, error=result)
+    if result.lower() != acct.email.lower():
+        return await verify_email_get(request, error="That code was for a "
+                                      "different address — request a fresh one.")
+    async with Session() as s:
+        fresh = await s.get(Account, acct.id)
+        if fresh is not None:
+            fresh.email_verified = True
+            await s.commit()
+    raise web.HTTPFound(nxt)
 
 
 async def stock_get(request: web.Request, error: str = ""):
@@ -1782,9 +1864,13 @@ async def sell_post(request: web.Request):
         await s.flush()
         order.usd_amount = _tag_amount(order.id, usd)
         order.inr_amount = order.usd_amount * rate
+        # email-only data is read BEFORE the commit: after it, nothing that can
+        # raise may sit between the persisted order and the customer's redirect
+        ttl_min = await get_deposit_ttl(s)
         await s.commit()
         token = order.web_token
         order_id = order.id
+        bank_label = card.label
 
     # The client IP is otherwise invisible (the site runs with access logging
     # off so order tokens stay out of the logs), and it is the one thing that
@@ -1795,6 +1881,23 @@ async def sell_post(request: web.Request):
     log.info("web order #%s created from %s (%s %.2f USDT)",
              order_id, ip, service, usd)
     _record_order(ip)
+    # Emailed confirmation of what they submitted (fire-and-forget; selling
+    # requires a signed-in account, so acct is always present here). Only a
+    # VERIFIED address gets mail — unverified/fake signups stay silent.
+    try:
+        from . import sender as _sender
+        if acct.email and acct.email_verified:
+            base = ((settings.site_url or "").rstrip("/")
+                    or ("https://" if _is_https(request) else "http://")
+                    + request.host)
+            subj, inner = _sender.order_created_email(
+                texts.tag(order_id), order.usd_amount,
+                SERVICES.get(service, service), rate, order.inr_amount,
+                bank_label, "BEP20 (BSC)" if net_key == "BEP20" else "TRC20 (TRON)",
+                f"{base}/o/{token}", ttl_min)
+            await _sender.send_transactional(acct.email, acct.name or "", subj, inner)
+    except Exception:
+        log.exception("order confirmation email failed")
     resp = web.HTTPFound(f"/o/{token}")
     _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
@@ -2898,6 +3001,8 @@ async def start_site(bot):
         web.post("/auth/google", auth_google),
         web.get("/signup/stock", stock_get),
         web.post("/signup/stock", stock_post),
+        web.get("/verify-email", verify_email_get),
+        web.post("/verify-email", verify_email_post),
         web.post("/logout", logout),
         web.get("/learn", learn_index),
         web.get("/learn/{slug}", learn_page),

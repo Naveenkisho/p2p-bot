@@ -91,6 +91,78 @@ async def cmd_whoami(message: Message) -> None:
         "Tap to copy and send it to support if they ask for it.")
 
 
+@router.message(Command("email"))
+async def cmd_email(message: Message) -> None:
+    """Add (or remove) an email for real-time order updates. The address only
+    goes live after the /verify OTP check, so typos and fakes never stick."""
+    from ..models import User
+    from ..sender import issue_email_otp
+    args = (message.text or "").split(maxsplit=1)
+    arg = args[1].strip() if len(args) > 1 else ""
+    uid = message.from_user.id
+    if arg.lower() in ("off", "remove", "delete"):
+        async with Session() as session:
+            u = await session.get(User, uid)
+            if u is not None:
+                u.email = ""
+                u.email_verified = False
+                await session.commit()
+        await message.answer("✅ Email removed — order updates by email are off.")
+        return
+    if not arg:
+        async with Session() as session:
+            u = await session.get(User, uid)
+        if u is not None and u.email and u.email_verified:
+            await message.answer(
+                f"📧 Order updates go to <code>{esc(u.email)}</code> (verified).\n"
+                "• <code>/email new@address.com</code> — change it\n"
+                "• <code>/email off</code> — stop email updates")
+        else:
+            await message.answer(
+                "📧 Get your order confirmations, deposit alerts and payment "
+                "receipts by email too:\n"
+                "<code>/email your@address.com</code>\n"
+                "We'll send a 6-digit code to confirm the address is really yours.")
+        return
+    ok, result = await issue_email_otp(uid, arg)
+    if not ok:
+        await message.answer(f"⚠️ {esc(result)}")
+        return
+    await message.answer(
+        f"📨 Code sent to <code>{esc(result)}</code> — check the inbox (and spam "
+        "folder) and reply:\n<code>/verify 123456</code>\n"
+        "The code expires in 15 minutes.")
+
+
+@router.message(Command("verify"))
+async def cmd_verify(message: Message) -> None:
+    """Confirm the /email OTP — only then does the address start receiving mail."""
+    from ..models import User
+    from ..sender import verify_email_otp
+    args = (message.text or "").split(maxsplit=1)
+    code = args[1].strip() if len(args) > 1 else ""
+    if not code:
+        await message.answer("Usage: <code>/verify 123456</code> — the 6-digit "
+                             "code we emailed you after /email.")
+        return
+    ok, result = verify_email_otp(message.from_user.id, code)
+    if not ok:
+        await message.answer(f"⚠️ {esc(result)}")
+        return
+    async with Session() as session:
+        u = await session.get(User, message.from_user.id)
+        if u is None:
+            await message.answer("Please /start the bot first, then try again.")
+            return
+        u.email = result
+        u.email_verified = True
+        await session.commit()
+    await message.answer(
+        f"✅ <b>{esc(result)} verified.</b> You'll now get order confirmations, "
+        "deposit alerts and payment receipts by email — alongside the usual "
+        "Telegram updates. Change it any time with /email.")
+
+
 @router.callback_query(F.data == "menu:home")
 async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()

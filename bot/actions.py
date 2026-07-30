@@ -89,6 +89,24 @@ async def complete_order(bot: Bot, order_id: int) -> tuple[bool, str]:
         if user is not None:
             await update_order_cards(bot, session, updated, user, card, None)
         web = is_web_user(order.user_id)
+    # Emailed receipt for any customer with a verified email (fire-and-forget).
+    # Current live rates ride along so the receipt doubles as a sell-again nudge.
+    try:
+        from . import sender
+        email, name = await sender.email_for_uid(order.user_id)
+        if email:
+            async with Session() as s:
+                live_rates = await get_rates(s)
+            subj, inner = sender.order_completed_email(
+                texts.tag(order.id), updated.usd_amount, updated.rate_inr,
+                updated.inr_amount, SERVICES.get(order.service, order.service),
+                card.label if card else "", live_rates=live_rates,
+                paid_at=ist_now_str())
+            await sender.send_transactional(email, name, subj, inner,
+                                            fail_bot=bot,
+                                            fail_uid=max(order.user_id, 0))
+    except Exception:
+        log.exception("completion email failed")
     await post_proof(bot, updated)
     return True, ("Done — user notified ✅" if delivered
                   else "Done — the customer sees it on the site ✅" if web
