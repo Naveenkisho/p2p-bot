@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import html
 import logging
 import re
@@ -22,6 +24,19 @@ TXID_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]{64}$")   # TRON (bare) or EVM (0x) tx
 
 def is_bep20(addr: str) -> bool:
     return bool(BEP20_RE.fullmatch((addr or "").strip()))
+
+
+def unsub_token(secret: bytes, email: str) -> str:
+    """Per-recipient one-click-unsubscribe token — HMAC of the (lower-cased)
+    email under the site secret, so an unsubscribe link can't be forged or the
+    list enumerated. Shared by the bulk sender (builds the link) and the public
+    /unsubscribe route (verifies it)."""
+    norm = (email or "").strip().lower().encode()
+    return hmac.new(secret, b"unsub:" + norm, hashlib.sha256).hexdigest()[:32]
+
+
+def unsub_valid(secret: bytes, email: str, token: str) -> bool:
+    return hmac.compare_digest(token or "", unsub_token(secret, email))
 
 
 def order_display_address(order) -> tuple[str, str, str]:

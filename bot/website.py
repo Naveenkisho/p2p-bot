@@ -53,6 +53,7 @@ from .db import (
     get_support_email,
     get_whatsapp,
     set_setting,
+    site_secret,
 )
 from .helpers import (
     TXID_RE,
@@ -61,8 +62,9 @@ from .helpers import (
     queue_position,
     try_transition,
     txid_used_elsewhere,
+    unsub_valid,
 )
-from .models import Account, BankCard, Order, OrderStatus, Ticket, User, utcnow
+from .models import Account, BankCard, Order, OrderStatus, Ticket, Unsubscribe, User, utcnow
 from .qr import qr_png
 
 log = logging.getLogger(__name__)
@@ -81,13 +83,8 @@ _order_times: dict[str, deque] = {}
 # ── identity / signing ────────────────────────────────────────────────────────
 
 async def _secret() -> bytes:
-    """Site-scoped signing secret, created once and kept in the DB."""
-    async with Session() as s:
-        val = await get_setting(s, "site_secret")
-        if not val:
-            val = secrets.token_hex(32)
-            await set_setting(s, "site_secret", val)
-    return val.encode()
+    """Site-scoped signing secret (shared with the bulk sender via db)."""
+    return await site_secret()
 
 
 async def _sign_uid(uid: int) -> str:
@@ -280,7 +277,9 @@ _DUMMY_SALT = secrets.token_hex(16)
 
 def _valid_phone(phone: str) -> bool:
     digits = re.sub(r"[\s\-()]", "", phone).lstrip("+")
-    return digits.isdigit() and 7 <= len(digits) <= 15
+    # ASCII 0-9 only — str.isdigit() also accepts Arabic-Indic/Devanagari digits,
+    # which would store an un-diallable number and break bulk SMS normalisation.
+    return bool(digits) and all("0" <= c <= "9" for c in digits) and 7 <= len(digits) <= 15
 
 
 def _norm_phone(phone: str) -> str:
@@ -2817,6 +2816,65 @@ async def sitemap_xml(request: web.Request):
     return web.Response(text=xml, content_type="application/xml")
 
 
+# ── unsubscribe (bulk-email opt-out) ──────────────────────────────────────────
+
+async def _do_unsubscribe(email: str, token: str) -> bool:
+    """Record an opt-out if the signed token matches the email. Idempotent."""
+    norm = (email or "").strip().lower()
+    if not norm or not unsub_valid(await _secret(), norm, token):
+        return False
+    async with Session() as s:
+        if await s.get(Unsubscribe, norm) is None:
+            s.add(Unsubscribe(email=norm))
+            try:
+                await s.commit()
+            except IntegrityError:
+                await s.rollback()   # raced another click — already recorded
+    return True
+
+
+def _unsub_expired():
+    body = ("<h1>Link expired</h1>"
+            "<p class=lead>This unsubscribe link isn't valid. If you keep getting "
+            "mail, reply to any message and we'll remove you.</p>")
+    return _page("Unsubscribe", body, noindex=True)
+
+
+def _unsub_done():
+    body = ("<h1>You're unsubscribed</h1>"
+            "<p class=lead>You won't receive marketing emails from us again. "
+            "Order and support emails still reach you.</p>"
+            "<p><a class='btn' href='/'>Back to site</a></p>")
+    return _page("Unsubscribed", body, noindex=True)
+
+
+async def unsubscribe_get(request: web.Request):
+    """A GET must NOT change state — mail-security scanners and link prefetchers
+    fetch every URL in a delivered email, and each carries a valid token, so a
+    mutating GET would silently opt real people out. Instead we validate the
+    token for display only and show a one-tap Confirm button that POSTs."""
+    email = request.query.get("e", "")
+    token = request.query.get("t", "")
+    if not unsub_valid(await _secret(), (email or "").strip().lower(), token):
+        return _unsub_expired()
+    action = f"/unsubscribe?e={quote(email)}&amp;t={quote(token)}"
+    body = (f"<h1>Unsubscribe {_esc(email)}?</h1>"
+            "<p class=lead>Stop receiving marketing emails. Order and support "
+            "emails still reach you.</p>"
+            f"<form method=post action='{action}'>"
+            "<button class=btn type=submit>Unsubscribe me</button></form>")
+    return _page("Unsubscribe", body, noindex=True)
+
+
+async def unsubscribe_post(request: web.Request):
+    """The only mutating path — the Confirm button above and the RFC 8058
+    one-click List-Unsubscribe-Post header both land here. Body ignored; the
+    signed token in the query authenticates."""
+    ok = await _do_unsubscribe(request.query.get("e", ""),
+                               request.query.get("t", ""))
+    return _unsub_done() if ok else _unsub_expired()
+
+
 # ── app ───────────────────────────────────────────────────────────────────────
 
 async def start_site(bot):
@@ -2849,6 +2907,8 @@ async def start_site(bot):
         web.get("/about", about_page),
         web.get("/robots.txt", robots_txt),
         web.get("/sitemap.xml", sitemap_xml),
+        web.get("/unsubscribe", unsubscribe_get),
+        web.post("/unsubscribe", unsubscribe_post),
         web.post("/support", support_post),
         web.get("/o/{token}", order_page),
         web.get("/o/{token}/status.json", order_status),

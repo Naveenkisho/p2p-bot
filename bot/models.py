@@ -166,3 +166,15 @@ class Setting(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class Unsubscribe(Base):
+    """Emails that opted out of bulk mail (via the one-click List-Unsubscribe
+    link). The bulk email sender skips every address stored here — so an
+    unsubscribe is honoured for good, keeping the sending domain's reputation
+    clean and the desk compliant."""
+
+    __tablename__ = "email_unsubscribes"
+
+    email: Mapped[str] = mapped_column(String(190), primary_key=True)  # lower-cased
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
