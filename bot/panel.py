@@ -1583,6 +1583,22 @@ async def messaging_get(request: web.Request):
         f"<div style='flex:1'><label>From name</label>"
         f"<input name=from_name value='{_esc(e['from_name'])}' "
         "placeholder='IndiaXchange'></div></div>"
+        "<p class='muted small' style='margin:12px 0 0'><b>Split senders "
+        "(optional, recommended)</b> — a separate address per email type keeps "
+        "marketing complaints from hurting your codes and receipts. Blank = "
+        "everything sends from the main address. Replies always route to the "
+        "main address. Add each in Cloudflare Email Routing (or enable "
+        "catch-all) so replies to them don't bounce.</p>"
+        "<div class=row style='gap:12px'>"
+        f"<div style='flex:1'><label>Order emails from</label>"
+        f"<input name=from_tx type=email value='{_esc(e['from_tx'])}' "
+        "placeholder='orders@yourdomain.com'></div>"
+        f"<div style='flex:1'><label>Verification codes from</label>"
+        f"<input name=from_otp type=email value='{_esc(e['from_otp'])}' "
+        "placeholder='verify@yourdomain.com'></div>"
+        f"<div style='flex:1'><label>Campaigns &amp; rates from</label>"
+        f"<input name=from_mkt type=email value='{_esc(e['from_mkt'])}' "
+        "placeholder='updates@yourdomain.com'></div></div>"
         "<div class=row style='margin-top:12px'>"
         "<button name=op value=creds>Save email settings</button></div>"
         "</div></form>"
@@ -1678,6 +1694,14 @@ async def messaging_email_post(request: web.Request):
             await set_setting(s, "email_smtp_user", str(data.get("user", "")).strip()[:190])
             await set_setting(s, "email_from", str(data.get("from_addr", "")).strip()[:190])
             await set_setting(s, "email_from_name", str(data.get("from_name", "")).strip()[:120])
+            # optional per-stream senders (blank = use the main From)
+            for field, key in (("from_tx", "email_from_tx"),
+                               ("from_otp", "email_from_otp"),
+                               ("from_mkt", "email_from_mkt")):
+                val = str(data.get(field, "")).strip()[:190]
+                if val == "" or ("@" in val and "." in val.split("@")[-1]
+                                 and " " not in val):
+                    await set_setting(s, key, val)
             pw = str(data.get("pw", ""))
             if pw.strip():                      # blank keeps the current key
                 await set_setting(s, "email_smtp_pass", pw)

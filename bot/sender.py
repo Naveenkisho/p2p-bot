@@ -67,8 +67,28 @@ async def email_config() -> dict:
             "pw": (await get_setting(s, "email_smtp_pass") or ""),
             "from_addr": (await get_setting(s, "email_from") or "").strip(),
             "from_name": (await get_setting(s, "email_from_name") or "").strip(),
+            # optional per-stream senders — blank falls back to from_addr. Any
+            # @<authenticated-domain> address works once the domain is verified
+            # at the SMTP provider; splitting keeps marketing complaints from
+            # dragging down OTP/receipt deliverability.
+            "from_tx": (await get_setting(s, "email_from_tx") or "").strip(),
+            "from_otp": (await get_setting(s, "email_from_otp") or "").strip(),
+            "from_mkt": (await get_setting(s, "email_from_mkt") or "").strip(),
         }
     return cfg
+
+
+def _stream_cfg(cfg: dict, stream: str) -> dict:
+    """cfg with From switched to the stream's sender ('tx' | 'otp' | 'mkt').
+    When the stream address differs from the main one, Reply-To points back at
+    the main (support) address so customer replies always reach a human."""
+    addr = (cfg.get(f"from_{stream}") or "").strip()
+    if not addr or not _EMAIL_RE.match(addr) or addr == cfg["from_addr"]:
+        return cfg
+    out = dict(cfg)
+    out["from_addr"] = addr
+    out["reply_to"] = cfg["from_addr"]
+    return out
 
 
 def email_ready(cfg: dict) -> bool:
@@ -163,6 +183,8 @@ def _build_message(cfg: dict, to_addr: str, to_name: str, subject: str,
     # so mail isn't spam-scored/rejected on relays that don't backfill them.
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=(cfg["from_addr"].split("@")[-1] or None))
+    if cfg.get("reply_to"):
+        msg["Reply-To"] = cfg["reply_to"]
     if unsub_url:
         msg["List-Unsubscribe"] = f"<{unsub_url}>"
         msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
@@ -317,6 +339,7 @@ async def send_test_email(to_addr: str, subject: str, body: str,
         return False, "Email isn't configured yet — save your SMTP details first."
     if not _EMAIL_RE.match((to_addr or "").strip()):
         return False, "Enter a valid test address."
+    cfg = _stream_cfg(cfg, "mkt")   # campaigns preview from the marketing sender
     secret = await site_secret()
 
     def _noop(_s, _f):
@@ -356,7 +379,7 @@ async def start_email_broadcast(subject: str, body: str, is_html: bool,
     message). Refuses if a run is already in flight or nothing's configured."""
     if _email_job["running"]:
         return False, "An email send is already running — wait for it to finish."
-    cfg = await email_config()
+    cfg = _stream_cfg(await email_config(), "mkt")
     if not email_ready(cfg):
         return False, "Email isn't configured yet — save your SMTP details first."
     if not (settings.site_url or "").strip():
@@ -785,7 +808,7 @@ async def issue_email_otp(uid: int, email: str) -> tuple[bool, str]:
               "exp": now + OTP_TTL, "tries": 0})
     b["sends"].append(now)
     subj, inner = otp_email(b["code"])
-    await send_transactional(email, "", subj, inner)
+    await send_transactional(email, "", subj, inner, stream="otp")
     return True, email
 
 
@@ -806,17 +829,20 @@ def verify_email_otp(uid: int, code: str) -> tuple[bool, str]:
 
 async def send_transactional(to_addr: str, to_name: str, subject: str,
                              inner_html: str, fail_bot=None,
-                             fail_uid: int = 0) -> bool:
+                             fail_uid: int = 0, stream: str = "tx") -> bool:
     """Fire-and-forget single branded email (order confirmations/receipts).
     Never raises into the order flow; returns False when email isn't set up.
     Skips the unsubscribe list by design — these are receipts, not marketing —
     and carries no unsubscribe footer. When fail_bot + a positive fail_uid are
     given and the SMTP relay rejects the address, the Telegram user is told
-    their email bounced so they can fix it with /email."""
+    their email bounced so they can fix it with /email. `stream` picks the
+    From address ('tx' for order mail, 'otp' for verification codes)."""
     cfg = await email_config()
     if not email_ready(cfg) or not _EMAIL_RE.match((to_addr or "").strip()):
         return False
-    body = brand_wrap(inner_html, contact=cfg["from_addr"])
+    cfg = _stream_cfg(cfg, stream)
+    body = brand_wrap(inner_html,
+                      contact=cfg.get("reply_to") or cfg["from_addr"])
 
     async def _run():
         def _noop(_s, _f):
