@@ -762,8 +762,10 @@ details summary::marker{color:var(--accent-dark)}
  .wide .steps3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 26px}
  .wide .steps3 .step{flex-direction:column;gap:10px}
  .wide .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 34px;align-items:start}
- .wide .cols2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch}
- .wide .cols2 .card{margin:0}
+ /* sections stack full-width on desktop (like mobile). A 2-col grid here put a
+    short heading next to the tall rates card and left a huge void, and the
+    full-bleed marquee's 50vw math breaks inside a narrow grid column. */
+ .wide .cols2{display:block}
  .wide .darkband{grid-template-columns:repeat(6,1fr)}
  .wide .darkband .v{font-size:1.6rem}
  .wide .cta-mid{max-width:420px;margin-left:auto;margin-right:auto}
@@ -809,8 +811,14 @@ the network shown. By using this site you agree to the
  if(!('IntersectionObserver' in window)){return}
  var io=new IntersectionObserver(function(es){es.forEach(function(e){
    if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);
-     e.target.querySelectorAll('[data-cu]').forEach(cu);}})},{threshold:.12});
+     e.target.querySelectorAll('[data-cu]').forEach(cu);}})},
+   {threshold:.05,rootMargin:'0px 0px 300px 0px'});
  els.forEach(function(el){el.classList.add('rv');io.observe(el)});
+ // safety net: a money site must never look blank — if the observer hasn't
+ // revealed something shortly after load (fast scroll, odd browser, etc.),
+ // reveal it anyway so no section is ever stuck invisible.
+ setTimeout(function(){els.forEach(function(el){if(!el.classList.contains('in')){
+   el.classList.add('in');el.querySelectorAll('[data-cu]').forEach(cu);}})},1800);
  function cu(el){
    if(el.dataset.done)return;el.dataset.done=1;
    var n=parseFloat(el.dataset.cu),pre=el.dataset.pre||'',suf=el.dataset.suf||'',
