@@ -67,6 +67,25 @@ async def notify_deposit_received(bot: Bot, order_id: int) -> None:
             if not posted:
                 note += f" ⚠️ Card post failed — run /order {order.id}."
             await notify_admins(bot, note)
+            # emailed "deposit received" for any customer with a verified
+            # email — web accounts and Telegram users alike (fire-and-forget)
+            try:
+                from . import sender
+                from .config import SERVICES, settings
+                email, name = await sender.email_for_uid(order.user_id)
+                if email:
+                    site = (settings.site_url or "").rstrip("/")
+                    track = (site + f"/o/{order.web_token}"
+                             if order.web_token else site or "/")
+                    subj, inner = sender.deposit_received_email(
+                        texts.tag(order.id), order.usd_amount, order.inr_amount,
+                        SERVICES.get(order.service, order.service),
+                        card.label if card else "", position, track)
+                    await sender.send_transactional(
+                        email, name, subj, inner,
+                        fail_bot=bot, fail_uid=max(order.user_id, 0))
+            except Exception:
+                log.exception("deposit-received email failed")
             return
 
         # legacy: no bank yet → ask for it now

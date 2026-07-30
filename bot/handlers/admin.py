@@ -99,11 +99,15 @@ async def cmd_setrate(message: Message, command: CommandObject) -> None:
                              "(<code>0</code> hides the service).")
         return
     async with Session() as session:
+        old_rates = await get_rates(session)
         await set_setting(session, f"rate_{key}", str(rate))
     if rate == 0:
         await message.answer(f"✅ {SERVICES[key]} hidden from the sell menu.")
     else:
         await message.answer(f"✅ {SERVICES[key]} rate is now live: 1$ / ₹{rate:g}.")
+    # auto rate-update email to website subscribers (dedupes + rate-limits itself)
+    from ..sender import spawn_rate_blast
+    spawn_rate_blast(message.bot, prev_rates=old_rates)
 
 
 @router.message(Command("setlimit"))

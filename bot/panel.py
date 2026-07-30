@@ -52,6 +52,7 @@ from .db import (
     get_setting,
     get_support,
     get_support_email,
+    get_whatsapp,
     set_network_qr,
     set_setting,
 )
@@ -889,6 +890,8 @@ async def settings_get(request: web.Request):
         bsc_key_set = bool(await get_bscscan_key(s))   # honors /setbsckey off over an env key
         support = await get_setting(s, "support") or ""
         support_email = await get_support_email(s)
+        whatsapp = await get_whatsapp(s)
+        rate_auto = (await get_setting(s, "rate_email_auto")) != "0"
         instant_credit = (await get_setting(s, "instant_credit")) == "1"
         admin_ids = await get_setting(s, "admin_ids")
         admin_ids = admin_ids if admin_ids is not None else settings.admin_ids
@@ -916,6 +919,7 @@ async def settings_get(request: web.Request):
     desk_banner_cls = "ok" if is_open else "danger"
     status_line = ("🟢 <b>Desk is OPEN</b>" if is_open
                    else f"🔴 <b>Desk is CLOSED</b> — {_esc(reason)}")
+    tg_first = next((h.lstrip("@") for h in support.split() if h.startswith("@")), "")
     desk_toggle_html = _desk_toggle_btn(desk_switch, csrf, "/settings")
     # QR manager lives outside the main form (it has its own multipart upload forms)
     qr_cards = _qr_card("TRC20", "🔷 TRC20 (TRON)", addr, qr_trc_png, qr_trc_addr, csrf)
@@ -950,24 +954,60 @@ async def settings_get(request: web.Request):
             "<label>BscScan / Etherscan API key "
             f"({'set ✓ — blank keeps it' if bsc_key_set else 'needed to detect BEP20'})</label>"
             "<input type=password name=bscscan_key autocomplete=off placeholder='••••••'>"
-            "<label>Support usernames (space-separated, e.g. @a @b)</label>"
-            f"<input name=support value='{_esc(support)}'>"
-            "<label>Support email (shown on the website; blank = hidden)</label>"
-            f"<input name=support_email type=email value='{_esc(support_email)}' "
-            "placeholder='support@yourdomain.com'>"
-            "<label>Proof channel (@channel or -100… id, blank to disable)</label>"
-            f"<input name=proof value='{_esc(proof)}'>"
-            "</div><h2>Admins</h2><div class=card>"
+            "</div>"
+
+            # ── side-by-side: everything Telegram-bot vs everything website ──
+            "<div class=duo style='margin-top:18px'>"
+
+            "<div><h2>🤖 Bot (Telegram) settings</h2>"
+            "<div class=card><b>Admins &amp; alerts</b>"
+            "<p class='muted small' style='margin:4px 0 0'>Who controls the desk "
+            "and where new-order alerts land.</p>"
             "<label>Admin Telegram IDs (space/comma-separated)</label>"
             f"<input name=admin_ids value='{_esc(admin_ids)}'>"
             "<label>Admin group chat id (optional, -100…; blank = DM each admin)</label>"
             f"<input name=admin_chat value='{_esc(admin_chat)}'>"
-            "</div><h2>Bot token</h2><div class=card>"
-            f"<p class=muted style='margin-top:0'>{'A token is set.' if token_set else '⚠️ No token set.'} "
+            "<label>Proof channel (@channel or -100… id, blank to disable)</label>"
+            f"<input name=proof value='{_esc(proof)}'>"
+            "<p class='muted small' style='margin:6px 0 0'>Completed deals post "
+            "there anonymised — never a TXID or customer detail.</p></div>"
+            "<div class=card><b>Bot token</b>"
+            f"<p class=muted style='margin:4px 0 0'>{'A token is set.' if token_set else '⚠️ No token set.'} "
             "Changing it restarts the bot.</p>"
             "<label>New bot token (leave blank to keep current)</label>"
             "<input type=password name=bot_token autocomplete=off placeholder='••••••'>"
-            "</div><h2>Panel password</h2><div class=card>"
+            "</div></div>"
+
+            "<div><h2>🌐 Website settings</h2>"
+            "<div class=card><b>Support buttons</b>"
+            "<p class='muted small' style='margin:4px 0 0'>Floating contact buttons, "
+            "bottom-right of every page — each shows only when filled in.</p>"
+            "<label>✈️ Telegram support link (@username — also used in bot messages)</label>"
+            f"<input name=support value='{_esc(support)}' placeholder='@yourdesk'>"
+            + (f"<p class='muted small' style='margin:4px 0 0'>Button opens "
+               f"https://t.me/{_esc(tg_first)}</p>" if tg_first else
+               "<p class='muted small' style='margin:4px 0 0'>Add a @username to "
+               "show the Telegram button.</p>")
+            + "<label>💬 WhatsApp number (with country code; blank = hidden)</label>"
+            f"<input name=whatsapp value='{_esc(whatsapp)}' placeholder='+91 98765 43210'>"
+            "<label>✉️ Support email (highlighted across the site; blank = hidden)</label>"
+            f"<input name=support_email type=email value='{_esc(support_email)}' "
+            "placeholder='support@yourdomain.com'></div>"
+            "<div class=card><b>Customer emails</b>"
+            "<p class='muted small' style='margin:4px 0 0'>Sends through the SMTP "
+            "configured in the ✉️ Messaging tab.</p>"
+            "<label style='display:flex;gap:10px;align-items:flex-start;margin-top:12px'>"
+            f"<input type=checkbox name=rate_email_auto value=1 style='width:auto;margin-top:3px'"
+            f"{' checked' if rate_auto else ''}>"
+            "<span>📈 <b>Auto rate updates</b> — email subscribers whenever rates "
+            "change (all live rates in one box; identical rates never re-send, "
+            "max one email per 30 min).</span></label>"
+            "<p class='muted small' style='margin:10px 0 0'>Order confirmations and "
+            "payment receipts email signed-up customers automatically.</p>"
+            "</div></div>"
+
+            "</div>"
+            "<h2>Panel password</h2><div class=card>"
             "<p class=muted style='margin-top:0'>The panel is reachable from any device, "
             "so make this long — a 4-word phrase plus numbers is ideal.</p>"
             "<label>New panel password (blank = keep current)</label>"
@@ -992,6 +1032,7 @@ async def settings_post(request: web.Request):
     errors: list[str] = []
     restart = False
     async with Session() as s:
+        old_rates = await get_rates(s)   # pre-save snapshot for the rate email
         for k in SERVICES:
             raw = str(data.get(f"rate_{k}", "")).strip()
             if raw == "":
@@ -1063,7 +1104,9 @@ async def settings_post(request: web.Request):
             await set_setting(s, "bscscan_key", bkey)
 
         support = str(data.get("support", "")).strip()
-        if support:
+        if support == "":
+            await set_setting(s, "support", "")   # blank = hide the button
+        else:
             handles = support.split()
             if all(h.startswith("@") and len(h) >= 5 for h in handles):
                 await set_setting(s, "support", " ".join(handles))
@@ -1076,6 +1119,19 @@ async def settings_post(request: web.Request):
             await set_setting(s, "support_email", semail)
         else:
             errors.append("support email looks invalid")
+
+        wa_raw = str(data.get("whatsapp", "")).strip()
+        wa_digits = "".join(ch for ch in wa_raw if "0" <= ch <= "9")
+        if wa_raw == "":
+            await set_setting(s, "support_whatsapp", "")   # blank = hide button
+        elif 8 <= len(wa_digits) <= 15:    # same bound as /setwhatsapp in chat
+            await set_setting(s, "support_whatsapp", wa_digits)
+        else:
+            errors.append("WhatsApp number needs the country code, e.g. +919876543210")
+
+        # checkbox: present in POST only when ticked
+        await set_setting(s, "rate_email_auto",
+                          "1" if data.get("rate_email_auto") else "0")
 
         proof = str(data.get("proof", "")).strip()
         await set_setting(s, "proof_channel",
@@ -1109,6 +1165,13 @@ async def settings_post(request: web.Request):
             else:
                 errors.append("bot token format looks wrong")
 
+    # rates may have changed — kick the auto rate email (dedupes + rate-limits
+    # itself). Runs even when OTHER fields had validation errors: each rate was
+    # already committed above, so the change is live either way.
+    try:
+        sender.spawn_rate_blast(request.app.get("bot"), prev_rates=old_rates)
+    except Exception:
+        log.exception("rate email check failed")
     if errors:
         return _page("Settings", _nav("settings") + "<h1>Settings</h1>"
                      + "<div class='banner danger'><b>Not saved:</b> "
