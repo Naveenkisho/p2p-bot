@@ -1644,7 +1644,7 @@ async def _sell_form(request: web.Request, error: str = "",
 <p class='muted small'>Fill this once — your deposit address and exact amount come next.
 The quote stays live for {ttl} minutes after you submit.</p>
 {err}
-<form method=post action=/sell><div class=card>
+<form method=post action=/sell id=sellform><div class=card>
 <input type=hidden name=csrf value='{csrf}'>
 {net_html}
 <label>Payout method</label><select name=service id=svc>{opts}</select>
@@ -1707,6 +1707,62 @@ function updBank(){
   nb.style.display=isNew?'':'none';bankReq(isNew);}
 if(pick)pick.addEventListener('change',updBank);updBank();
 </script>""")
+        # Staged submit overlay: the browser POST is near-instant, so without
+        # this the "processing" moment is invisible. Steps tick while the form
+        # ACTUALLY submits at the end — pure presentation, zero flow change,
+        # and a no-JS browser still posts natively.
+        body += """
+<div id=procwrap style="display:none;position:fixed;inset:0;z-index:80;
+ background:rgba(14,19,48,.55);backdrop-filter:blur(3px)">
+ <div style="max-width:380px;margin:18vh auto 0;background:var(--surface);
+  border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);
+  padding:26px 26px 20px">
+  <div style="font-weight:800;font-size:1.05rem;margin-bottom:14px">
+   Setting up your order&hellip;</div>
+  <div id=procsteps></div>
+  <p class="muted small" style="margin:14px 0 0">Do not close this page.</p>
+ </div>
+</div>
+<style>
+.pstep{display:flex;gap:10px;align-items:center;padding:7px 0;color:var(--muted);
+ font-size:.95rem;transition:color .2s}
+.pstep .pic{width:22px;height:22px;border-radius:50%;flex:none;display:flex;
+ align-items:center;justify-content:center;font-size:13px;font-weight:800;
+ border:2px solid var(--border);color:transparent}
+.pstep.on{color:var(--text)}
+.pstep.on .pic{border-color:var(--accent);border-top-color:transparent;
+ animation:pspin .7s linear infinite}
+.pstep.done{color:var(--text)}
+.pstep.done .pic{border-color:var(--accent);background:var(--accent);
+ color:#062b1a;animation:none}
+@keyframes pspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.pstep.on .pic{animation:none;
+ border-top-color:var(--accent)}}
+</style>
+<script>
+(function(){
+ var f=document.getElementById('sellform');if(!f)return;
+ var STEPS=['Locking your rate','Reserving your unique deposit amount',
+   'Creating order &amp; emailing confirmation','Opening your secure order page'];
+ var wrap=document.getElementById('procwrap'),
+     box=document.getElementById('procsteps'),armed=false;
+ f.addEventListener('submit',function(e){
+   if(armed)return;              // second pass = the real native submit
+   if(!f.checkValidity())return; // let the browser show what's missing
+   e.preventDefault();armed=true;
+   var go=document.getElementById('go');if(go){go.disabled=true;go.style.opacity=.6}
+   box.innerHTML=STEPS.map(function(s){
+     return '<div class=pstep><span class=pic>\\u2713</span><span>'+s+'</span></div>'}).join('');
+   wrap.style.display='block';document.body.style.overflow='hidden';
+   var rows=box.children,i=0;
+   function tick(){
+     if(i>0){rows[i-1].className='pstep done'}
+     if(i>=rows.length){f.submit();return}
+     rows[i].className='pstep on';i++;setTimeout(tick,i===rows.length?900:650)}
+   tick();
+ });
+})();
+</script>"""
         body += _fabs_html(support, whatsapp)
         resp = _page("Sell USDT for INR — Live Rate & Instant Quote | P2P Desk",
                      body, "Get your USDT deposit address and a locked INR rate "
@@ -2133,8 +2189,22 @@ async def order_cancel(request: web.Request):
     if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"o:{token}")):
         raise web.HTTPForbidden(text="bad csrf")
     async with Session() as s:
-        await try_transition(s, order.id, (OrderStatus.AWAITING_DEPOSIT,),
-                             OrderStatus.CANCELLED)
+        updated = await try_transition(s, order.id, (OrderStatus.AWAITING_DEPOSIT,),
+                                       OrderStatus.CANCELLED)
+    if updated is not None:
+        # cancellation notice (fire-and-forget) — closes the email loop opened
+        # by the order-confirmation message
+        try:
+            from . import sender as _sender
+            email, name = await _sender.email_for_uid(order.user_id)
+            if email:
+                subj, inner = _sender.order_cancelled_email(
+                    texts.tag(order.id), order.usd_amount,
+                    SERVICES.get(order.service, order.service),
+                    "You cancelled this order before sending the deposit.")
+                await _sender.send_transactional(email, name, subj, inner)
+        except Exception:
+            log.exception("cancellation email failed")
     raise web.HTTPFound(f"/o/{token}")
 
 

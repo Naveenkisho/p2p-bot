@@ -248,6 +248,19 @@ async def decline_order(bot: Bot, order_id: int) -> tuple[bool, str]:
                                  "(no deposit received).")
         if user is not None:
             await update_order_cards(bot, session, updated, user, card, None)
+    # cancellation notice by email (fire-and-forget; verified addresses only)
+    try:
+        from . import sender
+        email, name = await sender.email_for_uid(uid)
+        if email:
+            subj, inner = sender.order_cancelled_email(
+                texts.tag(order.id), order.usd_amount,
+                SERVICES.get(order.service, order.service),
+                "The desk closed this order because no deposit arrived in time.")
+            await sender.send_transactional(email, name, subj, inner,
+                                            fail_bot=bot, fail_uid=max(uid, 0))
+    except Exception:
+        log.exception("decline cancellation email failed")
     from .scanner import deposit_seen
     deposit_seen.pop(order_id, None)
     return True, ("Order declined ✅" if (delivered or is_web_user(uid))

@@ -1,3 +1,4 @@
+import logging
 import re
 
 from aiogram import F, Router
@@ -61,6 +62,7 @@ from ..models import BankCard, Order, OrderMsg, OrderStatus, SeenTx, User, utcno
 from ..states import BankForOrder, ClaimFlow, RefundFlow, SellFlow
 from .start import bank_details_error, make_bank_label
 
+log = logging.getLogger(__name__)
 router = Router(name="sell")
 
 AMOUNT_RE = re.compile(r"^\$?\s*(\d{1,7}(?:\.\d{1,2})?)\s*\$?$")
@@ -483,6 +485,18 @@ async def order_action(callback: CallbackQuery, callback_data: OrderCb,
             db_user = await session.get(User, order.user_id)
             await update_order_cards(callback.bot, session, updated, db_user, card,
                                      admin_order_kb(order.id, "cancelled"))
+            # cancellation notice by email for users who verified one (/email)
+            try:
+                from .. import sender as _sender
+                email, name = await _sender.email_for_uid(order.user_id)
+                if email:
+                    subj, inner = _sender.order_cancelled_email(
+                        texts.tag(order.id), order.usd_amount,
+                        SERVICES.get(order.service, order.service),
+                        "You cancelled this order before sending the deposit.")
+                    await _sender.send_transactional(email, name, subj, inner)
+            except Exception:
+                log.exception("cancellation email failed")
             await callback.answer("Cancelled")
 
         else:

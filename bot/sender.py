@@ -701,6 +701,32 @@ def deposit_received_email(tag: str, usd: float, inr: float, service_label: str,
     return subject, inner
 
 
+def order_cancelled_email(tag: str, usd: float, service_label: str,
+                          reason_line: str) -> tuple[str, str]:
+    """Cancellation notice — closes the loop on the confirmation email, states
+    plainly that no payout will happen, and covers the paid-late edge."""
+    subject = f"Order {tag} cancelled"
+    rows = _kv_rows([
+        ("Order", _html.escape(tag)),
+        ("Amount", f"{_usd(usd)} USDT"),
+        ("Payout method", _html.escape(service_label)),
+        ("Status", "<span style='color:#c0271c'>Cancelled — no payout will be made</span>"),
+    ])
+    site = (settings.site_url or "").rstrip("/")
+    inner = f"""{_badge("&#10005;", bg="#c0271c")}
+<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">Order cancelled</h1>
+<p style="margin:0 0 6px;color:{_C_INK};font-size:15px;line-height:1.6">{_html.escape(reason_line)}</p>
+{rows}
+<p style="margin:0 0 16px;color:{_C_INK};font-size:14px;line-height:1.65">
+The deposit address from this order is no longer watched for it. <b>If you already
+sent USDT</b> for this order, don't worry — open the order page and submit your
+transaction ID; the desk verifies it on-chain and settles or refunds you.
+Rates stay live around the clock whenever you want to sell:</p>
+{_btn(site + "/sell" if site else "#", "Start a new order &rarr;")}
+{_ld_order(tag, service_label, 0.0, "OrderCancelled")}"""
+    return subject, inner
+
+
 def order_completed_email(tag: str, usd: float, rate: float, inr: float,
                           service_label: str, bank_label: str,
                           live_rates: dict[str, float] | None = None,
