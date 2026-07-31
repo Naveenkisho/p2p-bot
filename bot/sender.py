@@ -183,7 +183,9 @@ def _unsub_url(email: str, secret: bytes) -> str:
 
 
 def _build_message(cfg: dict, to_addr: str, to_name: str, subject: str,
-                   body: str, is_html: bool, unsub_url: str) -> EmailMessage:
+                   body: str, is_html: bool, unsub_url: str,
+                   attachments: list[tuple[str, bytes, str]] | None = None
+                   ) -> EmailMessage:
     msg = EmailMessage()
     msg["From"] = formataddr((cfg["from_name"] or None, cfg["from_addr"]))
     msg["To"] = formataddr((to_name or None, to_addr))
@@ -218,6 +220,10 @@ def _build_message(cfg: dict, to_addr: str, to_name: str, subject: str,
         html_body = "<p>" + _html.escape(body).replace("\n", "<br>") + "</p>"
         msg.set_content(body + foot_txt)
         msg.add_alternative(html_body + foot_html, subtype="html")
+    for fname, data, mime in (attachments or []):
+        maintype, _, subtype = (mime or "application/octet-stream").partition("/")
+        msg.add_attachment(data, maintype=maintype or "application",
+                           subtype=subtype or "octet-stream", filename=fname)
     return msg
 
 
@@ -237,7 +243,9 @@ def _smtp_connect(cfg: dict) -> smtplib.SMTP:
 
 def _send_batch_blocking(cfg: dict, recipients: list[tuple[str, str]],
                          subject: str, body: str, is_html: bool,
-                         secret: bytes, progress) -> tuple[int, int, list[str]]:
+                         secret: bytes, progress,
+                         attachments: list[tuple[str, bytes, str]] | None = None
+                         ) -> tuple[int, int, list[str]]:
     """Open one SMTP connection and send to every recipient. `progress(sent,
     failed)` is called after each message so the panel can show live counts.
     An empty `secret` means transactional mail: no unsubscribe link or header.
@@ -250,7 +258,7 @@ def _send_batch_blocking(cfg: dict, recipients: list[tuple[str, str]],
             try:
                 url = _unsub_url(to_addr, secret) if secret else ""
                 msg = _build_message(cfg, to_addr, to_name, subject, body,
-                                     is_html, url)
+                                     is_html, url, attachments)
                 srv.send_message(msg)
                 sent += 1
             except Exception as e:   # one bad address never stops the run
@@ -1086,7 +1094,9 @@ async def send_transactional(to_addr: str, to_name: str, subject: str,
                              inner_html: str, fail_bot=None,
                              fail_uid: int = 0, stream: str = "tx",
                              legal: bool = False, unsub: bool = False,
-                             light: bool = False) -> bool:
+                             light: bool = False,
+                             attachments: list[tuple[str, bytes, str]] | None = None
+                             ) -> bool:
     """Fire-and-forget single branded email (order confirmations/receipts).
     Never raises into the order flow; returns False when email isn't set up.
     Skips the unsubscribe list by design — these are receipts, not marketing —
@@ -1119,7 +1129,7 @@ async def send_transactional(to_addr: str, to_name: str, subject: str,
         try:
             _sent, failed, _errs = await asyncio.to_thread(
                 _send_batch_blocking, cfg, [((to_addr or "").strip(), to_name)],
-                subject, body, True, secret, _noop)
+                subject, body, True, secret, _noop, attachments)
         except Exception:
             failed = 1
             log.exception("transactional email to %s failed", to_addr)
