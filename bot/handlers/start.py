@@ -159,25 +159,29 @@ async def _submit_email(message: Message, cand: str,
                 rows = [
                     [InlineKeyboardButton(text="✅ Yes — send my receipts there",
                                           callback_data="emconf:yes")],
-                    [InlineKeyboardButton(text="✏️ No — add a different email",
+                    [InlineKeyboardButton(text="✏️ Add a different email",
                                           callback_data="emconf:no")],
                 ]
                 site = (settings.site_url or "").rstrip("/")
                 if site:
                     rows.append([InlineKeyboardButton(
-                        text="🌐 Or continue on our website", url=site)])
+                        text="🌐 Continue on our website", url=site)])
+                rows.append([InlineKeyboardButton(
+                    text="⏭ Skip — no order emails",
+                    callback_data="emconf:skip")])
                 await message.answer(
-                    "ℹ️ <b>This email is already signed up with us</b> — a "
-                    "website account or another Telegram user verified it, "
-                    "so no code is needed.\n\n"
-                    "<b>Please check it is YOUR address:</b>\n"
+                    "ℹ️ <b>This email is already added with us</b> — on the "
+                    "website or by another Telegram user.\n\n"
                     f"<code>{esc(cand)}</code>\n\n"
-                    "Your order details and payout receipts will be sent "
-                    "there. Is it correct?\n\n"
-                    "<i>Not yours? Add a different email for the bot — or if "
-                    "you signed up on our website with it, you can keep "
-                    "trading there and this email already gets those order "
-                    "updates.</i>",
+                    "You can:\n"
+                    "• <b>Use it here too</b> (if it's yours) — order details "
+                    "and payout receipts come to this email, no code needed\n"
+                    "• <b>Add a different email</b> for the bot\n"
+                    "• <b>Continue on our website</b> — if you have a website "
+                    "login with this email, it already gets those order "
+                    "updates\n"
+                    "• <b>Skip email entirely</b> — order confirmations stay "
+                    "right here on Telegram",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
                 return
             # no FSM context — fall through to the OTP, which proves ownership
@@ -287,6 +291,28 @@ async def email_confirm_no(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await callback.message.answer("No problem — send the correct address, "
                                   "e.g. <code>name@gmail.com</code>")
+
+
+@router.callback_query(EmailFlow.confirm, F.data == "emconf:skip")
+async def email_confirm_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    """Skip email entirely — confirmations stay on Telegram; the post-order
+    nudge won't re-ask either."""
+    await state.clear()
+    from ..models import User
+    async with Session() as session:
+        u = await get_or_create_user(session, callback.from_user.id,
+                                     callback.from_user.username,
+                                     callback.from_user.first_name)
+        u.email_prompted = True
+        await session.commit()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer()
+    await callback.message.answer(
+        "👍 No problem — your order confirmations and payout updates stay "
+        "right here on Telegram. Add an email anytime with /email.")
 
 
 @router.callback_query(F.data.startswith("emconf:"))
