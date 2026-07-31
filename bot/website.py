@@ -26,7 +26,7 @@ import re
 import secrets
 import time
 from collections import deque
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
@@ -70,6 +70,7 @@ from .qr import qr_png
 log = logging.getLogger(__name__)
 
 COOKIE = "p2p_web"
+_BRAND_NAME_WEB = "IndiaXchange"
 COOKIE_TTL = 365 * 24 * 3600
 
 # Statuses a customer may still submit a claim TXID for (mirrors the bot).
@@ -891,11 +892,12 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
     _NAVLINKS = (
         '<a href="/">Home</a><a href="/#rates">Rates</a>'
         '<a href="/guarantee">Guarantee</a><a href="/learn">Learn</a>'
-        '<a href="/my">My orders</a><a href="/support">Support</a>')
+        '<a href="/my">My orders</a><a href="/banks">My banks</a>'
+        '<a href="/support">Support</a>')
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name=viewport content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name=description content="{_esc(desc)}">{_FAVICON}{head_extra}
-<title>{_esc(title)}</title><style>{_STYLE}{_TRUST_CSS}</style></head><body>
+<title>{_esc(title)}</title><style>{_STYLE}{_TRUST_CSS}{_FOOTER_CSS}</style></head><body>
 <div class="wrap{' wide' if wide else ''}">
 <div class=topbar><a href="/" class=brand><span class=dot></span>P2P Desk</a>
 <nav class=topnav>{_NAVLINKS}</nav>
@@ -907,6 +909,7 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
  this.setAttribute('aria-expanded',o)">☰</button>
 <nav class=navmenu id=navmenu>{_NAVLINKS}</nav></div>
 {body}
+{_footer()}
 {_TAIL}
 </body></html>"""
     return web.Response(text=doc, content_type="text/html", headers={
@@ -923,12 +926,60 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
 # Support email is cached in-process so the floating button (rendered from the
 # sync _fabs_html, called on every page) can show it without each handler having
 # to load it. Refreshed at site start and whenever the panel saves settings.
-_SUPPORT_CACHE = {"email": ""}
+_SUPPORT_CACHE = {"email": "", "tg": "", "whatsapp": ""}
 
 
 async def load_support_cache() -> None:
     async with Session() as s:
         _SUPPORT_CACHE["email"] = await get_support_email(s)
+        sup = await get_support(s) or ""
+        _SUPPORT_CACHE["tg"] = next(
+            (h.lstrip("@") for h in sup.split() if h.startswith("@")), "")
+        _SUPPORT_CACHE["whatsapp"] = "".join(
+            ch for ch in (await get_whatsapp(s) or "") if ch.isdigit())
+
+
+def _footer() -> str:
+    """Site-wide footer built from the contact channels we actually have
+    (Telegram support, email, website) + legal links and rights. Fed by the
+    support cache so it's editable from the panel with no redeploy."""
+    year = datetime.now(timezone.utc).year
+    tg = _SUPPORT_CACHE.get("tg", "")
+    email = _SUPPORT_CACHE.get("email", "")
+    wa = _SUPPORT_CACHE.get("whatsapp", "")
+    site = (settings.site_url or "").rstrip("/")
+    contact = []
+    if tg:
+        contact.append(f"<a href='https://t.me/{_esc(tg)}' target=_blank "
+                       "rel=noopener>Telegram support</a>")
+    if wa:
+        contact.append(f"<a href='https://wa.me/{_esc(wa)}' target=_blank "
+                       "rel=noopener>WhatsApp</a>")
+    if email:
+        contact.append(f"<a href='mailto:{_esc(email)}'>{_esc(email)}</a>")
+    contact_col = ("<br>".join(contact)
+                   or "<span class=fmut>Contact us in the app</span>")
+    site_line = (f"<br><a href='{_esc(site)}'>{_esc(site.split('://')[-1])}</a>"
+                 if site else "")
+    return f"""<footer class=sitefoot><div class=footgrid>
+<div><div class=footbrand><span class=footmark>&#8377;</span>India<span
+ class=g>Xchange</span></div>
+<p class=fmut>USDT&nbsp;&rarr;&nbsp;INR trading desk. Instant bank payout,
+on-chain verified, 100% clean funds. Full INR paid &mdash; no 1% TDS.</p></div>
+<div><h4>Desk</h4><a href="/">Home</a><a href="/#rates">Live rates</a>
+<a href="/guarantee">Guarantee</a><a href="/learn">Learn</a>
+<a href="/my">My orders</a></div>
+<div><h4>Legal</h4><a href="/legal/terms">Terms of Use</a>
+<a href="/legal/privacy">Privacy &amp; Cookies</a>
+<a href="/legal/aml">AML / Clean-Funds Policy</a>
+<a href="/support">Support &amp; complaints</a></div>
+<div><h4>Contact</h4>{contact_col}{site_line}</div>
+</div>
+<div class=footbar>
+<span>&copy; {year} {_BRAND_NAME_WEB}. All rights reserved.</span>
+<span class=fmut>Third-party wallet &amp; exchange names/logos are trademarks of
+their respective owners, shown for compatibility only &mdash; no affiliation.</span>
+</div></footer>"""
 
 
 def _fabs_html(support: str, whatsapp: str, email: str = "") -> str:
@@ -1011,6 +1062,28 @@ _TRUST_CSS = """
 .tsub{color:#3c6b53;font-size:.78rem;line-height:1.3}
 @media(max-width:760px){.trust{grid-template-columns:1fr 1fr}}
 @media(max-width:420px){.trust{grid-template-columns:1fr}}
+"""
+
+_FOOTER_CSS = """
+.sitefoot{background:#0e1330;color:#c9d0e3;margin-top:40px;padding:34px 20px 22px}
+.footgrid{max-width:1080px;margin:0 auto;display:grid;
+ grid-template-columns:1.6fr 1fr 1fr 1.2fr;gap:26px}
+.sitefoot h4{color:#fff;font-size:.82rem;letter-spacing:.05em;text-transform:uppercase;
+ margin:0 0 10px}
+.sitefoot a{display:block;color:#c9d0e3;text-decoration:none;font-size:.9rem;
+ padding:3px 0}
+.sitefoot a:hover{color:#00c26f}
+.footbrand{font-weight:800;font-size:1.15rem;color:#fff;margin-bottom:8px}
+.footbrand .g{color:#00c26f}
+.footmark{display:inline-block;width:26px;height:26px;border:2px solid #00c26f;
+ border-radius:7px;text-align:center;line-height:24px;color:#00c26f;font-weight:800;
+ margin-right:7px;vertical-align:middle}
+.fmut{color:#8b95b8;font-size:.84rem;line-height:1.55}
+.footbar{max-width:1080px;margin:24px auto 0;padding-top:16px;
+ border-top:1px solid #26304f;display:flex;flex-wrap:wrap;gap:10px 24px;
+ justify-content:space-between;font-size:.76rem;color:#8b95b8;line-height:1.5}
+@media(max-width:760px){.footgrid{grid-template-columns:1fr 1fr}}
+@media(max-width:440px){.footgrid{grid-template-columns:1fr}}
 """
 
 
@@ -1316,17 +1389,17 @@ sent to your email.</p>
 <label>Your name</label>
 <input name=name autocomplete=name required maxlength=120
  value="{_esc(p.get('name', ''))}">
-<label>Email</label>
+<label>Email <span class=reqtag>verify to continue</span></label>
 <div class=vrow>
 <input name=email id=suemail type=email autocomplete=email required
  value="{_esc(p.get('email', ''))}">
-<button type=button class=vlink id=vbtn>Verify now</button>
+<button type=button class=vbtnmain id=vbtn>Verify now</button>
 </div>
-<div id=vcodebox style='display:none;margin-top:8px'>
+<div id=vcodebox class=codebox style='display:none;margin-top:10px'>
 <div class=vrow>
 <input id=vcode inputmode=numeric maxlength=6 placeholder='6-digit code'
  autocomplete=one-time-code style='letter-spacing:4px'>
-<button type=button class=vlink id=vok>Confirm</button>
+<button type=button class=vbtnmain id=vok>Confirm</button>
 </div>
 <p class='muted small' id=vhint style='margin:6px 0 0'>We emailed a code to
 your address — enter it here. <a href='#' id=vresend>Resend</a></p>
@@ -1357,9 +1430,18 @@ character (e.g. <b>@</b> or <b>#</b>).</p>
 <style>
 .vrow{{display:flex;gap:8px;align-items:stretch}}
 .vrow input{{flex:1;min-width:0}}
-.vlink{{flex:none;background:none;border:none;color:#2456d6;font-weight:700;
- cursor:pointer;font-size:.92rem;padding:0 6px}}
-.vlink:disabled{{color:var(--faint);cursor:default}}
+.vbtnmain{{flex:none;background:#00c26f;border:1px solid #00a85f;color:#062b1a;
+ font-weight:800;cursor:pointer;font-size:.9rem;padding:0 16px;border-radius:10px;
+ white-space:nowrap;box-shadow:0 2px 8px rgba(0,194,111,.35)}}
+.vbtnmain:hover{{background:#00a85f}}
+.vbtnmain:disabled{{background:var(--surface-2);color:var(--faint);
+ border-color:var(--border);box-shadow:none;cursor:default}}
+.reqtag{{display:inline-block;background:#fbefdd;color:#b45309;font-size:.7rem;
+ font-weight:800;text-transform:uppercase;letter-spacing:.04em;padding:2px 8px;
+ border-radius:20px;margin-left:6px;vertical-align:middle}}
+.codebox{{background:#e9effe;border:1.5px solid #b9cbfa;border-radius:12px;
+ padding:12px 14px}}
+.codebox input{{background:#fff}}
 .cc{{flex:none;display:flex;align-items:center;padding:0 12px;background:var(--surface-2);
  border:1px solid var(--border);border-radius:10px;font-weight:700;white-space:nowrap}}
 .vok{{color:var(--ok);font-weight:700}}
@@ -1382,7 +1464,11 @@ character (e.g. <b>@</b> or <b>#</b>).</p>
    .then(function(r){{return r.json()}})
    .then(function(d){{
      vb.textContent='Verify now';vb.disabled=false;
-     if(!d.ok){{state(d.error||'Could not send the code.','verr');return}}
+     if(!d.ok){{
+       if(d.signin){{st.style.display='block';st.className='small verr';
+         st.innerHTML=d.error+' <a href="/signup?mode=in&next={_uq(nxt)}"><b>Sign in \\u2192</b></a>';
+         return}}
+       state(d.error||'Could not send the code.','verr');return}}
      box.style.display='block';st.style.display='none';code.focus();
    }})
    .catch(function(){{vb.textContent='Verify now';vb.disabled=false;
@@ -1680,6 +1766,14 @@ async def signup_otp_post(request: web.Request):
     email = str(data.get("email", "")).strip().lower()
     if not _EMAIL_RE.match(email) or len(email) > 190:
         return web.json_response({"ok": False, "error": "Enter a valid email address."})
+    # already registered (manual OR Google)? send them to sign-in instead of
+    # letting them verify + re-attempt a signup that would fail anyway
+    async with Session() as s:
+        exists = await s.scalar(select(Account.id).where(Account.email == email))
+    if exists is not None:
+        return web.json_response({"ok": False, "signin": True,
+                                  "error": "This email already has an account — "
+                                  "please sign in instead."})
     ip = _client_ip(request)
     # Per-TARGET-email cap first: the anon browser uid is minted fresh on every
     # GET /signup, so a per-uid cap is defeated by cookie churn — but the target
@@ -2211,12 +2305,13 @@ if(bsel){bsel.addEventListener('change',function(){ih.style.color='';ifscChk()})
 <script>
 (function(){
  var f=document.getElementById('sellform');if(!f)return;
- var STEPS=['Locking your rate','Reserving your unique deposit amount',
-   'Creating order &amp; emailing confirmation','Opening your secure order page'];
+ var STEPS=['Verifying your details','Locking today\\u2019s rate',
+   'Reserving your unique deposit amount','Creating your secure order'];
  var wrap=document.getElementById('procwrap'),
-     box=document.getElementById('procsteps'),armed=false;
+     box=document.getElementById('procsteps'),armed=false,bypass=false;
  f.addEventListener('submit',function(e){
-   if(armed)return;              // second pass = the real native submit
+   if(bypass)return;             // network-fallback native submit
+   if(armed){e.preventDefault();return}
    if(!f.checkValidity())return; // let the browser show what's missing
    e.preventDefault();armed=true;
    var go=document.getElementById('go');if(go){go.disabled=true;go.style.opacity=.6}
@@ -2224,11 +2319,22 @@ if(bsel){bsel.addEventListener('change',function(){ih.style.color='';ifscChk()})
      return '<div class=pstep><span class=pic>\\u2713</span><span>'+s+'</span></div>'}).join('');
    wrap.style.display='block';document.body.style.overflow='hidden';
    var rows=box.children,i=0;
-   function tick(){
-     if(i>0){rows[i-1].className='pstep done'}
-     if(i>=rows.length){f.submit();return}
-     rows[i].className='pstep on';i++;setTimeout(tick,i===rows.length?900:650)}
-   tick();
+   // steps advance while the REAL request is in flight; the last one keeps
+   // spinning until the server actually responds (backend-driven, not a timer)
+   function step(){
+     if(i>0)rows[i-1].className='pstep done';
+     if(i<rows.length-1){rows[i].className='pstep on';i++;setTimeout(step,550)}
+     else{rows[i].className='pstep on'}  // hold + spin on the last
+   }
+   step();
+   fetch(f.action,{method:'POST',body:new FormData(f),redirect:'follow',
+     headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){
+      if(r.redirected){for(var k=0;k<rows.length;k++)rows[k].className='pstep done';
+        window.location.assign(r.url);return}
+      return r.text().then(function(html){  // validation error → re-render
+        document.open();document.write(html);document.close()})})
+    .catch(function(){bypass=true;f.submit()});  // network hiccup → native POST
  });
 })();
 </script>"""
@@ -3489,6 +3595,149 @@ async def sitemap_xml(request: web.Request):
     return web.Response(text=xml, content_type="application/xml")
 
 
+# ── my banks (save/manage payout accounts) ───────────────────────────────────
+
+async def banks_get(request: web.Request, error: str = "", ok: str = ""):
+    """Dedicated page to save and manage payout bank accounts up front, so the
+    sell form is one tap. Same validation as the sell flow."""
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup?next=/banks")
+    uid = await _uid_from_cookie(request)
+    from . import banks as _banks
+    async with Session() as s:
+        cards = (await s.scalars(select(BankCard).where(BankCard.user_id == uid)
+                                 .order_by(BankCard.id.desc()))).all()
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+    csrf = await _csrf(f"banks:{uid}")
+    seen, uniq = set(), []
+    for c in cards:
+        if c.details.strip() not in seen:
+            seen.add(c.details.strip())
+            uniq.append(c)
+    if uniq:
+        rows = "".join(
+            f"<div class=card><div class=row style='align-items:flex-start'>"
+            f"<div style='flex:1'><b>{_esc(c.label)}</b>"
+            f"<pre style='white-space:pre-wrap;margin:8px 0 0;font-family:inherit;"
+            f"color:var(--muted);font-size:.9rem'>{_esc(c.details)}</pre></div>"
+            f"<form method=post action='/banks/{c.id}/delete' "
+            f"onsubmit=\"return confirm('Remove this bank?')\">"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<button class='btn small' style='background:var(--danger-soft);"
+            f"color:var(--danger)'>Remove</button></form></div></div>"
+            for c in uniq)
+        listing = f"<h2>Saved banks ({len(uniq)})</h2>{rows}"
+    else:
+        listing = ("<div class=card><span class=muted>No saved banks yet — add "
+                   "one below and it'll be ready to pick on every order.</span></div>")
+    bank_opts = ("<option value='' disabled selected>Select your bank…</option>"
+                 + "".join(f"<option>{_esc(n)}</option>" for n in _banks.bank_names()))
+    type_opts = ("<option value='' disabled selected>Type…</option>"
+                 + "".join(f"<option>{_esc(t)}</option>" for t in _banks.ACCOUNT_TYPES))
+    codes = json.dumps({n: c for n, c in _banks.BANKS})
+    err = f"<p class=err>{_esc(error)}</p>" if error else ""
+    okb = f"<div class='banner ok'>{_esc(ok)}</div>" if ok else ""
+    body = f"""<h1>My <span class=g>banks</span></h1>
+<p class='muted lead'>Save your payout accounts once — then selling is a single tap.
+Your banks are private to your account and used only for your INR payouts.</p>{okb}{err}
+{listing}
+<h2>Add a bank</h2>
+<form method=post action=/banks id=bankform><div class=card>
+<input type=hidden name=csrf value='{csrf}'>
+<label>Account holder name</label>
+<input name=holder autocomplete=name required maxlength=80>
+<label>Bank</label><select name=bank id=bank>{bank_opts}</select>
+<div class=row style='gap:12px'>
+<div style='flex:2'><label>Account number</label>
+<input name=account id=acct inputmode=numeric autocomplete=off required></div>
+<div style='flex:1'><label>Account type</label>
+<select name=acctype>{type_opts}</select></div></div>
+<label>IFSC code</label>
+<input name=ifsc id=ifsc autocapitalize=characters autocomplete=off maxlength=11
+ placeholder='e.g. HDFC0001234' required style='text-transform:uppercase'>
+<p class=hint id=ifschint style='margin:6px 0 0'></p>
+<div style='margin-top:16px'><button class=btn>Save bank</button></div>
+</div></form>
+<script>
+var CODES={codes};
+var bsel=document.getElementById('bank'),ifsc=document.getElementById('ifsc'),
+    ih=document.getElementById('ifschint');
+function chk(){{var v=(ifsc.value||'').toUpperCase().replace(/\\s/g,'');ifsc.value=v;
+  var code=CODES[bsel.value]||'';
+  if(!v){{ih.className='hint';ih.textContent=code?('This bank\\u2019s IFSC starts with '+code+'0'):'';return}}
+  if(!/^[A-Z]{{4}}0[A-Z0-9]{{6}}$/.test(v)){{ih.className='hint bad';ih.textContent='IFSC should be 11 chars, e.g. HDFC0001234.';return}}
+  if(code&&v.slice(0,4)!==code){{ih.className='hint bad';ih.textContent='That IFSC isn\\u2019t '+bsel.value+' \\u2014 codes start with '+code+'0.';return}}
+  ih.className='hint';ih.style.color='var(--ok)';ih.innerHTML='\\u2713 IFSC looks valid'}}
+ifsc.addEventListener('input',chk);bsel.addEventListener('change',function(){{ih.style.color='';chk()}});
+</script>
+{_fabs_html(support, whatsapp)}"""
+    return _page("My banks", body, noindex=True, acct=acct.email)
+
+
+async def banks_add(request: web.Request):
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup?next=/banks")
+    uid = await _uid_from_cookie(request)
+    data = await request.post()
+    if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"banks:{uid}")):
+        return await banks_get(request, error="That form expired — please try again.")
+    from . import banks as _banks
+    from .handlers.start import make_bank_label
+    holder = str(data.get("holder", "")).strip()
+    bank = str(data.get("bank", "")).strip()
+    account = str(data.get("account", "")).strip()
+    acctype = str(data.get("acctype", "")).strip()
+    ifsc = _banks.norm_ifsc(str(data.get("ifsc", "")))
+    if not _banks.is_bank(bank):
+        return await banks_get(request, error="Please pick your bank from the list.")
+    if not (holder and len(holder) <= 80 and account.isdigit()
+            and 6 <= len(account) <= 20):
+        return await banks_get(request, error="Check the holder name and a digits-"
+                               "only account number (6–20).")
+    if not _banks.acct_type_ok(acctype):
+        return await banks_get(request, error="Please choose the account type.")
+    ifsc_err = _banks.ifsc_error(bank, ifsc)
+    if ifsc_err:
+        return await banks_get(request, error=ifsc_err)
+    details = (f"{bank}\nA/c holder: {holder}\nA/C {account}\n"
+               f"IFSC {ifsc}\nType: {acctype}")
+    async with Session() as s:
+        # ensure the account's user row exists (negative uid)
+        if await s.get(User, uid) is None:
+            s.add(User(id=uid, username="web", first_name=holder[:60] or "Web"))
+            await s.flush()
+        dup = await s.scalar(select(BankCard).where(BankCard.user_id == uid,
+                                                    BankCard.details == details))
+        if dup is None:
+            s.add(BankCard(user_id=uid, label=make_bank_label(details),
+                           details=details))
+            await s.commit()
+    return await banks_get(request, ok="Bank saved — pick it on your next order.")
+
+
+async def banks_delete(request: web.Request):
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup?next=/banks")
+    uid = await _uid_from_cookie(request)
+    data = await request.post()
+    if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"banks:{uid}")):
+        raise web.HTTPFound("/banks")
+    try:
+        cid = int(request.match_info["id"])
+    except ValueError:
+        raise web.HTTPFound("/banks")
+    async with Session() as s:
+        card = await s.get(BankCard, cid)
+        if card is not None and card.user_id == uid:   # never delete another's card
+            await s.delete(card)
+            await s.commit()
+    raise web.HTTPFound("/banks")
+
+
 # ── unsubscribe (bulk-email opt-out) ──────────────────────────────────────────
 
 async def _do_unsubscribe(email: str, token: str) -> bool:
@@ -3577,6 +3826,9 @@ async def start_site(bot):
         web.post("/reset", reset_post),
         web.get("/verify-email", verify_email_get),
         web.post("/verify-email", verify_email_post),
+        web.get("/banks", banks_get),
+        web.post("/banks", banks_add),
+        web.post("/banks/{id:\\d+}/delete", banks_delete),
         web.post("/logout", logout),
         web.get("/learn", learn_index),
         web.get("/learn/{slug}", learn_page),

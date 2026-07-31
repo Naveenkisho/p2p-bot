@@ -396,6 +396,7 @@ def _nav(active: str) -> str:
             + link("/marketing", "Marketing", "marketing")
             + link("/messaging", "Messaging", "messaging")
             + link("/broadcast", "Broadcast", "broadcast")
+            + link("/backups", "Backups", "backups")
             + link("/settings", "Settings", "settings")
             + "</nav><span class=sp></span>"
             "<a href='/logout' class=out>Logout</a></header>")
@@ -1756,6 +1757,82 @@ async def messaging_sms_post(request: web.Request):
     _redir_msg("/messaging", "Unknown action.")
 
 
+# ── Backups: rotating DB snapshots ───────────────────────────────────────────
+
+def _fmt_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n/1:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+@_authed
+async def backups_get(request: web.Request):
+    from . import backup
+    rows = backup.list_backups()
+    msg = request.query.get("msg", "")
+    banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
+    csrf = await _csrf_for(request)
+    if rows:
+        from datetime import datetime, timezone, timedelta
+        items = "".join(
+            "<tr><td><code>{n}</code></td><td>{s}</td><td class=muted>{t}</td>"
+            "<td><a class='btn small' href='/backups/download/{n}'>⬇ Download</a></td></tr>"
+            .format(n=_esc(r["name"]), s=_fmt_size(r["size"]),
+                    t=_esc((datetime.fromtimestamp(r["mtime"], timezone.utc)
+                            + timedelta(hours=5, minutes=30)).strftime("%d %b %Y, %I:%M %p") + " IST"))
+            for r in rows)
+        table = ("<table class=tbl style='width:100%'><tr><th>File</th><th>Size</th>"
+                 f"<th>Created</th><th></th></tr>{items}</table>")
+    else:
+        table = ("<div class=card><span class=muted>No backups yet — the first "
+                 "one is written on the next daily cycle, or tap “Back up now”.</span></div>")
+    body = (_nav("backups") + "<h1>💾 Backups</h1>" + banner
+            + "<p class=muted>Your whole desk — accounts, orders, bank cards and "
+            "every setting — is one SQLite file. These are consistent snapshots, "
+            f"taken automatically once a day and kept for the last {backup.BACKUP_KEEP}. "
+            "Download one anytime; to restore, stop the bot, replace "
+            "<code>p2p.sqlite3</code> with the backup, and start it again.</p>"
+            "<form method=post action=/backups/run style='margin:0 0 16px'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<button>Back up now</button></form>"
+            + table
+            + "<p class='muted small' style='margin-top:14px'>💡 For off-server "
+            "safety, download a copy to your own machine or cloud drive "
+            "periodically — these live on the same server as the bot.</p>")
+    return _page("Backups", body)
+
+
+@_authed
+async def backups_run(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("backups") + "<p>Invalid CSRF token.</p>")
+    from . import backup
+    from datetime import datetime, timezone
+    try:
+        name = await backup.make_backup(
+            datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S"))
+        msg = f"✅ Backup created: {name}" if name else "⚠️ No database file to back up yet."
+    except Exception:
+        log.exception("manual backup failed")
+        msg = "⚠️ Backup failed — check the server logs."
+    raise web.HTTPFound("/backups?msg=" + quote(msg))
+
+
+@_authed
+async def backups_download(request: web.Request):
+    from . import backup
+    p = backup.backup_path(request.match_info["name"])
+    if p is None:
+        raise web.HTTPNotFound()
+    return web.FileResponse(p, headers={
+        "Content-Disposition": f'attachment; filename="{p.name}"',
+        "Content-Type": "application/octet-stream",
+        "Cache-Control": "private, no-store"})
+
+
 async def start_panel(bot):
     """Start the web panel if a password is configured; returns the AppRunner
     (or None when disabled) so main() can clean it up."""
@@ -1783,6 +1860,9 @@ async def start_panel(bot):
         web.post("/pay", pay_post),
         web.get("/broadcast", broadcast_get),
         web.post("/broadcast", broadcast_post),
+        web.get("/backups", backups_get),
+        web.post("/backups/run", backups_run),
+        web.get("/backups/download/{name}", backups_download),
         web.get("/settings", settings_get),
         web.post("/settings", settings_post),
         web.post("/settings/qr", qr_post),
