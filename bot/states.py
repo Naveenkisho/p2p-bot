@@ -25,3 +25,8 @@ class RefundFlow(StatesGroup):
 class ClaimFlow(StatesGroup):
     txid = State()           # collecting the TXID to claim a missed/late payment
     pick = State()           # cold-pasted TXID: picking WHICH order it pays for
+
+
+class EmailFlow(StatesGroup):
+    address = State()        # /email tapped from the menu — waiting for the
+                             # address pasted as a plain message (no syntax)

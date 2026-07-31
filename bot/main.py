@@ -63,6 +63,7 @@ async def main() -> None:
 
     await bot.set_my_commands([
         BotCommand(command="start", description="Main menu"),
+        BotCommand(command="email", description="Get receipts by email"),
         BotCommand(command="cancel", description="Cancel the current step"),
     ])
 

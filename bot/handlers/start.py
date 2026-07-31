@@ -1,7 +1,7 @@
 import re
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
@@ -21,7 +21,7 @@ from ..keyboards import (
     with_back,
 )
 from ..models import OPEN_STATUSES, BankCard, Order
-from ..states import AddBank
+from ..states import AddBank, EmailFlow
 
 router = Router(name="start")
 
@@ -119,39 +119,13 @@ def _email_try_throttled(uid: int) -> bool:
     return False
 
 
-@router.message(Command("email"))
-async def cmd_email(message: Message) -> None:
-    """Add (or remove) an email for real-time order updates. The address only
-    goes live after the /verify OTP check, so typos and fakes never stick."""
+async def _submit_email(message: Message, cand: str) -> None:
+    """One pasted address → instant activation (already verified anywhere in
+    the system) or the OTP dance. Shared by /email, the guided flow, and the
+    paste-an-email-in-chat shortcut."""
     from ..models import User
     from ..sender import issue_email_otp
-    args = (message.text or "").split(maxsplit=1)
-    arg = args[1].strip() if len(args) > 1 else ""
     uid = message.from_user.id
-    if arg.lower() in ("off", "remove", "delete"):
-        async with Session() as session:
-            u = await session.get(User, uid)
-            if u is not None:
-                u.email = ""
-                u.email_verified = False
-                await session.commit()
-        await message.answer("✅ Email removed — order updates by email are off.")
-        return
-    if not arg:
-        async with Session() as session:
-            u = await session.get(User, uid)
-        if u is not None and u.email and u.email_verified:
-            await message.answer(
-                f"📧 Order updates go to <code>{esc(u.email)}</code> (verified).\n"
-                "• <code>/email new@address.com</code> — change it\n"
-                "• <code>/email off</code> — stop email updates")
-        else:
-            await message.answer(
-                "📧 Get your order confirmations, deposit alerts and payment "
-                "receipts by email too:\n"
-                "<code>/email your@address.com</code>\n"
-                "We'll send a 6-digit code to confirm the address is really yours.")
-        return
     if _email_try_throttled(uid):
         await message.answer("Too many email attempts this hour — please wait "
                              "a bit and try again.")
@@ -162,7 +136,7 @@ async def cmd_email(message: Message) -> None:
     from sqlalchemy import func as _f
     from ..models import Account
     from ..sender import _EMAIL_RE as _EM
-    cand = arg.strip()
+    cand = cand.strip()
     if _EM.match(cand):
         low = cand.lower()
         async with Session() as session:
@@ -183,7 +157,7 @@ async def cmd_email(message: Message) -> None:
                     "your order confirmations and payout receipts now go there. "
                     "No code needed.\n<code>/email off</code> to stop.")
                 return
-    ok, result = await issue_email_otp(uid, arg)
+    ok, result = await issue_email_otp(uid, cand)
     if not ok:
         await message.answer(f"⚠️ {esc(result)}")
         return
@@ -191,6 +165,67 @@ async def cmd_email(message: Message) -> None:
         f"📨 Code sent to <code>{esc(result)}</code> — check the inbox (and spam "
         "folder) and reply:\n<code>/verify 123456</code>\n"
         "The code expires in 15 minutes.")
+
+
+@router.message(Command("email"))
+async def cmd_email(message: Message, state: FSMContext) -> None:
+    """Add (or remove) an email for order updates. Bare /email guides the user:
+    they just paste the address as the next message — no syntax to learn."""
+    from ..models import User
+    args = (message.text or "").split(maxsplit=1)
+    arg = args[1].strip() if len(args) > 1 else ""
+    uid = message.from_user.id
+    await state.clear()
+    if arg.lower() in ("off", "remove", "delete"):
+        async with Session() as session:
+            u = await session.get(User, uid)
+            if u is not None:
+                u.email = ""
+                u.email_verified = False
+                await session.commit()
+        await message.answer("✅ Email removed — order updates by email are off.")
+        return
+    if not arg:
+        async with Session() as session:
+            u = await session.get(User, uid)
+        if u is not None and u.email and u.email_verified:
+            await message.answer(
+                f"📧 Order updates go to <code>{esc(u.email)}</code> (verified).\n"
+                "To change it, just send the new address here.\n"
+                "<code>/email off</code> — stop email updates")
+            await state.set_state(EmailFlow.address)
+        else:
+            await message.answer(
+                "📧 Get your order confirmations, deposit alerts and payment "
+                "receipts by email.\n\n<b>Just send your email address here</b> "
+                "— e.g. <code>name@gmail.com</code>", reply_markup=cancel_kb())
+            await state.set_state(EmailFlow.address)
+        return
+    await _submit_email(message, arg)
+
+
+@router.message(EmailFlow.address, F.text)
+async def email_address_typed(message: Message, state: FSMContext) -> None:
+    """The guided step: whatever they paste next is the address. A command
+    quietly closes the step; a malformed address is asked again."""
+    from ..sender import _EMAIL_RE as _EM
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        await state.clear()      # they moved on — the email step expires
+        return
+    if not _EM.match(text):
+        await message.answer(
+            "That doesn't look like an email address — it should be like "
+            "<code>name@gmail.com</code>. Send it again, or tap ❌ Cancel.")
+        return
+    await state.clear()
+    await _submit_email(message, text)
+
+
+@router.message(EmailFlow.address)
+async def email_address_not_text(message: Message) -> None:
+    await message.answer("Please send the email address as text — "
+                         "e.g. <code>name@gmail.com</code> — or tap ❌ Cancel.")
 
 
 @router.message(Command("verify"))
@@ -406,3 +441,12 @@ async def banks_remove(callback: CallbackQuery, callback_data: BankRmCb) -> None
     except Exception:
         await callback.bot.send_message(callback.from_user.id, text, reply_markup=kb)
     await callback.answer("Removed")
+
+
+@router.message(StateFilter(None),
+                F.text.regexp(r"^\s*[^@\s]+@[^@\s]+\.[^@\s]+\s*$"))
+async def pasted_email(message: Message) -> None:
+    """A bare email pasted into the chat with no command — treat it as 'send my
+    receipts here'. Instant activation when it's already verified anywhere;
+    otherwise the usual 6-digit code."""
+    await _submit_email(message, (message.text or "").strip())
