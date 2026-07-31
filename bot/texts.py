@@ -576,13 +576,13 @@ def email_nudge(lang: str = "en") -> str:
     """One-time, after the first order: offer email receipts."""
     if lang == "hi":
         return ("📧 Order confirmation aur payout receipt <b>email par bhi</b> "
-                "chahiye?\nBhejein: <code>/email aapka@address.com</code>\n"
-                "Agar wo email humare saath pehle se verified hai to turant "
-                "chalu ho jayega — koi code nahi.")
+                "chahiye?\n<b>Bas apna email yahin bhej dein</b> — jaise "
+                "<code>name@gmail.com</code>\nAgar wo email humare saath pehle "
+                "se verified hai to turant chalu — koi code nahi.")
     return ("📧 Want your order confirmation and payout receipt <b>by email "
-            "too</b>?\nSend: <code>/email your@address.com</code>\n"
-            "If that address is already verified with us it switches on "
-            "instantly — no code needed.")
+            "too</b>?\n<b>Just send your email address right here</b> — like "
+            "<code>name@gmail.com</code>\nIf it's already verified with us it "
+            "switches on instantly — no code needed.")
 
 
 def claim_pick_order(lang: str = "en") -> str:
