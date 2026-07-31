@@ -1060,6 +1060,13 @@ async def issue_email_otp(uid: int, email: str) -> tuple[bool, str]:
     return True, email
 
 
+def has_pending_otp(uid: int) -> bool:
+    """True while this user has a live, unexpired email code outstanding —
+    lets a bare 6-digit message in chat be treated as that code."""
+    b = _otps.get(uid)
+    return bool(b and b.get("code") and time.time() <= b.get("exp", 0))
+
+
 def verify_email_otp(uid: int, code: str) -> tuple[bool, str]:
     """(ok, verified_email | error). Constant-shape checks with attempt cap."""
     b = _otps.get(uid)
