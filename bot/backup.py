@@ -80,6 +80,67 @@ def backup_path(name: str) -> Path | None:
     return p if p.is_file() else None
 
 
+async def send_db_backup(force: bool = False) -> bool:
+    """Off-site copy: gzip today's snapshot and email it to the operator (same
+    recipient as the daily SEO report). Local rotation above survives a bad
+    deploy or an accidental delete — this survives the SERVER dying, because
+    the copy lives in the operator's mailbox. Once per day unless forced."""
+    import gzip
+
+    from .db import Session, get_setting, set_setting
+    from . import sender
+    from .seo_report import IST
+
+    async with Session() as s:
+        to_addr = (await get_setting(s, "seo_report_email") or "").strip()
+        last = await get_setting(s, "db_backup_mailed") or ""
+    today_key = datetime.now(IST).strftime("%Y-%m-%d")
+    if not to_addr or (last == today_key and not force):
+        return False
+
+    def _snap_gz() -> bytes:
+        src = sqlite3.connect(str(Path(settings.db_path).resolve()))
+        try:
+            mem = sqlite3.connect(":memory:")
+            try:
+                with mem:
+                    src.backup(mem)
+                raw = b"".join(
+                    (line + "\n").encode() for line in mem.iterdump())
+            finally:
+                mem.close()
+        finally:
+            src.close()
+        return gzip.compress(raw, 6)
+
+    # SQL-text dump (iterdump) restores with plain `sqlite3 db < file` and
+    # compresses far better than the binary file
+    gz = await asyncio.to_thread(_snap_gz)
+    size_mb = len(gz) / 1e6
+    inner = (f"<p>Daily database backup attached ({size_mb:.1f} MB "
+             "compressed). This one file is the whole desk — every user, "
+             "order, bank, email and setting. Keep a few recent copies.</p>"
+             "<p><b>Restore on a fresh server:</b> install the bot, then<br>"
+             "<code>gunzip backup.sql.gz &amp;&amp; sqlite3 "
+             f"{settings.db_path} &lt; backup.sql</code><br>"
+             "and start the bot — everything comes back exactly as it was.</p>")
+    attachments = [(f"backup-{today_key}.sql.gz", gz, "application/gzip")]
+    if len(gz) > 20 * 1024 * 1024:
+        inner = (f"<p>Today's backup is too large to email ({size_mb:.1f} MB "
+                 "compressed). Download it from the panel's Backups tab and "
+                 "store it off the server.</p>")
+        attachments = None
+    ok = await sender.send_transactional(
+        to_addr, "", f"Desk backup — {today_key}", inner,
+        stream="mkt", attachments=attachments)
+    if ok:
+        async with Session() as s:
+            await set_setting(s, "db_backup_mailed", today_key)
+            await s.commit()
+        log.info("db backup emailed to %s (%.1f MB)", to_addr, size_mb)
+    return ok
+
+
 async def backup_loop() -> None:
     """Background loop: a snapshot on boot, then daily. Never crashes the app."""
     while True:
@@ -90,4 +151,8 @@ async def backup_loop() -> None:
                 log.info("db backup written: %s", name)
         except Exception:
             log.exception("db backup failed")
+        try:
+            await send_db_backup()
+        except Exception:
+            log.exception("db backup email failed")
         await asyncio.sleep(BACKUP_INTERVAL)
