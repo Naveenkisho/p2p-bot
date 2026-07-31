@@ -30,3 +30,5 @@ class ClaimFlow(StatesGroup):
 class EmailFlow(StatesGroup):
     address = State()        # /email tapped from the menu — waiting for the
                              # address pasted as a plain message (no syntax)
+    confirm = State()        # instant-activation path: "is this YOUR address?"
+                             # shown back before any order mail can go there
