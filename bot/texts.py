@@ -538,6 +538,70 @@ def claim_submitted(order_id: int, lang: str = "en") -> str:
     )
 
 
+def claim_unverified_sent(order_id: int, lang: str = "en") -> str:
+    """The TXID couldn't be seen on-chain (yet) — instead of refusing, it goes
+    to the team as an UNVERIFIED claim. One per order."""
+    if lang == "hi":
+        return (
+            f"🕵️ <b>Order {tag(order_id)} — manual verification me bheja gaya.</b>\n\n"
+            "Hum abhi ye transaction on-chain nahi dekh paye, isliye humari team "
+            "ise khud check karegi. Verify hote hi payout yahin confirm hoga — "
+            "aapko kuch aur karne ki zaroorat nahi."
+        )
+    return (
+        f"🕵️ <b>Order {tag(order_id)} — sent for manual verification.</b>\n\n"
+        "We couldn't see that transaction on-chain just now, so our team will "
+        "check it by hand. Once it verifies, your payout is confirmed right "
+        "here — nothing more needed from you."
+    )
+
+
+def claim_already_manual(order_id: int, lang: str = "en") -> str:
+    """A second unverifiable TXID on the same order — the first is already with
+    the team; don't stack more."""
+    if lang == "hi":
+        return (
+            f"⏳ Order {tag(order_id)} ka pehla TXID pehle se manual verification "
+            "me hai — team check kar rahi hai. Agar aapko lagta hai NAYA TXID hi "
+            "sahi hai to support ko bhejein."
+        )
+    return (
+        f"⏳ Order {tag(order_id)} already has a TXID under manual verification — "
+        "our team is checking it. If you believe this NEW hash is the right one, "
+        "send it to support."
+    )
+
+
+def email_nudge(lang: str = "en") -> str:
+    """One-time, after the first order: offer email receipts."""
+    if lang == "hi":
+        return ("📧 Order confirmation aur payout receipt <b>email par bhi</b> "
+                "chahiye?\nBhejein: <code>/email aapka@address.com</code>\n"
+                "Agar wo email humare saath pehle se verified hai to turant "
+                "chalu ho jayega — koi code nahi.")
+    return ("📧 Want your order confirmation and payout receipt <b>by email "
+            "too</b>?\nSend: <code>/email your@address.com</code>\n"
+            "If that address is already verified with us it switches on "
+            "instantly — no code needed.")
+
+
+def claim_pick_order(lang: str = "en") -> str:
+    """A hash was pasted with no order context — ask which order it pays for."""
+    if lang == "hi":
+        return ("🔎 <b>Ye TXID kis order ka hai?</b>\n\n"
+                "Neeche apna order chunein — hum usi ke network par check karenge.")
+    return ("🔎 <b>Which order is this TXID for?</b>\n\n"
+            "Pick the order below — we'll check it on that order's network.")
+
+
+def claim_pick_none(lang: str = "en") -> str:
+    if lang == "hi":
+        return ("Aapka koi order TXID ka wait nahi kar raha. /start dabakar "
+                "apne orders dekhein — ya naya order banayein.")
+    return ("None of your orders is waiting on a payment check. Press /start "
+            "to see your orders — or create a new one.")
+
+
 def _short_addr(addr: str) -> str:
     a = addr or ""
     return f"{a[:10]}…{a[-6:]}" if len(a) > 20 else a

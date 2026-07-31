@@ -48,6 +48,8 @@ class User(Base):
     # after the OTP check sets email_verified, so fake addresses die at the door
     email: Mapped[str] = mapped_column(String(190), default="")
     email_verified: Mapped[bool] = mapped_column(default=False)
+    # one-time "get receipts by email" nudge after their first order
+    email_prompted: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -90,6 +92,10 @@ class Order(Base):
     reminded: Mapped[bool] = mapped_column(default=False)
     refund_txid: Mapped[str | None] = mapped_column(String(80))
     claim_txid: Mapped[str | None] = mapped_column(String(80))  # user-submitted TXID
+    # the submitted TXID could NOT be seen on-chain (or the API was down) — it
+    # went to the admin as an UNVERIFIED claim for manual checking. Exactly one
+    # such submission is allowed per order; a verified TXID may replace it.
+    claim_unverified: Mapped[bool] = mapped_column(default=False)
     # awaiting the admin's manual confirm (auto-detect missed / order expired)
     status: Mapped[str] = mapped_column(String(20), default=OrderStatus.AWAITING_DEPOSIT,
                                         index=True)

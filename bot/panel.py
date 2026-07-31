@@ -782,6 +782,10 @@ async def broadcast_get(request: web.Request):
         n = await s.scalar(select(func.count()).select_from(User)
                            .where(User.banned.is_(False),
                                   User.id > 0))  # skip web (negative-id) users
+        no_email = await s.scalar(select(func.count()).select_from(User)
+                                  .where(User.banned.is_(False), User.id > 0,
+                                         or_(User.email.is_(None), User.email == "",
+                                             User.email_verified.is_(False))))
     csrf = await _csrf_for(request)
     msg = request.query.get("msg", "")
     banner = (f"<div class='banner ok'>{_esc(msg)}</div>" if msg else "")
@@ -796,6 +800,16 @@ async def broadcast_get(request: web.Request):
             "<input type=checkbox name=to_proof value='1' style='width:auto'> "
             "Also post to the proof channel</label>"
             "<div class=row><button>Send broadcast</button></div>"
+            "</div></form>"
+            "<h2>📧 Ask for emails</h2>"
+            "<form method=post action=/broadcast/emails><div class=card>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<p class=muted style='margin-top:0'>DMs the <b>{no_email or 0}</b> bot "
+            "users who haven't added a verified email yet: get order confirmations "
+            "and payout receipts by email with <code>/email</code>. One tap to "
+            "dismiss; an address already verified on the website activates "
+            "instantly with no code.</p>"
+            "<div class=row><button>Send email request</button></div>"
             "</div></form>")
     return _page("Broadcast", body)
 
@@ -819,6 +833,20 @@ async def broadcast_post(request: web.Request):
     launch_broadcast(request.app["bot"], compose_announcement(text), to_proof)
     raise web.HTTPFound("/broadcast?msg=" + html.escape(
         f"Broadcast started to {n or 0} users — you'll get a summary in Telegram."))
+
+
+@_authed
+async def broadcast_emails_post(request: web.Request):
+    data = await request.post()
+    if not await _check_csrf(request, data):
+        return _page("Error", _nav("broadcast") + "<p>Invalid CSRF token.</p>")
+    if request.app["bot"] is None:
+        raise web.HTTPFound("/broadcast?msg="
+                            + html.escape("Bot isn't running yet — set the token first."))
+    from .actions import launch_email_nudge
+    launch_email_nudge(request.app["bot"])
+    raise web.HTTPFound("/broadcast?msg=" + html.escape(
+        "Email request started — you'll get a sent/failed summary in Telegram."))
 
 
 @_authed
@@ -1920,6 +1948,7 @@ async def start_panel(bot):
         web.post("/pay", pay_post),
         web.get("/broadcast", broadcast_get),
         web.post("/broadcast", broadcast_post),
+        web.post("/broadcast/emails", broadcast_emails_post),
         web.get("/backups", backups_get),
         web.post("/backups/run", backups_run),
         web.get("/backups/download/{name}", backups_download),

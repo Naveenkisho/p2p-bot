@@ -24,3 +24,4 @@ class RefundFlow(StatesGroup):
 
 class ClaimFlow(StatesGroup):
     txid = State()           # collecting the TXID to claim a missed/late payment
+    pick = State()           # cold-pasted TXID: picking WHICH order it pays for

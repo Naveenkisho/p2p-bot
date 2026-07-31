@@ -395,15 +395,20 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
             await set_setting(session, f"bsc_since:{address}", str(newest - 120))
 
 
-async def lookup_bsc_tx(txid: str, since_ms: int) -> dict:
+async def lookup_bsc_tx(txid: str, since_ms: int,
+                        address: str | None = None) -> dict:
     """Look up a BEP20 TXID on-chain (BscScan) to verify a claim / reconcile the
-    actual amount. Returns the same shape as lookup_claim_tx (timestamp in ms)."""
-    from .db import bep20_active, get_bep20_address, get_bscscan_key
+    actual amount. `address` should be the ORDER's own BSC address (the one the
+    customer was shown) — falling back to the currently configured one. Without
+    that, rotating the desk's BEP20 address would make every older order's
+    claim read as "not found" despite a perfectly good payment.
+    Returns the same shape as lookup_claim_tx (timestamp in ms)."""
+    from .db import get_bep20_address, get_bscscan_key
     async with Session() as session:
-        if not await bep20_active(session):
-            return {"found": False, "error": False}
-        address = await get_bep20_address(session)
         key = await get_bscscan_key(session)
+        address = address or await get_bep20_address(session)
+        if not address or not key:
+            return {"found": False, "error": False}
     timeout = aiohttp.ClientTimeout(total=15)
     transfers = None
     for attempt in (1, 2, 3):        # ride out a rate-limit blip from the 5s scanner
@@ -611,14 +616,15 @@ async def check_order_now(bot: Bot, order_id: int) -> str | None:
         return o.status if o else None
 
 
-async def lookup_claim_tx(txid: str, address: str, since_ms: int) -> dict:
+async def lookup_claim_tx(txid: str, address: str, since_ms: int,
+                          bsc_address: str | None = None) -> dict:
     """Look up a user-submitted TXID on-chain to help the admin verify a
     late/missed payment: is it a confirmed USDT transfer TO our address, for how
     much, and when? Routes by hash shape (0x… → BEP20/BscScan, else TRC20).
     Returns {found, error, amount, to, to_ok, timestamp}."""
     from .helpers import is_bsc_txid
     if is_bsc_txid(txid):
-        return await lookup_bsc_tx(txid, since_ms)
+        return await lookup_bsc_tx(txid, since_ms, bsc_address)
     timeout = aiohttp.ClientTimeout(total=15)
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
@@ -637,7 +643,8 @@ async def lookup_claim_tx(txid: str, address: str, since_ms: int) -> dict:
     return {"found": False, "error": False}
 
 
-async def lookup_tx_global(txid: str, our_address: str) -> dict:
+async def lookup_tx_global(txid: str, our_address: str,
+                           bsc_address: str | None = None) -> dict:
     """Global per-tx lookup BY HASH (any destination), so a claim/refund can be
     declined on the user's face when the tx wasn't actually sent to us. Unlike
     lookup_claim_tx (which only searches OUR address's transfers), this reports
@@ -648,7 +655,7 @@ async def lookup_tx_global(txid: str, our_address: str) -> dict:
     if is_bsc_txid(txid):
         # BEP20: address-scoped lookup (a BscScan global receipt parse is heavier);
         # a BEP20 hash sent elsewhere simply reads as not-found here.
-        r = await lookup_bsc_tx(txid, 0)
+        r = await lookup_bsc_tx(txid, 0, bsc_address)
         return {**blank, **(r or {})}
     timeout = aiohttp.ClientTimeout(total=15)
     try:

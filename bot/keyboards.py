@@ -46,6 +46,14 @@ class ClaimReqCb(CallbackData, prefix="clm"):
     order_id: int
 
 
+class ClaimPickCb(CallbackData, prefix="cpk"):
+    """Cold-pasted TXID: the user picks WHICH pending order it pays for
+    (order_id=0 = cancel). The hash itself rides in FSM data — too long
+    for callback payloads."""
+
+    order_id: int
+
+
 class PickBankCb(CallbackData, prefix="pb"):
     """Bank pick after the deposit is confirmed (card_id=0 → add new)."""
 
@@ -284,3 +292,9 @@ def admin_order_kb(order_id: int, status: str) -> InlineKeyboardMarkup:
             text="🚫 Reject (fake / no deposit)",
             callback_data=AdminCb(action="reject_refund", order_id=order_id).pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def email_nudge_kb() -> InlineKeyboardMarkup:
+    """One-tap dismiss under the 'get receipts by email' nudge."""
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+        text="\U0001F44D No thanks", callback_data="emnudge:no")]])

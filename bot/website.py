@@ -33,7 +33,7 @@ from urllib.parse import quote
 
 import aiohttp
 from aiohttp import web
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from . import texts
@@ -2642,8 +2642,16 @@ to our address is accepted.</p>
         warn = (f"<b>Include the {dec}</b> — send the EXACT amount, decimals and all. "
                 f"A wrong amount may not auto-detect." if dec else
                 "<b>Send the exact amount.</b>")
+        claim_note = ""
+        if order.claim_txid:
+            claim_note = ("<div class='banner warn'>Your TXID is <b>under review</b>"
+                          + (" — we couldn't see it on-chain yet, so our team is "
+                             "verifying it by hand." if order.claim_unverified
+                             else " — verifying it on-chain now.")
+                          + " This page updates automatically.</div>")
+            claim_form = ""      # one submission is in flight — no second form
         body = f"""
-<h1>Send your USDT {tagline}</h1>
+<h1>Send your USDT {tagline}</h1>{claim_note}
 <div class=banner><b>You'll receive ₹{order.inr_amount:,.2f}</b>
 <span class=muted>→ {_esc(bank_label)}</span><br>
 <span class='muted small'>⏳ Quote expires in <span id=cd class=count>--:--</span>
@@ -2853,15 +2861,19 @@ async def order_claim(request: web.Request):
                      f"<div class='banner danger'>{msg}</div>"
                      f"<a class=btn href='/o/{_esc(token)}'>← Back to the order</a>")
 
-    if order.status not in _CLAIMABLE or order.claim_txid:
+    if order.status not in _CLAIMABLE or (
+            order.claim_txid and not order.claim_unverified):
         return back("This order can't take a TXID anymore — contact support.")
     txid = norm_txid(str(data.get("txid", "")))
     if not TXID_RE.fullmatch(txid):
         return back("That doesn't look like a transaction hash — it's 64 characters "
                     "(with a 0x in front on BEP20). Check your wallet's history.")
-    # exchanges show BSC hashes without the 0x — canonicalise for the order's
-    # network so a BEP20 claim never gets looked up on TRON
-    txid = txid_for_network(txid, order_display_address(order)[2])
+    # canonicalise: a 0x hash keeps its 0x (only BSC txs carry it); a bare hash
+    # follows the order's network (exchanges strip the 0x on BSC withdrawals).
+    # The on-chain check decides everything — never a shape-based rejection.
+    txid = txid_for_network(
+        txid, "BEP20" if txid.startswith("0x")
+        else order_display_address(order)[2])
     # Rate-limit the outbound on-chain lookup per (ip, order): a failed check
     # leaves the order claimable, so without this an attacker could loop random
     # hashes and burn the desk's TronGrid/BscScan quota.
@@ -2879,35 +2891,43 @@ async def order_claim(request: web.Request):
         import re as _re
         return back(_re.sub(r"<[^>]+>", "", reject)[:500] or
                     "We couldn't verify that TXID against this order.")
-    if verify.get("error"):
-        # transient chain-API error: on the bot this passes to a human, but on the
-        # open web we must NOT accept it (it would post an admin card) — ask to retry.
-        return back("We couldn't reach the blockchain just now — please try again in "
-                    "a minute. If it keeps failing, send your TXID to support.")
+    # a tx we can't see (fresh, API blip, odd route) is NOT refused — it's
+    # stored as this order's ONE unverified claim and a human checks it
+    unverified = bool(verify.get("error")) or not verify.get("found")
     async with Session() as s:
-        fresh = await s.get(Order, order.id)
-        if fresh is None or fresh.status not in _CLAIMABLE or fresh.claim_txid:
-            return back("This order can't take a TXID anymore — contact support.")
-        fresh.claim_txid = txid
+        # atomic compare-and-set — same slot rules as the bot: an unverified
+        # claim only takes an EMPTY slot; a verified one may replace an
+        # unverified one; two parallel submissions can't both win.
+        free = or_(Order.claim_txid.is_(None), Order.claim_txid == "")
+        cond = free if unverified else or_(free, Order.claim_unverified.is_(True))
+        res = await s.execute(
+            update(Order).where(Order.id == order.id,
+                                Order.status.in_(_CLAIMABLE), cond)
+            .values(claim_txid=txid, claim_unverified=unverified))
         await s.commit()
+        if res.rowcount == 0:
+            return back("A TXID for this order is already under manual "
+                        "verification — our team is checking it. If you believe "
+                        "this new hash is the right one, contact support.")
     bot = request.app.get("bot")
     if bot is not None:
         await _post_claim_card(bot, order.id, txid, verify)
-    # "TXID valid — under manual verification" email (fire-and-forget)
-    try:
-        from . import sender as _sender
-        email, name = await _sender.email_for_uid(order.user_id)
-        if email:
-            base = ((settings.site_url or "").rstrip("/")
-                    or ("https://" if _is_https(request) else "http://")
-                    + request.host)
-            subj, inner = _sender.claim_submitted_email(
-                texts.tag(order.id), order.usd_amount,
-                SERVICES.get(order.service, order.service), txid,
-                f"{base}/o/{token}")
-            await _sender.send_transactional(email, name, subj, inner)
-    except Exception:
-        log.exception("claim-submitted email failed")
+    # "TXID valid — under manual verification" email (verified claims only)
+    if not unverified:
+        try:
+            from . import sender as _sender
+            email, name = await _sender.email_for_uid(order.user_id)
+            if email:
+                base = ((settings.site_url or "").rstrip("/")
+                        or ("https://" if _is_https(request) else "http://")
+                        + request.host)
+                subj, inner = _sender.claim_submitted_email(
+                    texts.tag(order.id), order.usd_amount,
+                    SERVICES.get(order.service, order.service), txid,
+                    f"{base}/o/{token}")
+                await _sender.send_transactional(email, name, subj, inner)
+        except Exception:
+            log.exception("claim-submitted email failed")
     raise web.HTTPFound(f"/o/{token}")
 
 
