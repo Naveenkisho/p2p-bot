@@ -163,9 +163,17 @@ async def record_manual_order(bot: Bot, user_id: int, usd: float,
             return False, (f"{method} has no live rate. Set it first with "
                            f"/setrate {method} <₹>.")
         rate = rates[method]
+        # use the customer's most recent saved Telegram bank, so the admin
+        # card, the receipt and the PDF all show WHERE the money went — a
+        # manual settlement should look no different from an auto one
+        from .models import BankCard
+        card = await session.scalar(
+            select(BankCard).where(BankCard.user_id == user_id)
+            .order_by(BankCard.id.desc()).limit(1))
         order = Order(user_id=user_id, side="sell", service=method,
                       usd_amount=usd, rate_inr=rate, inr_amount=usd * rate,
                       status=OrderStatus.PENDING_PAYOUT.value,
+                      bank_card_id=card.id if card else None,
                       deposit_address="manual", txid="manual",
                       deposit_detected_at=utcnow(), admin_note="manual settlement")
         session.add(order)
@@ -177,6 +185,9 @@ async def record_manual_order(bot: Bot, user_id: int, usd: float,
     async with Session() as session:
         order = await session.get(Order, order_id)
         user = await session.get(User, user_id)
+        from .models import BankCard
+        card = (await session.get(BankCard, order.bank_card_id)
+                if order.bank_card_id else None)
         support = await get_support(session)
         lang = user.lang if user and user.lang else "en"
         position = await queue_position(session, order_id)
@@ -185,8 +196,23 @@ async def record_manual_order(bot: Bot, user_id: int, usd: float,
         if user is not None:
             text += texts.trust_footer(user.first_name, user.id, support, lang)
         delivered = await notify_user(bot, user_id, text)
-        posted = await post_order_card(bot, session, order, user, None,
+        posted = await post_order_card(bot, session, order, user, card,
                                        admin_order_kb(order_id, "pending_payout"))
+    # queued-for-payout email for /email users — same as an auto-detected
+    # deposit gets (fire-and-forget; the paid receipt follows on Done)
+    try:
+        from . import sender
+        email, name = await sender.email_for_uid(user_id)
+        if email:
+            from .config import settings as _cfg
+            site = (_cfg.site_url or "").rstrip("/")
+            subj, inner = sender.deposit_received_email(
+                texts.tag(order_id), usd, usd * rate,
+                SERVICES.get(method, method),
+                card.label if card else "", position, site or "")
+            await sender.send_transactional(email, name, subj, inner, legal=True)
+    except Exception:
+        log.exception("manual-order deposit email failed")
     tail = dm_note(user_id, delivered, " ⚠️ Couldn't DM the customer.")
     if not posted:
         tail += f" ⚠️ Card post failed — run /order {order_id}."
