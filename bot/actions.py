@@ -103,9 +103,32 @@ async def complete_order(bot: Bot, order_id: int) -> tuple[bool, str]:
                 updated.inr_amount, SERVICES.get(order.service, order.service),
                 card.label if card else "", live_rates=live_rates,
                 paid_at=ist_now_str())
+            # PDF receipt rides along — a failure to build it must never
+            # block the payout email itself
+            attachments = None
+            try:
+                from .config import settings as _cfg
+                from .db import get_support_email
+                from .invoice import receipt_pdf
+                async with Session() as s:
+                    sup_email = await get_support_email(s)
+                pdf = receipt_pdf(
+                    texts.tag(order.id), name or "", updated.usd_amount,
+                    updated.rate_inr, updated.inr_amount,
+                    SERVICES.get(order.service, order.service),
+                    card.label if card else "",
+                    updated.network or "TRC20", updated.txid or "",
+                    ist_now_str(), site=(_cfg.site_url or "").rstrip("/"),
+                    support_email=sup_email or "")
+                attachments = [(
+                    f"receipt-{texts.tag(order.id).lstrip('#')}.pdf", pdf,
+                    "application/pdf")]
+            except Exception:
+                log.exception("receipt pdf build failed")
             await sender.send_transactional(email, name, subj, inner, legal=True,
                                             fail_bot=bot,
-                                            fail_uid=max(order.user_id, 0))
+                                            fail_uid=max(order.user_id, 0),
+                                            attachments=attachments)
     except Exception:
         log.exception("completion email failed")
     await post_proof(bot, updated)
