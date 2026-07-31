@@ -77,6 +77,9 @@ async def main() -> None:
 
     scanner.add_done_callback(_scanner_done)
 
+    from .sender import nudge_loop
+    nudger = asyncio.create_task(nudge_loop(bot))   # 12h re-engagement emails
+
     panel_runner = await start_panel(bot)  # web admin panel (if enabled)
     site_runner = await start_site(bot)    # public customer website (if enabled)
 
@@ -84,6 +87,7 @@ async def main() -> None:
         await dp.start_polling(bot)
     finally:
         scanner.cancel()
+        nudger.cancel()
         if panel_runner is not None:
             await panel_runner.cleanup()
         if site_runner is not None:

@@ -165,6 +165,9 @@ class Account(Base):
     # session version — baked into the login cookie's signature; bumping it
     # (password reset, Google takeover) instantly signs out EVERY device
     sess_ver: Mapped[int] = mapped_column(Integer, default=0)
+    # one-shot re-engagement nudge: emailed once ~12h after signup if the
+    # account still hasn't completed an order (0 = not yet sent, 1 = sent)
+    nudged: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_login: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
