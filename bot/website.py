@@ -251,6 +251,8 @@ _signup_times: dict[str, deque] = {}
 _SIGNUP_MAX_PER_HOUR = 8
 _login_times: dict[str, deque] = {}
 _LOGIN_MAX_PER_HOUR = 20
+_pwchange_times: dict[str, deque] = {}   # per-account: 1 password change / 5 min
+_PWCHANGE_WINDOW = 300
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -885,7 +887,7 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
         head_extra += _tracking_head()      # marketing pixels on public pages
     if acct:
         label = acct if len(acct) <= 18 else acct[:16] + "…"
-        acct_link = (f"<a class='nav me' href='/my' title='{_esc(acct)}'>"
+        acct_link = (f"<a class='nav me' href='/account' title='{_esc(acct)}'>"
                      f"{_esc(label)}</a>")
     else:
         acct_link = "<a class='nav me' href='/signup'>Sign up</a>"
@@ -3599,6 +3601,160 @@ async def sitemap_xml(request: web.Request):
     return web.Response(text=xml, content_type="application/xml")
 
 
+# ── my account / profile ─────────────────────────────────────────────────────
+
+async def account_get(request: web.Request, error: str = "", ok: str = "",
+                      perr: str = "", pok: str = ""):
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup?next=/account")
+    uid = await _uid_from_cookie(request)
+    # flash after a password change: the redirect re-requests with the fresh
+    # cookie, so we surface the confirmation from the query rather than trying
+    # to render it in-place against a now-stale session cookie.
+    if not pok and request.query.get("pw") == "changed":
+        pok = "Password updated. Other devices have been signed out."
+    async with Session() as s:
+        support = await get_support(s)
+        whatsapp = await get_whatsapp(s)
+        done = await s.scalar(select(func.count()).select_from(Order).where(
+            Order.user_id == uid, Order.status == OrderStatus.COMPLETED.value))
+    csrf = await _csrf(f"acct:{uid}")
+    is_google = bool(acct.google_sub)
+    method = "Google" if is_google else "Email &amp; password"
+    verified = ("<span style='background:#e1f9ee;color:#0c8f56;font-size:.72rem;"
+                "font-weight:800;padding:2px 8px;border-radius:20px'>✓ verified</span>"
+                if acct.email_verified else
+                "<span style='background:#fbefdd;color:#b45309;font-size:.72rem;"
+                "font-weight:800;padding:2px 8px;border-radius:20px'>unverified</span>")
+    joined = _ist(acct.created_at)
+    banner = (f"<div class='banner ok'>{_esc(ok)}</div>" if ok else
+              f"<p class=err>{_esc(error)}</p>" if error else "")
+    if is_google:
+        pw_card = ("<div class=card><b>Password</b><p class=muted style='margin:6px 0 0'>"
+                   "You sign in with Google, so there's no password to change here. "
+                   "Manage it in your Google account.</p></div>")
+    else:
+        pbanner = (f"<div class='banner ok'>{_esc(pok)}</div>" if pok else
+                   f"<p class=err>{_esc(perr)}</p>" if perr else "")
+        pw_card = f"""<div class=card><b>Change password</b>{pbanner}
+<form method=post action=/account/password>
+<input type=hidden name=csrf value='{csrf}'>
+<label>Current password</label>
+<input type=password name=current autocomplete=current-password required>
+<label>New password</label>
+<input type=password name=password autocomplete=new-password minlength=8 required>
+<p class='muted small' style='margin:4px 0 0'>8+ characters incl. a special character (e.g. @).</p>
+<label>Confirm new password</label>
+<input type=password name=password2 autocomplete=new-password minlength=8 required>
+<div class=row style='margin-top:12px'><button class=btn>Update password</button></div>
+<p class='muted small' style='margin:8px 0 0'>Changing your password signs you out
+on every other device.</p>
+</form></div>"""
+    body = f"""<h1>My <span class=g>account</span></h1>{banner}
+<div class=card><b>Profile</b>
+<div style='margin:8px 0 12px;color:var(--muted);font-size:.9rem'>
+Email: <b style='color:var(--text)'>{_esc(acct.email)}</b> {verified}<br>
+Sign-in method: <b style='color:var(--text)'>{method}</b> ·
+Member since {_esc(joined)} · {done or 0} completed order(s)</div>
+<form method=post action=/account>
+<input type=hidden name=csrf value='{csrf}'>
+<label>Your name</label>
+<input name=name maxlength=120 value="{_esc(acct.name or '')}">
+<label>Mobile number</label>
+<div class=vrow><span class=cc>&#127470;&#127475; +91</span>
+<input name=phone inputmode=numeric maxlength=10
+ value="{_esc((acct.phone or '').lstrip('+').removeprefix('91'))}"></div>
+<label>Daily USDT volume</label>
+{_stock_pick(acct.stock or '')}
+<div class=row style='margin-top:12px'><button class=btn>Save profile</button></div>
+</form></div>
+{pw_card}
+<div class=card><b>Quick links</b>
+<div class=row style='gap:10px;margin-top:8px'>
+<a class='btn small' href='/my'>My orders</a>
+<a class='btn small' href='/banks'>My banks</a>
+<a class='btn small' href='/sell'>Sell USDT</a></div>
+<form method=post action=/logout style='margin-top:12px'>
+<input type=hidden name=csrf value='{await _csrf(f"auth:{uid}")}'>
+<button class='btn small' style='background:var(--surface-2);color:var(--text)'>Log out</button></form>
+</div>
+{_fabs_html(support, whatsapp)}"""
+    return _page("My account", body, noindex=True, acct=acct.email)
+
+
+async def account_post(request: web.Request):
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup?next=/account")
+    uid = await _uid_from_cookie(request)
+    data = await request.post()
+    if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"acct:{uid}")):
+        return await account_get(request, error="That form expired — try again.")
+    name = str(data.get("name", "")).strip()
+    phone_raw = str(data.get("phone", "")).strip()
+    stock = str(data.get("stock", "")).strip()
+    if not name or len(name) > 120:
+        return await account_get(request, error="Please enter your name.")
+    digits = re.sub(r"[\s\-()]", "", phone_raw)
+    if re.fullmatch(r"[6-9]\d{9}", digits):
+        phone = "+91" + digits
+    elif _valid_phone(phone_raw):
+        phone = _norm_phone(phone_raw)
+    else:
+        return await account_get(request, error="Enter a valid 10-digit mobile number.")
+    if stock and stock not in _STOCK_TIERS:
+        return await account_get(request, error="Pick a valid daily volume.")
+    async with Session() as s:
+        a = await s.get(Account, acct.id)
+        if a is not None:
+            a.name, a.phone = name, phone
+            if stock:
+                a.stock = stock
+            await s.commit()
+    return await account_get(request, ok="Profile updated.")
+
+
+async def account_password(request: web.Request):
+    acct = await _account_from_request(request)
+    if acct is None:
+        raise web.HTTPFound("/signup?next=/account")
+    uid = await _uid_from_cookie(request)
+    data = await request.post()
+    if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"acct:{uid}")):
+        return await account_get(request, perr="That form expired — try again.")
+    if acct.google_sub or not acct.pw_hash:
+        return await account_get(request, perr="This account has no password to change.")
+    # 1 change per 5 minutes per account
+    if _bucket_throttled(_pwchange_times, str(acct.id), 1, _PWCHANGE_WINDOW):
+        return await account_get(request, perr="You can change your password once "
+                                 "every 5 minutes — please wait a moment.")
+    current = str(data.get("current", ""))
+    password = str(data.get("password", ""))
+    if _hash_pw_sync(current, acct.pw_salt) != acct.pw_hash:
+        return await account_get(request, perr="Your current password is incorrect.")
+    pw_err = _valid_password(password)
+    if pw_err:
+        return await account_get(request, perr=pw_err)
+    if password != str(data.get("password2", "")):
+        return await account_get(request, perr="The new passwords don't match.")
+    _bucket_record(_pwchange_times, str(acct.id), _PWCHANGE_WINDOW)
+    salt = secrets.token_hex(16)
+    async with Session() as s:
+        a = await s.get(Account, acct.id)
+        a.pw_salt = salt
+        a.pw_hash = await _hash_pw(password, salt)
+        a.sess_ver = (a.sess_ver or 0) + 1      # sign out every OTHER device
+        await s.commit()
+    # bumping sess_ver just invalidated THIS request's cookie too, so we can't
+    # re-render /account in place (it would re-validate the stale cookie and
+    # bounce to signup). Redirect with a freshly signed cookie: the browser
+    # re-requests /account authenticated, and the flash shows the confirmation.
+    resp = web.HTTPFound("/account?pw=changed")
+    _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
+    return resp
+
+
 # ── my banks (save/manage payout accounts) ───────────────────────────────────
 
 async def banks_get(request: web.Request, error: str = "", ok: str = ""):
@@ -3832,6 +3988,9 @@ async def start_site(bot):
         web.post("/reset", reset_post),
         web.get("/verify-email", verify_email_get),
         web.post("/verify-email", verify_email_post),
+        web.get("/account", account_get),
+        web.post("/account", account_post),
+        web.post("/account/password", account_password),
         web.get("/banks", banks_get),
         web.post("/banks", banks_add),
         web.post("/banks/{id:\\d+}/delete", banks_delete),
