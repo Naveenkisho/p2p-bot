@@ -285,7 +285,7 @@ async def _note_sighting(bot: Bot, txid: str, amount: float | None,
         from .helpers import notify_user
         await notify_user(
             bot, order.user_id,
-            f"⚡ <b>Deposit detected on-chain!</b>\n"
+            f"<b>Deposit detected on-chain.</b>\n"
             f"{texts.usd_str(amount)} USDT is confirming now — usually under "
             f"a minute. It will be credited to {texts.tag(order.id)} "
             f"automatically the moment it confirms.")
