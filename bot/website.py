@@ -1354,9 +1354,10 @@ async def home(request: web.Request):
     nets = "TRC20 (TRON) and BEP20 (BSC)" if two_chains else "TRC20 (TRON)"
     body = f"""
 <h1>Sell USDT.<br><span class=g>Get INR in your bank.</span></h1>
-<p class="muted lead">Send USDT, we verify it <b>on-chain automatically</b>, and our
-admins pay your bank — UPI, IMPS, CDM or cheque. The same desk thousands trade on
-Telegram, now on the web.</p>
+<p class="muted lead">Sell USDT, get <b>100% clean funds</b> — we verify your
+deposit <b>on-chain automatically</b> and pay your bank from our own verified
+float. UPI, IMPS, CDM or cheque, on a verified Indian platform: the same desk
+thousands trade on Telegram, now on the web.</p>
 <div class=hero-badges>{open_badge}
 <span class=badge>100% clean funds</span>
 <span class=badge>Auto-verified deposits</span>
@@ -1463,11 +1464,11 @@ saved banks then follow your account on any device, under
         org["email"] = settings.biz_email
     body += _ld(faq_ld) + _ld(org)
     acct = await _account_from_request(request)
-    return _page("Sell USDT for INR at Live Rates — Instant Bank Payout | P2P Desk",
+    return _page("Sell USDT for INR — Clean Funds, Verified Indian Platform | P2P Desk",
                  body,
-                 "Sell USDT for INR at live rates. On-chain verified deposits, "
-                 "instant bank payout via UPI/IMPS/CDM across India. Free "
-                 "signup. 100% clean funds guarantee.",
+                 "Sell USDT for INR at live rates on a verified Indian "
+                 "platform. On-chain verified deposits, instant bank payout "
+                 "via UPI/IMPS/CDM. Sell USDT, get 100% clean funds.",
                  wide=True, path="/", acct=acct.email if acct else "")
 
 
