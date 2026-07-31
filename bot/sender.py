@@ -41,7 +41,7 @@ from sqlalchemy import select
 from .config import settings
 from .db import Session, get_setting, set_setting, site_secret
 from .helpers import unsub_token
-from .models import Account, Unsubscribe, User
+from .models import Account, Unsubscribe, User, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -550,6 +550,14 @@ def brand_wrap(inner: str, contact: str = "", legal: bool = False,
         year = datetime.now(timezone.utc).year
         extra = f"""<p style="margin:10px 0 0;color:#8b95a8;font-size:12px;line-height:1.7">{links_row}</p>
 <p style="margin:12px 0 0;color:#9aa3b8;font-size:11px;line-height:1.7">
+<strong>Payout &amp; refund policy:</strong> if a bank payout is delayed or reversed
+for a reason outside the trade — a bank-side hold, a wrong/closed account, a bank
+holiday, or additional verification — your order is re-checked and either settled
+or <strong>fully refunded within 3&ndash;7 working days</strong>. If a deposit
+doesn't auto-detect, open your order page and submit the transaction hash and we
+verify it on-chain. Reply to this email with your order number and we'll track it
+for you.</p>
+<p style="margin:12px 0 0;color:#9aa3b8;font-size:11px;line-height:1.7">
 <strong>Security notice:</strong> {_BRAND_NAME} will never ask for your password
 or verification codes, and will never ask you to send USDT to any address other
 than the one shown on your own order page. Genuine mail from us always comes
@@ -662,20 +670,55 @@ def _rates_box(rates: dict[str, float]) -> str:
             f"style='background:{_C_SOFT};border-radius:12px;margin:0 0 18px'>{rows}</table>")
 
 
-def rate_update_email(rates: dict[str, float]) -> tuple[str, str]:
-    """(subject, html) for the auto 'rates changed' blast — every live payout
-    method's rate in one box, matching what the site shows right now."""
+def _rate_compare_box(new: dict, old: dict | None) -> str:
+    """Each live method's NEW rate with a was-₹X ▲/▼ delta vs the previous rate."""
+    from .config import SERVICES as _SV
+    rows = ""
+    for k in _SV:
+        nv = new.get(k, 0)
+        if not nv or nv <= 0:
+            continue
+        ov = (old or {}).get(k)
+        if ov and ov > 0 and abs(nv - ov) > 1e-9:
+            up = nv > ov
+            arrow = "&#9650;" if up else "&#9660;"       # ▲ / ▼
+            col = _C_OK if up else "#c0271c"
+            delta = (f"<span style='color:{col};font-weight:bold;font-size:12.5px'>"
+                     f"{arrow} was &#8377;{ov:g}</span>")
+        else:
+            delta = "<span style='color:#8b95a8;font-size:12.5px'>no change</span>"
+        rows += (f"<tr><td style='padding:11px 18px;color:{_C_OK};font-size:15px;"
+                 f"font-weight:bold'>{_html.escape(_SV.get(k, k))}</td>"
+                 f"<td style='padding:11px 18px' align='right'>"
+                 f"<span style='color:{_C_OK};font-size:21px;font-weight:bold'>"
+                 f"&#8377;{nv:g}</span> <span style='font-size:12px;color:#5a657d'>/ USDT</span>"
+                 f"<br>{delta}</td></tr>")
+    return (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+            f"style='background:{_C_SOFT};border-radius:12px;margin:0 0 18px'>{rows}</table>")
+
+
+def rate_update_email(rates: dict[str, float],
+                      prev: dict | None = None) -> tuple[str, str]:
+    """(subject, html) for the auto 'rates changed' blast — every live method's
+    NEW rate with a before→after delta vs the previous rates, so the customer
+    sees exactly what moved and by how much."""
     from .config import SERVICES as _SV
     live = [(k, rates[k]) for k in _SV if k in rates and rates[k] > 0]
-    subject = ("USDT → INR rates updated — "
-               + " · ".join(f"{k} ₹{r:g}" for k, r in live)[:120])
+    up = any((prev or {}).get(k, 0) and rates[k] > prev[k] for k, _ in live) if prev else False
+    headline = ("Good news — rates just went up" if up else "Live rates updated")
+    subject = (("USDT → INR rates just went up — " if up
+                else "USDT → INR rates updated — ")
+               + " · ".join(f"{k} ₹{r:g}" for k, r in live))[:140]
     site = (settings.site_url or "").rstrip("/")
-    inner = f"""{_badge("&#8377;", bg=_C_NAVY, fg=_C_GREEN)}
-<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">Rates just updated</h1>
-<p style="margin:0 0 14px;color:{_C_INK};font-size:15px;line-height:1.6">Live USDT&nbsp;&rarr;&nbsp;INR rates on the desk right now:</p>
-{_rates_box(rates)}
-<p style="margin:0 0 18px;color:{_C_INK};font-size:14px;line-height:1.6">Instant bank payout &mdash; UPI and IMPS land in minutes, every deposit is verified on-chain, and funds are 100% clean. Lock today's rate before it moves:</p>
-{_btn(site + "/sell" if site else "#", "Sell USDT now &rarr;")}"""
+    lead = ("Rates on the desk just moved in your favour — here's before vs after. "
+            "Your rate is locked the moment you place the order:" if up else
+            "Here's what changed on the desk — before vs after:")
+    inner = f"""{_badge("&#9650;" if up else "&#8377;", bg=_C_NAVY, fg=_C_GREEN)}
+<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">{headline}</h1>
+<p style="margin:0 0 14px;color:{_C_INK};font-size:15px;line-height:1.6">{lead}</p>
+{_rate_compare_box(rates, prev)}
+<p style="margin:0 0 18px;color:{_C_INK};font-size:14px;line-height:1.6">Full INR paid &mdash; no 1% TDS. Instant UPI/IMPS payout, verified on-chain, 100% clean funds and no freeze risk. Lock this rate now:</p>
+{_btn(site + "/sell" if site else "#", "Place your order now &rarr;")}"""
     return subject, inner
 
 
@@ -864,6 +907,88 @@ async def email_for_uid(uid: int) -> tuple[str, str]:
     return "", ""
 
 
+# ── 12-hour re-engagement nudge ──────────────────────────────────────────────
+NUDGE_AFTER_H = 12
+NUDGE_INTERVAL = 30 * 60          # scan cadence
+NUDGE_MAX_PER_RUN = 200
+
+
+def nudge_email(name: str, stock: str, rates: dict) -> tuple[str, str]:
+    first = (name or "").strip().split()[0] if (name or "").strip() else ""
+    greet = f"Hi {_html.escape(first)}," if first else "Hi,"
+    stock_line = (f"At signup you set a daily volume of "
+                  f"<b>{_html.escape(stock)} USDT</b> — that's ready whenever you "
+                  "are. " if stock else "")
+    subject = "Your USDT rate is ready — place your first order"
+    site = (settings.site_url or "").rstrip("/")
+    inner = f"""{_badge("&#8377;")}
+<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">You're all set — just place your first order</h1>
+<p style="margin:0 0 12px;color:{_C_INK};font-size:15px;line-height:1.6">{greet} your account is verified and ready. {stock_line}Here are today's live rates:</p>
+{_rates_box(rates)}
+<p style="margin:0 0 16px;color:{_C_INK};font-size:14px;line-height:1.65">
+Selling is risk-free for you: <b>full INR paid — no 1% TDS</b>, 100% clean verified
+funds, no cyber-complaint or account-freeze risk, and every deposit is verified
+on-chain. It takes under a minute.</p>
+{_btn(site + "/sell" if site else "#", "Sell your USDT now &rarr;")}"""
+    return subject, inner
+
+
+async def run_nudges(bot=None) -> int:
+    """Email each verified account once, ~12h after signup, if it still hasn't
+    completed an order. One-shot: every scanned account is marked nudged so it
+    is never emailed twice — whether we send (no order yet) or skip (already
+    traded / unsubscribed). Honours the opt-out list and a panel kill switch."""
+    from .db import get_rates
+    from .models import Order, OrderStatus
+    async with Session() as s:
+        if (await get_setting(s, "nudge_auto") or "1") == "0":
+            return 0
+    cfg = await email_config()
+    if not email_ready(cfg):
+        return 0
+    cutoff = utcnow() - timedelta(hours=NUDGE_AFTER_H)
+    async with Session() as s:
+        rates = await get_rates(s)
+        accts = (await s.scalars(select(Account).where(
+            Account.nudged.is_(False),
+            Account.email_verified.is_(True),
+            Account.created_at < cutoff))).all()
+        unsub = {e.lower() for e in
+                 (await s.scalars(select(Unsubscribe.email))).all()}
+        targets: list[tuple[str, str, str]] = []
+        for a in accts:
+            uid = -(_ACCT_BASE + a.id)
+            done = await s.scalar(select(Order.id).where(
+                Order.user_id == uid,
+                Order.status == OrderStatus.COMPLETED.value).limit(1))
+            a.nudged = True                       # one-shot, always mark
+            if (done is None and (a.email or "").lower() not in unsub
+                    and len(targets) < NUDGE_MAX_PER_RUN):
+                targets.append((a.email.strip(), a.name or "", a.stock or ""))
+        await s.commit()
+    if not rates:
+        return 0
+    for email, name, stock in targets:
+        subj, inner = nudge_email(name, stock, rates)
+        await send_transactional(email, name, subj, inner, stream="mkt", unsub=True)
+    if targets:
+        log.info("re-engagement nudge sent to %s account(s)", len(targets))
+    return len(targets)
+
+
+async def nudge_loop(bot=None) -> None:
+    """Background loop (started from main) — checks for eligible accounts every
+    NUDGE_INTERVAL. Never crashes the process on a transient error."""
+    while True:
+        try:
+            await asyncio.sleep(NUDGE_INTERVAL)
+            await run_nudges(bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("nudge loop error")
+
+
 # ── email OTP (6-digit) — the front door that keeps fake addresses out ───────
 # In-memory per-uid store: {email, code, exp, tries, sends}. A process restart
 # clears pending codes, which only means "request a fresh one" — no data loss.
@@ -935,7 +1060,7 @@ def verify_email_otp(uid: int, code: str) -> tuple[bool, str]:
 async def send_transactional(to_addr: str, to_name: str, subject: str,
                              inner_html: str, fail_bot=None,
                              fail_uid: int = 0, stream: str = "tx",
-                             legal: bool = False) -> bool:
+                             legal: bool = False, unsub: bool = False) -> bool:
     """Fire-and-forget single branded email (order confirmations/receipts).
     Never raises into the order flow; returns False when email isn't set up.
     Skips the unsubscribe list by design — these are receipts, not marketing —
@@ -957,6 +1082,9 @@ async def send_transactional(to_addr: str, to_name: str, subject: str,
     body = brand_wrap(inner_html,
                       contact=cfg.get("reply_to") or cfg["from_addr"],
                       legal=legal, tg_handle=tg_handle)
+    # promotional single-sends (the re-engagement nudge) carry a real
+    # unsubscribe link/header; receipts pass an empty secret and carry none
+    secret = await site_secret() if unsub else b""
 
     async def _run():
         def _noop(_s, _f):
@@ -965,7 +1093,7 @@ async def send_transactional(to_addr: str, to_name: str, subject: str,
         try:
             _sent, failed, _errs = await asyncio.to_thread(
                 _send_batch_blocking, cfg, [((to_addr or "").strip(), to_name)],
-                subject, body, True, b"", _noop)   # secret unused: no unsub link
+                subject, body, True, secret, _noop)
         except Exception:
             failed = 1
             log.exception("transactional email to %s failed", to_addr)
@@ -1042,7 +1170,11 @@ async def maybe_rate_blast(bot=None, prev_rates: dict | None = None) -> str:
             return "unchanged"
     except ValueError:
         pass
-    subject, inner = rate_update_email(rates)
+    try:
+        prev_map = json.loads(baseline) if baseline else None
+    except ValueError:
+        prev_map = None
+    subject, inner = rate_update_email(rates, prev=prev_map)
     ok, msg = await start_email_broadcast(
         subject, brand_wrap(inner, contact=cfg.get("from_addr", "")), True, bot=bot)
     if ok:
