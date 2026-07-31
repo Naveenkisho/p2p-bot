@@ -522,16 +522,24 @@ def _usd(v: float) -> str:
 
 
 def brand_wrap(inner: str, contact: str = "", legal: bool = False,
-               tg_handle: str = "") -> str:
+               tg_handle: str = "", light: bool = False) -> str:
     """Shared email chrome: navy header band with the ₹ mark + wordmark, white
     card, muted footer. Inline-styled tables so Gmail/Outlook render it.
-    legal=True appends the professional compliance footer (links row, security
-    notice, copyright) — used on the order lifecycle emails only."""
+    legal=True appends the full compliance footer (links, refund policy,
+    security notice, copyright) — order lifecycle emails only.
+    light=True adds only a minimal © + anti-phishing line — verification and
+    password-reset emails, kept lean so the code stays the single focus."""
     site = (settings.site_url or "").rstrip("/")
     contact_line = (f"<a href='mailto:{_html.escape(contact)}' "
                     f"style='color:{_C_GREEN_DARK};text-decoration:none'>"
                     f"{_html.escape(contact)}</a>" if contact else "the support desk")
     extra = ""
+    if light and not legal:
+        year = datetime.now(timezone.utc).year
+        extra = (f"<p style=\"margin:10px 0 0;color:#9aa3b8;font-size:11px;"
+                 f"line-height:1.6\">&copy; {year} {_BRAND_NAME}. You received "
+                 "this because a verification was requested for your email. We "
+                 "will <strong>never</strong> ask you to share this code.</p>")
     if legal:
         links = []
         if site:
@@ -1038,7 +1046,7 @@ async def issue_email_otp(uid: int, email: str) -> tuple[bool, str]:
               "exp": now + OTP_TTL, "tries": 0})
     b["sends"].append(now)
     subj, inner = otp_email(b["code"])
-    await send_transactional(email, "", subj, inner, stream="otp")
+    await send_transactional(email, "", subj, inner, stream="otp", light=True)
     return True, email
 
 
@@ -1060,7 +1068,8 @@ def verify_email_otp(uid: int, code: str) -> tuple[bool, str]:
 async def send_transactional(to_addr: str, to_name: str, subject: str,
                              inner_html: str, fail_bot=None,
                              fail_uid: int = 0, stream: str = "tx",
-                             legal: bool = False, unsub: bool = False) -> bool:
+                             legal: bool = False, unsub: bool = False,
+                             light: bool = False) -> bool:
     """Fire-and-forget single branded email (order confirmations/receipts).
     Never raises into the order flow; returns False when email isn't set up.
     Skips the unsubscribe list by design — these are receipts, not marketing —
@@ -1081,7 +1090,7 @@ async def send_transactional(to_addr: str, to_name: str, subject: str,
                           if h.startswith("@")), "")
     body = brand_wrap(inner_html,
                       contact=cfg.get("reply_to") or cfg["from_addr"],
-                      legal=legal, tg_handle=tg_handle)
+                      legal=legal, tg_handle=tg_handle, light=light)
     # promotional single-sends (the re-engagement nudge) carry a real
     # unsubscribe link/header; receipts pass an empty secret and carry none
     secret = await site_secret() if unsub else b""
