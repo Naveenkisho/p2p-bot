@@ -8,7 +8,7 @@ from aiogram.types import (CallbackQuery, InlineKeyboardButton,
 from sqlalchemy import select
 
 from .. import texts
-from ..config import SERVICES
+from ..config import SERVICES, settings
 from ..db import Session, get_lang, get_or_create_user, get_rates, get_support
 from ..helpers import edit_or_send, esc, strip_kb
 from ..keyboards import (
@@ -156,16 +156,29 @@ async def _submit_email(message: Message, cand: str,
             if state is not None:
                 await state.set_state(EmailFlow.confirm)
                 await state.update_data(email=cand)
-                kb = InlineKeyboardMarkup(inline_keyboard=[
+                rows = [
                     [InlineKeyboardButton(text="✅ Yes — send my receipts there",
                                           callback_data="emconf:yes")],
-                    [InlineKeyboardButton(text="✏️ No — let me re-type it",
-                                          callback_data="emconf:no")]])
+                    [InlineKeyboardButton(text="✏️ No — add a different email",
+                                          callback_data="emconf:no")],
+                ]
+                site = (settings.site_url or "").rstrip("/")
+                if site:
+                    rows.append([InlineKeyboardButton(
+                        text="🌐 Or continue on our website", url=site)])
                 await message.answer(
-                    "⚠️ <b>Please check this is YOUR address:</b>\n"
+                    "ℹ️ <b>This email is already signed up with us</b> — a "
+                    "website account or another Telegram user verified it, "
+                    "so no code is needed.\n\n"
+                    "<b>Please check it is YOUR address:</b>\n"
                     f"<code>{esc(cand)}</code>\n\n"
                     "Your order details and payout receipts will be sent "
-                    "there. Is it correct?", reply_markup=kb)
+                    "there. Is it correct?\n\n"
+                    "<i>Not yours? Add a different email for the bot — or if "
+                    "you signed up on our website with it, you can keep "
+                    "trading there and this email already gets those order "
+                    "updates.</i>",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
                 return
             # no FSM context — fall through to the OTP, which proves ownership
     ok, result = await issue_email_otp(uid, cand)
