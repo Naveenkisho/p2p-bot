@@ -62,6 +62,20 @@ def norm_txid(txid: str | None) -> str:
     return (txid or "").strip().lower()
 
 
+def txid_for_network(txid: str, net_key: str) -> str:
+    """Canonical hash for the ORDER's network. Exchanges (Binance & co) show a
+    BSC withdrawal hash WITHOUT its 0x prefix, so a customer pasting one on a
+    BEP20 order used to get routed to the TRON lookup and wrongly told the tx
+    doesn't exist — the order knows its network, so trust that over the hash's
+    spelling. TRC20 hashes are bare 64-hex by definition."""
+    t = norm_txid(txid)
+    if net_key == "BEP20" and re.fullmatch(r"[0-9a-f]{64}", t):
+        return "0x" + t
+    if net_key == "TRC20" and t.startswith("0x"):
+        return t[2:]
+    return t
+
+
 def _txid_variants(txid: str) -> set[str]:
     """Both spellings of a hash — bare and 0x-prefixed — so a stored TRC20 hash
     and a submitted 0x-flipped copy of it can never slip past the reuse guard."""

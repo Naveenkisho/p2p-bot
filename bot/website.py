@@ -59,12 +59,15 @@ from .helpers import (
     TXID_RE,
     explorer_tx,
     norm_txid,
+    order_display_address,
     queue_position,
     try_transition,
+    txid_for_network,
     txid_used_elsewhere,
     unsub_valid,
 )
-from .models import Account, BankCard, Order, OrderStatus, Ticket, Unsubscribe, User, utcnow
+from .models import (Account, BankCard, Order, OrderStatus, PhoneHistory,
+                     Ticket, Unsubscribe, User, utcnow)
 from .qr import qr_png
 
 log = logging.getLogger(__name__)
@@ -759,10 +762,11 @@ details summary::marker{color:var(--accent-dark)}
  border-top:1px solid rgba(255,255,255,.10);padding-top:16px}
 .fabs{position:fixed;right:14px;bottom:max(14px,env(safe-area-inset-bottom,14px));
  display:flex;flex-direction:column;gap:10px;z-index:60;align-items:flex-end}
-.fab{display:inline-flex;align-items:center;gap:8px;border-radius:999px;
- padding:12px 18px;font-weight:800;font-size:.92rem;color:#fff;
+.fab{display:inline-flex;align-items:center;justify-content:center;
+ width:52px;height:52px;border-radius:50%;color:#fff;
  box-shadow:0 10px 26px rgba(14,19,48,.28)}
-.fab:hover{filter:brightness(1.06);color:#fff}
+.fab svg{display:block}
+.fab:hover{filter:brightness(1.06);color:#fff;transform:scale(1.06)}
 .fab.wa{background:#25d366}
 .fab.tg{background:#229ed9}
 .fab.em{background:var(--navy)}
@@ -984,22 +988,51 @@ their respective owners, shown for compatibility only &mdash; no affiliation.</s
 </div></footer>"""
 
 
+# logo-only floating buttons: inline SVG glyphs (CSP-safe, no external images)
+_FAB_SVG_EMAIL = ("<svg viewBox='0 0 24 24' width=22 height=22 fill='none' "
+                  "stroke='currentColor' stroke-width='1.8' aria-hidden=true>"
+                  "<rect x='3' y='5' width='18' height='14' rx='2.5'/>"
+                  "<path d='m3.5 7 8.5 6 8.5-6'/></svg>")
+_FAB_SVG_TG = ("<svg viewBox='0 0 24 24' width=22 height=22 "
+               "fill='currentColor' aria-hidden=true>"
+               "<path d='M21.6 3.4 2.9 10.6c-.9.35-.88 1.62.03 1.94l4.6 1.6 "
+               "1.77 5.5c.28.86 1.37 1.03 1.9.3l2.2-3.05 4.53 3.33c.77.57 "
+               "1.87.15 2.06-.79l2.5-14.3c.2-1.12-.9-2-1.89-1.63ZM8.2 13.5l9.2-5.9c"
+               ".26-.17.54.18.31.4l-7.3 6.8-.32 3.1-1.9-4.4Z'/></svg>")
+_FAB_SVG_WA = ("<svg viewBox='0 0 24 24' width=22 height=22 "
+               "fill='currentColor' aria-hidden=true>"
+               "<path d='M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 "
+               "2Zm0 18.2a8.2 8.2 0 0 1-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 "
+               "8.2 0 1 1 12 20.2Zm4.6-6.1c-.25-.13-1.47-.73-1.7-.81-.23-.08-"
+               ".4-.13-.56.12-.17.25-.64.81-.79.98-.14.17-.29.19-.54.06a6.7 "
+               "6.7 0 0 1-3.35-2.93c-.25-.43.25-.4.72-1.34.08-.17.04-.31-.02-"
+               ".44-.06-.13-.56-1.35-.77-1.85-.2-.48-.41-.42-.56-.43h-.48c-."
+               "17 0-.44.06-.67.31-.23.25-.88.86-.88 2.1 0 1.24.9 2.44 1.03 "
+               "2.6.13.17 1.78 2.72 4.3 3.82 1.6.69 2.23.75 3.03.63.49-.07 1."
+               "47-.6 1.68-1.18.2-.58.2-1.08.15-1.18-.06-.11-.23-.17-.48-.3Z'"
+               "/></svg>")
+
+
 def _fabs_html(support: str, whatsapp: str, email: str = "") -> str:
     """Floating email / WhatsApp / Telegram support buttons, bottom-right on
-    every page. Rendered only for the channels that are actually configured."""
+    every page — round, logo-only circles (the glyph IS the button; the name
+    lives in aria-label/title for screen readers and hover)."""
     fabs = ""
     email = (email or _SUPPORT_CACHE["email"]).strip()
     if email:
-        fabs += (f"<a class='fab em' href='mailto:{_esc(email)}'>✉️ Email</a>")
+        fabs += (f"<a class='fab em' href='mailto:{_esc(email)}' "
+                 f"aria-label='Email support' title='Email'>{_FAB_SVG_EMAIL}</a>")
     if whatsapp:
         digits = "".join(ch for ch in whatsapp if ch.isdigit())
         if digits:
             fabs += (f"<a class='fab wa' href='https://wa.me/{digits}' "
-                     "target=_blank rel=noopener>WhatsApp</a>")
+                     "target=_blank rel=noopener aria-label='WhatsApp support' "
+                     f"title='WhatsApp'>{_FAB_SVG_WA}</a>")
     first = next((h for h in (support or "").split() if h.startswith("@")), "")
     if first:
         fabs += (f"<a class='fab tg' href='https://t.me/{_esc(first.lstrip('@'))}' "
-                 "target=_blank rel=noopener>Telegram</a>")
+                 "target=_blank rel=noopener aria-label='Telegram support' "
+                 f"title='Telegram'>{_FAB_SVG_TG}</a>")
     return f"<div class=fabs>{fabs}</div>" if fabs else ""
 
 
@@ -1421,6 +1454,7 @@ your address — enter it here. <a href='#' id=vresend>Resend</a></p>
 character (e.g. <b>@</b> or <b>#</b>).</p>
 <label>Confirm password</label>
 <input name=password2 id=supw2 type=password autocomplete=new-password
+ data-lpignore=true data-1p-ignore data-bwignore data-form-type=other
  minlength=8 required>
 <label>How much USDT do you sell per day?</label>
 {_stock_pick(p.get('stock', ''))}
@@ -1840,7 +1874,9 @@ def _reset_body(csrf: str, nxt: str, stage: str, email: str = "",
 <p class='muted small' style='margin:4px 0 0'>8+ characters including a special
 character (e.g. <b>@</b>).</p>
 <label>Confirm new password</label>
-<input name=password2 type=password autocomplete=new-password minlength=8 required>
+<input name=password2 type=password autocomplete=new-password
+ data-lpignore=true data-1p-ignore data-bwignore data-form-type=other
+ minlength=8 required>
 <div style=margin-top:14px><button class=btn>Set new password</button></div>
 </div></form>
 <form method=post action='/reset?next={_uq(nxt)}' style='margin-top:10px'>
@@ -2823,6 +2859,9 @@ async def order_claim(request: web.Request):
     if not TXID_RE.fullmatch(txid):
         return back("That doesn't look like a transaction hash — it's 64 characters "
                     "(with a 0x in front on BEP20). Check your wallet's history.")
+    # exchanges show BSC hashes without the 0x — canonicalise for the order's
+    # network so a BEP20 claim never gets looked up on TRON
+    txid = txid_for_network(txid, order_display_address(order)[2])
     # Rate-limit the outbound on-chain lookup per (ip, order): a failed check
     # leaves the order claimable, so without this an attacker could loop random
     # hashes and burn the desk's TronGrid/BscScan quota.
@@ -3628,6 +3667,12 @@ async def account_get(request: web.Request, error: str = "", ok: str = "",
                 "<span style='background:#fbefdd;color:#b45309;font-size:.72rem;"
                 "font-weight:800;padding:2px 8px;border-radius:20px'>unverified</span>")
     joined = _ist(acct.created_at)
+    # Google sign-ins never hand us a phone number, so a Google account starts
+    # blank here — nudge them to add one so SMS order updates can reach them.
+    phone_hint = ("" if acct.phone else
+                  "<p class='muted small' style='margin:4px 0 0;color:#b45309'>"
+                  "Add your mobile so we can text you order updates — "
+                  "Google sign-in doesn't share it.</p>")
     banner = (f"<div class='banner ok'>{_esc(ok)}</div>" if ok else
               f"<p class=err>{_esc(error)}</p>" if error else "")
     if is_google:
@@ -3646,7 +3691,9 @@ async def account_get(request: web.Request, error: str = "", ok: str = "",
 <input type=password name=password autocomplete=new-password minlength=8 required>
 <p class='muted small' style='margin:4px 0 0'>8+ characters incl. a special character (e.g. @).</p>
 <label>Confirm new password</label>
-<input type=password name=password2 autocomplete=new-password minlength=8 required>
+<input type=password name=password2 autocomplete=new-password
+ data-lpignore=true data-1p-ignore data-bwignore data-form-type=other
+ minlength=8 required>
 <div class=row style='margin-top:12px'><button class=btn>Update password</button></div>
 <p class='muted small' style='margin:8px 0 0'>Changing your password signs you out
 on every other device.</p>
@@ -3661,7 +3708,7 @@ Member since {_esc(joined)} · {done or 0} completed order(s)</div>
 <input type=hidden name=csrf value='{csrf}'>
 <label>Your name</label>
 <input name=name maxlength=120 value="{_esc(acct.name or '')}">
-<label>Mobile number</label>
+<label>Mobile number</label>{phone_hint}
 <div class=vrow><span class=cc>&#127470;&#127475; +91</span>
 <input name=phone inputmode=numeric maxlength=10
  value="{_esc((acct.phone or '').lstrip('+').removeprefix('91'))}"></div>
@@ -3700,14 +3747,28 @@ async def account_post(request: web.Request):
     if re.fullmatch(r"[6-9]\d{9}", digits):
         phone = "+91" + digits
     elif _valid_phone(phone_raw):
-        phone = _norm_phone(phone_raw)
+        # canonical "+"-prefixed form: the account form pre-fills the number
+        # with its "+" stripped, so without this a no-op save would look like
+        # a change ("+44..." vs "44...") and pollute the phone history
+        phone = "+" + _norm_phone(phone_raw).lstrip("+")
     else:
         return await account_get(request, error="Enter a valid 10-digit mobile number.")
     if stock and stock not in _STOCK_TIERS:
         return await account_get(request, error="Pick a valid daily volume.")
+
+    def _ph_digits(p: str) -> str:
+        return "".join(ch for ch in (p or "") if "0" <= ch <= "9")
+
     async with Session() as s:
         a = await s.get(Account, acct.id)
         if a is not None:
+            # keep the number they're leaving — the desk shouldn't lose a
+            # contact it once had (panel shows it; bulk CSV includes it).
+            # Compare by digits so a formatting-only difference never records
+            # a change the customer didn't make.
+            if a.phone and _ph_digits(a.phone) != _ph_digits(phone):
+                s.add(PhoneHistory(account_id=a.id, old_phone=a.phone,
+                                   new_phone=phone))
             a.name, a.phone = name, phone
             if stock:
                 a.stock = stock

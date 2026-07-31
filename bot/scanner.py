@@ -289,6 +289,12 @@ async def _note_unconfirmed(bot: Bot, tx: dict, address: str) -> None:
 
 # ── BEP20 / BSC (second chain) ─────────────────────────────────────────────────
 
+class BscApiError(RuntimeError):
+    """The BSC API answered with an error (rate limit, bad key, outage) — the
+    OPPOSITE of 'no transactions found'. Callers must treat this as 'could not
+    check right now', never as 'the tx does not exist'."""
+
+
 def bsc_transfer_amount(tx: dict) -> float | None:
     if (tx.get("contractAddress") or "").lower() != settings.bep20_usdt_contract.lower():
         return None
@@ -318,9 +324,16 @@ async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
                 payload = await resp.json()
         except Exception as e:                     # never log the URL (carries the apikey)
             log.warning("BSC fetch failed: %s", type(e).__name__)
-            break
+            raise BscApiError(type(e).__name__) from None
         if str(payload.get("status")) != "1":
-            break   # "0" = no (more) txns / rate-limited — nothing to credit this tick
+            # status "0" covers BOTH a genuinely empty page and API errors —
+            # telling them apart is what keeps a rate-limited claim check from
+            # reading as "your tx doesn't exist" on a customer's face
+            note = f"{payload.get('message') or ''} {payload.get('result') or ''}"
+            if "no transactions" in note.lower():
+                break                              # really nothing (more) here
+            log.warning("BSC api NOTOK: %s", note.strip()[:120])
+            raise BscApiError("api NOTOK")
         rows = payload.get("result") or []
         reached_old = False
         for tx in rows:                            # newest-first
@@ -392,12 +405,17 @@ async def lookup_bsc_tx(txid: str, since_ms: int) -> dict:
         address = await get_bep20_address(session)
         key = await get_bscscan_key(session)
     timeout = aiohttp.ClientTimeout(total=15)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
-            transfers = await fetch_bsc_transfers(http, address, 0, key)
-    except Exception as e:
-        log.warning("BSC claim lookup failed: %s", type(e).__name__)   # no key in logs
-        return {"found": False, "error": True}
+    transfers = None
+    for attempt in (1, 2, 3):        # ride out a rate-limit blip from the 5s scanner
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
+                transfers = await fetch_bsc_transfers(http, address, 0, key)
+            break
+        except Exception as e:
+            if attempt == 3:
+                log.warning("BSC claim lookup failed: %s", type(e).__name__)  # no key in logs
+                return {"found": False, "error": True}
+            await asyncio.sleep(1.5)
     for tx in transfers:
         if (tx.get("hash") or "").lower() == (txid or "").lower():
             return {"found": True, "error": False,

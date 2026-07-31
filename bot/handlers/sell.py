@@ -38,6 +38,7 @@ from ..helpers import (
     queue_position,
     strip_kb,
     try_transition,
+    txid_for_network,
     txid_used_elsewhere,
     update_order_cards,
 )
@@ -645,6 +646,8 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
             return
         lang, footer = await _ctx(session, message.from_user)
         address = order.deposit_address
+        # canonicalise for the order's network (bare BSC hash → 0x-prefixed)
+        txid = txid_for_network(txid, order_display_address(order)[2])
         # a TXID can only ever back ONE refund
         dup = await session.scalar(
             select(Order).where(Order.refund_txid.in_(_txid_variants(txid)),
@@ -743,6 +746,9 @@ async def _verify_deposit_tx(txid: str, address: str, order: Order,
     and never bother the admin. A transient API error passes through (ok=True) for the
     admin to verify manually. `info` is the on-chain result for the admin card."""
     from ..scanner import lookup_tx_global
+    # defensive re-canonicalisation: whatever the caller stored, look the hash
+    # up on the network THIS order runs on (bare BSC hashes must not hit TRON)
+    txid = txid_for_network(txid, order_display_address(order)[2])
     info = await lookup_tx_global(txid, address)
     if info.get("error"):
         return True, "", info
@@ -778,12 +784,15 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
         user = await session.get(User, order.user_id)
         card = await session.get(BankCard, order.bank_card_id) if order.bank_card_id else None
         expected = order.usd_amount
+        net = order_display_address(order)[2]
+        scan_name = "BscScan" if net == "BEP20" else "Tronscan"
         if verify.get("error"):
-            vsum = "⚠️ Couldn't reach TronGrid to auto-check — verify on Tronscan."
+            vsum = (f"⚠️ Couldn't reach the chain API to auto-check — "
+                    f"verify on {scan_name}.")
         elif not verify.get("found"):
             vsum = ("⚠️ <b>NOT found</b> as a confirmed USDT transfer to your deposit "
                     "address — could be unconfirmed, wrong network, or wrong TXID. "
-                    "Check Tronscan before confirming.")
+                    f"Check {scan_name} before confirming.")
         else:
             amt = verify.get("amount") or 0.0
             ts = verify.get("timestamp") or 0
@@ -840,6 +849,9 @@ async def claim_txid(message: Message, state: FSMContext) -> None:
             await message.answer("This order can't be confirmed by TXID anymore — "
                                  "contact support.", reply_markup=hide_kb())
             return
+        # exchanges show BSC hashes without the 0x — canonicalise for the
+        # order's network so a BEP20 claim never gets looked up on TRON
+        txid = txid_for_network(txid, order_display_address(order)[2])
         # a TXID can only ever back ONE payout — reject one already tied to
         # another order (auto-detected deposit, claim, refund, or seen-tx)
         used = await txid_used_elsewhere(session, txid, order.id)

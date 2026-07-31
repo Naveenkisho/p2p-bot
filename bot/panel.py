@@ -893,6 +893,9 @@ async def settings_get(request: web.Request):
         support_email = await get_support_email(s)
         whatsapp = await get_whatsapp(s)
         rate_auto = (await get_setting(s, "rate_email_auto")) != "0"
+        seo_email = await get_setting(s, "seo_report_email")
+        if seo_email is None:                     # unset ≠ deliberately blank
+            seo_email = "naveenvemareddy@gmail.com"
         instant_credit = (await get_setting(s, "instant_credit")) == "1"
         admin_ids = await get_setting(s, "admin_ids")
         admin_ids = admin_ids if admin_ids is not None else settings.admin_ids
@@ -1005,6 +1008,12 @@ async def settings_get(request: web.Request):
             "max one email per 30 min).</span></label>"
             "<p class='muted small' style='margin:10px 0 0'>Order confirmations and "
             "payment receipts email signed-up customers automatically.</p>"
+            "<label>📊 Daily SEO report email (09:00 IST; blank = off)</label>"
+            f"<input name=seo_report_email type=email value='{_esc(seo_email)}' "
+            "placeholder='you@gmail.com'>"
+            "<p class='muted small' style='margin:4px 0 0'>A morning summary of "
+            "the onsite SEO: articles live, keyword coverage, the next target "
+            "and one off-page action for the day.</p>"
             "</div></div>"
 
             "</div>"
@@ -1120,6 +1129,13 @@ async def settings_post(request: web.Request):
             await set_setting(s, "support_email", semail)
         else:
             errors.append("support email looks invalid")
+
+        seo_mail = str(data.get("seo_report_email", "")).strip()
+        if seo_mail == "" or ("@" in seo_mail and "." in seo_mail.split("@")[-1]
+                              and " " not in seo_mail and len(seo_mail) <= 120):
+            await set_setting(s, "seo_report_email", seo_mail)
+        else:
+            errors.append("SEO report email looks invalid")
 
         wa_raw = str(data.get("whatsapp", "")).strip()
         wa_digits = "".join(ch for ch in wa_raw if "0" <= ch <= "9")
@@ -1349,7 +1365,7 @@ async def users_get(request: web.Request):
     banks (live), contact details and trading. Banks reflect adds/deletes
     automatically since this reads the DB on each load; the page also
     auto-refreshes every 30 min."""
-    from .models import BankCard
+    from .models import BankCard, PhoneHistory
     async with Session() as s:
         accounts = (await s.scalars(
             select(Account).order_by(Account.id.desc()).limit(500))).all()
@@ -1359,6 +1375,19 @@ async def users_get(request: web.Request):
         acct_uids = [-(_ACCT_BASE + a.id) for a in accounts]
         tg_uids = [u.id for u in tg_users]
         all_uids = acct_uids + tg_uids
+        # previous mobile numbers (kept when a customer edits their number) so
+        # the desk still sees every contact it once had. Bounded: this page is
+        # a live view, the full set is in the phones CSV export.
+        old_phones: dict[int, list[str]] = {}
+        acct_ids = [a.id for a in accounts]
+        if acct_ids:
+            for h in (await s.scalars(
+                    select(PhoneHistory)
+                    .where(PhoneHistory.account_id.in_(acct_ids))
+                    .order_by(PhoneHistory.id.desc()).limit(2000))).all():
+                lst = old_phones.setdefault(h.account_id, [])
+                if h.old_phone not in lst:
+                    lst.append(h.old_phone)
         banks: dict[int, list] = {}
         stats: dict[int, tuple] = {}
         if all_uids:
@@ -1384,12 +1413,18 @@ async def users_get(request: web.Request):
                 else "<span class=badge>email</span>")
         stock = (f"<span class='badge warn'>{_esc(a.stock)} USDT/day</span>"
                  if a.stock else "")
+        # a number they changed BACK to is current again — not "previous"
+        prev = [p for p in (old_phones.get(a.id) or []) if p != (a.phone or "")]
+        more = f" (+{len(prev) - 3} more in CSV)" if len(prev) > 3 else ""
+        prev_html = (f"<div><span class=muted>Previous numbers:</span> "
+                     f"{_esc(', '.join(prev[:3]))}{more}</div>" if prev else "")
         return f"""<div class=card>
 <b>{_esc(a.email)}</b> {prov} {stock}
 <span class='muted small'> · joined {a.created_at:%d %b %Y}</span>
 <div style='margin:6px 0'>
 <div><span class=muted>Name:</span> <b>{_esc(a.name or "—")}</b>
  · <span class=muted>Phone:</span> <b>{_esc(a.phone or "—")}</b></div>
+{prev_html}
 <div><span class=muted>Traded:</span> {n} completed · {vol:,.0f} USDT</div>
 <div style='margin-top:6px'><span class=muted>Saved banks:</span>
 {_user_banks(banks.get(uid))}</div></div></div>"""
@@ -1406,15 +1441,21 @@ async def users_get(request: web.Request):
 <div style='margin-top:6px'><span class=muted>Saved banks:</span>
 {_user_banks(banks.get(u.id))}</div></div></div>"""
 
+    _cur_ph = {a.id: (a.phone or "") for a in accounts}
+    prev_n = sum(1 for aid, v in old_phones.items()
+                 for p in v if p != _cur_ph.get(aid, ""))
+    prev_blurb = (f" · {prev_n} previous number(s) kept" if prev_n else "")
+    phones_label = ("⬇ Phone numbers CSV (incl. previous)" if prev_n
+                    else "⬇ Phone numbers CSV")
     body = (_nav("users") + "<h1>👥 Users</h1>"
             f"<p class=muted>{len(accounts)} website accounts "
-            f"({emails_n} emails · {phones_n} phones) · "
+            f"({emails_n} emails · {phones_n} phones{prev_blurb}) · "
             f"{len(tg_users)} Telegram users. Live — bank adds/deletes show on "
             "refresh; this page reloads itself every 30 min.</p>"
             "<div class=row style='gap:8px;margin-bottom:8px'>"
             "<a class='btn small' href='/messaging'>✉️ Bulk email &amp; SMS</a>"
             "<a class='btn small' href='/users/export/emails'>⬇ Emails CSV</a>"
-            "<a class='btn small' href='/users/export/phones'>⬇ Phone numbers CSV</a></div>"
+            f"<a class='btn small' href='/users/export/phones'>{phones_label}</a></div>"
             "<div class=duo>"
             f"<div><h2>🌐 Website users ({len(accounts)})</h2>"
             + ("".join(acct_card(a) for a in accounts)
@@ -1430,25 +1471,44 @@ async def users_get(request: web.Request):
 @_authed
 async def users_export(request: web.Request):
     """CSV of account emails or phone numbers — for a bulk email tool or a
-    WhatsApp Business broadcast list."""
+    WhatsApp Business broadcast list. The phones export also carries every
+    number a customer has moved away from (status=previous), so a number an
+    account once used is never dropped from a bulk list."""
+    from .models import PhoneHistory
     kind = request.match_info["kind"]
     if kind not in ("emails", "phones"):
         raise web.HTTPNotFound()
     async with Session() as s:
         accounts = (await s.scalars(select(Account)
                                     .order_by(Account.id.desc()))).all()
+        history = []
+        if kind == "phones":
+            names = {a.id: (a.name or "") for a in accounts}
+            history = (await s.scalars(
+                select(PhoneHistory).order_by(PhoneHistory.id.desc()))).all()
     buf = io.StringIO()
     w = csv.writer(buf)
     if kind == "emails":
         w.writerow(["email", "name"])
         for a in accounts:
             if a.email:
-                w.writerow([a.email, a.name or ""])
+                w.writerow([_csv_safe(a.email), _csv_safe(a.name or "")])
     else:
-        w.writerow(["phone", "name"])
+        w.writerow(["phone", "name", "status", "changed_at"])
+        seen: set[str] = set()
         for a in accounts:
             if a.phone:
-                w.writerow([a.phone, a.name or ""])
+                seen.add(a.phone)
+                w.writerow([_csv_safe(x) for x in
+                            (a.phone, a.name or "", "current", "")])
+        # previous numbers, most-recent first; skip any that's still someone's
+        # current number so the list has no duplicates
+        for h in history:
+            if h.old_phone and h.old_phone not in seen:
+                seen.add(h.old_phone)
+                w.writerow([_csv_safe(x) for x in
+                            (h.old_phone, names.get(h.account_id, ""),
+                             "previous", f"{h.changed_at:%Y-%m-%d}")])
     return web.Response(
         body=("﻿" + buf.getvalue()).encode("utf-8"),
         content_type="text/csv", charset="utf-8",

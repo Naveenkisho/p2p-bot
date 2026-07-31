@@ -191,3 +191,19 @@ class Unsubscribe(Base):
 
     email: Mapped[str] = mapped_column(String(190), primary_key=True)  # lower-cased
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PhoneHistory(Base):
+    """Every mobile number a website account has moved AWAY from. When a
+    customer edits their number on the account page the old one isn't erased —
+    it's kept here so the desk never loses a contact it once had. The panel
+    shows these and the phone-number CSV export includes them, so a bulk SMS /
+    WhatsApp list still reaches a customer who changed their number."""
+
+    __tablename__ = "phone_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True)
+    old_phone: Mapped[str] = mapped_column(String(20))     # the number they left
+    new_phone: Mapped[str] = mapped_column(String(20), default="")  # what replaced it
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -83,6 +83,9 @@ async def main() -> None:
     from .backup import backup_loop
     backupper = asyncio.create_task(backup_loop())  # daily rotating DB snapshots
 
+    from .seo_report import seo_report_loop
+    seo_reporter = asyncio.create_task(seo_report_loop())  # 9am IST operator email
+
     panel_runner = await start_panel(bot)  # web admin panel (if enabled)
     site_runner = await start_site(bot)    # public customer website (if enabled)
 
@@ -92,6 +95,7 @@ async def main() -> None:
         scanner.cancel()
         nudger.cancel()
         backupper.cancel()
+        seo_reporter.cancel()
         if panel_runner is not None:
             await panel_runner.cleanup()
         if site_runner is not None:
