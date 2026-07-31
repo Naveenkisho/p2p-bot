@@ -114,11 +114,14 @@ def sms_ready(cfg: dict) -> bool:
 # ── recipients ───────────────────────────────────────────────────────────────
 
 async def email_recipients() -> list[tuple[str, str]]:
-    """(email, name) for every website account with a VERIFIED email, minus any
-    that unsubscribed. De-duplicated case-insensitively. Unverified addresses
-    (no OTP entered) never receive a single message — fake signups are inert."""
+    """(email, name) for every VERIFIED email the desk knows — website accounts
+    AND Telegram users who added one via /email — minus unsubscribes.
+    De-duplicated case-insensitively across both surfaces, so someone who used
+    the bot first and signed up on the web later gets every blast exactly once.
+    Unverified addresses never receive a single message — fakes are inert."""
     async with Session() as s:
         accounts = (await s.scalars(select(Account))).all()
+        tg_users = (await s.scalars(select(User).where(User.id > 0))).all()
         unsub = {e.lower() for e in
                  (await s.scalars(select(Unsubscribe.email))).all()}
     out: list[tuple[str, str]] = []
@@ -130,6 +133,13 @@ async def email_recipients() -> list[tuple[str, str]]:
                 and low not in seen and low not in unsub):
             seen.add(low)
             out.append((raw, a.name or ""))
+    for u in tg_users:
+        raw = (u.email or "").strip()
+        low = raw.lower()
+        if (raw and _EMAIL_RE.match(raw) and getattr(u, "email_verified", False)
+                and low not in seen and low not in unsub):
+            seen.add(low)
+            out.append((raw, u.first_name or ""))
     return out
 
 

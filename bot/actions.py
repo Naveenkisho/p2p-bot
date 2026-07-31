@@ -299,6 +299,45 @@ async def broadcast(bot: Bot, text: str, to_proof: bool = False) -> tuple[int, i
     return sent, failed
 
 
+async def email_nudge_broadcast(bot: Bot) -> tuple[int, int]:
+    """DM every bot user who has NO verified email a one-time 'get receipts
+    by email' nudge with a dismiss button. Marks email_prompted so the
+    post-order nudge never repeats it. Returns (sent, failed)."""
+    from sqlalchemy import update as _upd
+    from .keyboards import email_nudge_kb
+    async with Session() as session:
+        users = (await session.scalars(
+            select(User).where(User.banned.is_(False), User.id > 0))).all()
+        targets = [u.id for u in users if not (u.email and u.email_verified)]
+        langs = {u.id: (u.lang or "en") for u in users}
+    sent = failed = 0
+    for uid in targets:
+        try:
+            await bot.send_message(uid, texts.email_nudge(langs.get(uid, "en")),
+                                   reply_markup=email_nudge_kb())
+            sent += 1
+        except Exception:
+            failed += 1  # blocked the bot, deactivated, etc.
+        await asyncio.sleep(0.05)  # ~20/sec, under Telegram's limit
+    if targets:
+        async with Session() as session:
+            await session.execute(_upd(User).where(User.id.in_(targets))
+                                  .values(email_prompted=True))
+            await session.commit()
+    return sent, failed
+
+
+def launch_email_nudge(bot: Bot) -> None:
+    """Fire-and-forget email-request blast; admins get a summary DM."""
+    async def _run():
+        sent, failed = await email_nudge_broadcast(bot)
+        await notify_admins(bot, f"\U0001F4E7 Email-request nudge done — "
+                                 f"sent {sent}, failed {failed}.")
+    task = asyncio.create_task(_run())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
 _bg_tasks: set = set()
 
 
@@ -325,11 +364,15 @@ async def confirm_deposit(bot: Bot, order_id: int, txid: str = "manual") -> tupl
             return False, "Order not found."
         address, rate = order.deposit_address, order.rate_inr
         since_ms = _ms(order.created_at)
+        from .helpers import order_display_address
+        bsc_addr = (order_display_address(order)[0]
+                    if (order.network or "TRC20") == "BEP20" else None)
     actual = None
     warn = ""
     if txid and txid != "manual":
         from .scanner import lookup_claim_tx
-        info = await lookup_claim_tx(txid, address, since_ms)
+        info = await lookup_claim_tx(txid, address, since_ms,
+                                     bsc_address=bsc_addr)
         if info.get("found") and info.get("to_ok") and (info.get("amount") or 0) > 0:
             actual = round(info["amount"], 6)
         elif info.get("found") and not info.get("to_ok"):
@@ -385,6 +428,7 @@ async def confirm_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
             o = await session.get(Order, order_id)
             if o is not None:
                 o.claim_txid = None      # claim resolved → clear the marker
+                o.claim_unverified = False
                 await session.commit()
         # msg already reports the ACTUAL amount reconciled on-chain
         return True, f"{texts.tag(order_id)} — {msg}"
@@ -399,6 +443,7 @@ async def reject_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
         if not order.claim_txid:
             return False, "No pending claim on this order."
         order.claim_txid = None
+        order.claim_unverified = False
         await session.commit()
         uid = order.user_id
         user = await session.get(User, uid)

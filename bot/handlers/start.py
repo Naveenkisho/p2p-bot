@@ -91,6 +91,34 @@ async def cmd_whoami(message: Message) -> None:
         "Tap to copy and send it to support if they ask for it.")
 
 
+@router.callback_query(F.data == "emnudge:no")
+async def email_nudge_dismiss(callback: CallbackQuery) -> None:
+    """'No thanks' under the email nudge — acknowledge and drop the button."""
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("No problem — add it anytime with /email.")
+
+
+# per-user cap on /email submissions — the instant-activation check would
+# otherwise let a user probe addresses to learn which are registered here
+_email_try_times: dict[int, list] = {}
+_EMAIL_TRIES_PER_HOUR = 6
+
+
+def _email_try_throttled(uid: int) -> bool:
+    import time as _tm
+    now = _tm.time()
+    times = [t for t in _email_try_times.get(uid, []) if now - t < 3600]
+    if len(times) >= _EMAIL_TRIES_PER_HOUR:
+        _email_try_times[uid] = times
+        return True
+    times.append(now)
+    _email_try_times[uid] = times
+    return False
+
+
 @router.message(Command("email"))
 async def cmd_email(message: Message) -> None:
     """Add (or remove) an email for real-time order updates. The address only
@@ -124,6 +152,37 @@ async def cmd_email(message: Message) -> None:
                 "<code>/email your@address.com</code>\n"
                 "We'll send a 6-digit code to confirm the address is really yours.")
         return
+    if _email_try_throttled(uid):
+        await message.answer("Too many email attempts this hour — please wait "
+                             "a bit and try again.")
+        return
+    # already proven somewhere in the system? (a website account verified it
+    # by OTP/Google, or another Telegram user OTP'd it) — deliverability and
+    # ownership were shown once; don't make the customer do the dance twice
+    from sqlalchemy import func as _f
+    from ..models import Account
+    from ..sender import _EMAIL_RE as _EM
+    cand = arg.strip()
+    if _EM.match(cand):
+        low = cand.lower()
+        async with Session() as session:
+            acct_ok = await session.scalar(select(Account.id).where(
+                _f.lower(Account.email) == low,
+                Account.email_verified.is_(True)).limit(1))
+            tg_ok = await session.scalar(select(User.id).where(
+                _f.lower(User.email) == low,
+                User.email_verified.is_(True), User.id != uid).limit(1))
+            if acct_ok or tg_ok:
+                u = await get_or_create_user(session, uid, message.from_user.username,
+                                             message.from_user.first_name)
+                u.email = cand
+                u.email_verified = True
+                await session.commit()
+                await message.answer(
+                    f"✅ <code>{esc(cand)}</code> is already verified with us — "
+                    "your order confirmations and payout receipts now go there. "
+                    "No code needed.\n<code>/email off</code> to stop.")
+                return
     ok, result = await issue_email_otp(uid, arg)
     if not ok:
         await message.answer(f"⚠️ {esc(result)}")

@@ -2,9 +2,11 @@ import logging
 import re
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
-from sqlalchemy import func, select
+from aiogram.types import (BufferedInputFile, CallbackQuery,
+                           InlineKeyboardButton, InlineKeyboardMarkup, Message)
+from sqlalchemy import func, or_, select, update
 
 from .. import texts
 from ..qr import qr_png
@@ -43,6 +45,7 @@ from ..helpers import (
     update_order_cards,
 )
 from ..keyboards import (
+    ClaimPickCb,
     ClaimReqCb,
     OrderCb,
     PickBankCb,
@@ -362,6 +365,14 @@ async def _create_order(message_target, state: FSMContext, tg_user,
     else:
         await message_target.answer(msg, reply_markup=deposit_kb(order_id),
                                     disable_web_page_preview=True)
+    # one-time nudge: receipts by email (skip users who already verified one)
+    async with Session() as session:
+        u = await session.get(User, user.id)
+        if (u is not None and not (u.email and u.email_verified)
+                and not u.email_prompted):
+            u.email_prompted = True
+            await session.commit()
+            await message_target.answer(texts.email_nudge(lang))
 
 
 @router.callback_query(SellFlow.choose_bank, PreBankCb.filter())
@@ -646,8 +657,9 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
             return
         lang, footer = await _ctx(session, message.from_user)
         address = order.deposit_address
-        # canonicalise for the order's network (bare BSC hash → 0x-prefixed)
-        txid = txid_for_network(txid, order_display_address(order)[2])
+        net_key = order_display_address(order)[2]
+        txid = txid_for_network(
+            txid, "BEP20" if txid.startswith("0x") else net_key)
         # a TXID can only ever back ONE refund
         dup = await session.scalar(
             select(Order).where(Order.refund_txid.in_(_txid_variants(txid)),
@@ -668,6 +680,11 @@ async def refund_txid(message: Message, state: FSMContext) -> None:
                 reply_markup=hide_kb())
             return
 
+    if _claim_lookup_throttled(message.from_user.id):
+        await message.answer("Too many payment checks in the last hour — please "
+                             "wait a bit and try again, or contact support.",
+                             reply_markup=hide_kb())
+        return
     # verify on-chain BEFORE accepting — a refund TXID that never reached our address
     # (or is far too old) is declined on the user's face, with proof
     ok, reject, _info = await _verify_deposit_tx(txid, address, order, lang)
@@ -721,7 +738,7 @@ async def request_claim(callback: CallbackQuery, callback_data: ClaimReqCb,
         if order is None or order.user_id != callback.from_user.id:
             await callback.answer("Order not found.", show_alert=True)
             return
-        if order.claim_txid:
+        if order.claim_txid and not order.claim_unverified:
             await callback.answer("We already have your TXID — it's under review.",
                                   show_alert=True)
             return
@@ -746,14 +763,28 @@ async def _verify_deposit_tx(txid: str, address: str, order: Order,
     and never bother the admin. A transient API error passes through (ok=True) for the
     admin to verify manually. `info` is the on-chain result for the admin card."""
     from ..scanner import lookup_tx_global
-    # defensive re-canonicalisation: whatever the caller stored, look the hash
-    # up on the network THIS order runs on (bare BSC hashes must not hit TRON)
-    txid = txid_for_network(txid, order_display_address(order)[2])
-    info = await lookup_tx_global(txid, address)
+    show_addr, _lbl, net_key = order_display_address(order)
+    # the hash decides where we LOOK (a 0x hash can only live on BSC — even if
+    # the order is TRC20 we still check the chain for real, never shape-reject);
+    # a bare hash follows the order's network (exchanges strip the 0x).
+    lookup_net = "BEP20" if norm_txid(txid).startswith("0x") else net_key
+    txid = txid_for_network(txid, lookup_net)
+    # search the ORDER's own BSC address when it has one — rotating the desk
+    # address must never make an old order's real payment read as not-found
+    bsc_addr = show_addr if net_key == "BEP20" else None
+    info = await lookup_tx_global(txid, address, bsc_address=bsc_addr)
+    if info.get("found") and lookup_net != net_key:
+        # confirmed on-chain, but on the OTHER network than the order — a human
+        # settles it (funds may be at our address on the wrong chain)
+        info["net_mismatch"] = True
     if info.get("error"):
         return True, "", info
     if not info.get("found"):
-        return False, texts.tx_not_found(lang), info
+        # NOT a refusal anymore: a tx we can't see (fresh, API blip, odd
+        # route) passes through — the caller stores it as an UNVERIFIED claim
+        # (one per order) and a human checks it, so a real payer is never
+        # bounced. Proof-backed rejections below still decline on the spot.
+        return True, "", info
     if not info.get("to_ok"):
         # show the customer the address for THEIR network as the expected destination
         # (deposit_address is always the TRC20 desk address, wrong for a BEP20 order)
@@ -786,6 +817,10 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
         expected = order.usd_amount
         net = order_display_address(order)[2]
         scan_name = "BscScan" if net == "BEP20" else "Tronscan"
+        mismatch = ("🔀 <b>NETWORK MISMATCH</b> — the hash is a confirmed BSC "
+                    "(BEP20) transfer but this order was quoted on TRC20. The "
+                    "funds are at the BSC address — settle manually.\n"
+                    if verify.get("net_mismatch") else "")
         if verify.get("error"):
             vsum = (f"⚠️ Couldn't reach the chain API to auto-check — "
                     f"verify on {scan_name}.")
@@ -812,7 +847,7 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
             f"{bank}"
             f"🔗 TXID: <code>{esc(txid)}</code>\n"
             f"🔎 {explorer_tx(esc(txid))}\n\n"
-            f"<b>On-chain check:</b> {vsum}\n\n"
+            f"{mismatch}<b>On-chain check:</b> {vsum}\n\n"
             "⚠️ This proves the tx <b>reached our address</b> — <b>not who sent it</b>. "
             "Deposit hashes are public, so confirm this customer really made this "
             "transfer (not a hash copied off the explorer) before paying.\n\n"
@@ -830,6 +865,120 @@ async def _post_claim_card(bot, order_id: int, txid: str, verify: dict) -> None:
         await session.commit()
 
 
+# per-user cap on on-chain claim/refund lookups (the web has the same guard);
+# without it a user pasting junk hashes in a loop would burn the TronGrid /
+# BscScan quota the 5s scanner depends on
+_claim_lookup_times: dict[int, list] = {}
+_CLAIM_LOOKUPS_PER_HOUR = 8
+
+
+def _claim_lookup_throttled(uid: int) -> bool:
+    import time as _tm
+    now = _tm.time()
+    times = [t for t in _claim_lookup_times.get(uid, []) if now - t < 3600]
+    if len(times) >= _CLAIM_LOOKUPS_PER_HOUR:
+        _claim_lookup_times[uid] = times
+        return True
+    times.append(now)
+    _claim_lookup_times[uid] = times
+    return False
+
+
+async def _finish_claim(bot, reply, from_user, order_id: int, txid: str) -> None:
+    """The whole claim pipeline after a TXID + order are known — shared by the
+    in-order claim flow and the cold-paste order picker. Verifies on the
+    ORDER's network; a proof-backed mismatch is declined on the spot; a tx we
+    can't see goes to the admin as ONE unverified claim per order; a verified
+    tx may replace an earlier unverified one (typo correction)."""
+    async with Session() as session:
+        order = await session.get(Order, order_id) if order_id else None
+        if order is None or order.user_id != from_user.id:
+            await reply("Order not found — contact support.", reply_markup=hide_kb())
+            return
+        if order.status not in _CLAIMABLE:
+            await reply("This order can't be confirmed by TXID anymore — "
+                        "contact support.", reply_markup=hide_kb())
+            return
+        lang, footer = await _ctx(session, from_user)
+        net_key = order_display_address(order)[2]
+        # canonicalise: a 0x hash keeps its 0x (it can only be BSC); a bare
+        # hash follows the order's network (exchanges strip the 0x on BSC)
+        txid = txid_for_network(
+            txid, "BEP20" if txid.startswith("0x") else net_key)
+        if order.claim_txid and not order.claim_unverified:
+            await reply(f"We already have a TXID for order {texts.tag(order_id)} — "
+                        "it's under review.", reply_markup=hide_kb())
+            return
+        # a TXID can only ever back ONE payout — reject one already tied to
+        # another order (auto-detected deposit, claim, refund, or seen-tx)
+        used = await txid_used_elsewhere(session, txid, order.id)
+        if used is not None:
+            await reply(
+                f"🚫 That TXID has already been used for order {texts.tag(used)} — "
+                "an on-chain transfer can only be cashed out once. If you think "
+                "this is a mistake, contact support.", reply_markup=hide_kb())
+            return
+        address = order.deposit_address
+        had_unverified = bool(order.claim_txid)
+
+    if _claim_lookup_throttled(from_user.id):
+        await reply("Too many payment checks in the last hour — please wait a "
+                    "bit and try again, or contact support with your TXID.",
+                    reply_markup=hide_kb())
+        return
+    # verify on-chain BEFORE accepting — a tx that provably didn't reach us
+    # (wrong address / wrong amount / far too old) is declined with proof
+    ok, reject, verify = await _verify_deposit_tx(txid, address, order, lang)
+    if not ok:
+        await reply(reject + footer, reply_markup=hide_kb(),
+                    disable_web_page_preview=True)
+        return
+    unverified = bool(verify.get("error")) or not verify.get("found")
+    if unverified and had_unverified:
+        # the one unverified slot for this order is taken — don't stack more
+        await reply(texts.claim_already_manual(order_id, lang) + footer,
+                    reply_markup=hide_kb())
+        return
+
+    async with Session() as session:
+        # atomic compare-and-set: two parallel submissions can't both take the
+        # claim slot (the WHERE re-checks status + slot in the same statement)
+        free = or_(Order.claim_txid.is_(None), Order.claim_txid == "")
+        cond = free if unverified else or_(free, Order.claim_unverified.is_(True))
+        res = await session.execute(
+            update(Order).where(Order.id == order_id,
+                                Order.status.in_(_CLAIMABLE), cond)
+            .values(claim_txid=txid, claim_unverified=unverified))
+        await session.commit()
+        if res.rowcount == 0:
+            await reply(texts.claim_already_manual(order_id, lang) + footer,
+                        reply_markup=hide_kb())
+            return
+    if unverified:
+        await reply(texts.claim_unverified_sent(order_id, lang) + footer,
+                    reply_markup=hide_kb())
+    else:
+        await reply(texts.claim_submitted(order_id, lang) + footer,
+                    reply_markup=hide_kb())
+    await _post_claim_card(bot, order_id, txid, verify)
+    # "TXID under verification" email for /email users (verified claims only —
+    # an unverified one emails after the human check settles it)
+    if not unverified:
+        try:
+            from .. import sender as _sender
+            email, name = await _sender.email_for_uid(order.user_id)
+            if email:
+                site = (settings.site_url or "").rstrip("/")
+                track = (site + f"/o/{order.web_token}"
+                         if order.web_token and site else site or "/")
+                subj, inner = _sender.claim_submitted_email(
+                    texts.tag(order_id), order.usd_amount,
+                    SERVICES.get(order.service, order.service), txid, track)
+                await _sender.send_transactional(email, name, subj, inner)
+        except Exception:
+            log.exception("claim-submitted email failed")
+
+
 @router.message(ClaimFlow.txid, F.text)
 async def claim_txid(message: Message, state: FSMContext) -> None:
     txid = norm_txid(message.text)
@@ -839,68 +988,66 @@ async def claim_txid(message: Message, state: FSMContext) -> None:
         return
     data = await state.get_data()
     await state.clear()
-    order_id = data.get("order_id")
-    async with Session() as session:
-        order = await session.get(Order, order_id) if order_id else None
-        if order is None or order.user_id != message.from_user.id:
-            await message.answer("Order not found — contact support.", reply_markup=hide_kb())
-            return
-        if order.status not in _CLAIMABLE:
-            await message.answer("This order can't be confirmed by TXID anymore — "
-                                 "contact support.", reply_markup=hide_kb())
-            return
-        # exchanges show BSC hashes without the 0x — canonicalise for the
-        # order's network so a BEP20 claim never gets looked up on TRON
-        txid = txid_for_network(txid, order_display_address(order)[2])
-        # a TXID can only ever back ONE payout — reject one already tied to
-        # another order (auto-detected deposit, claim, refund, or seen-tx)
-        used = await txid_used_elsewhere(session, txid, order.id)
-        if used is not None:
-            await message.answer(
-                f"🚫 That TXID has already been used for order {texts.tag(used)} — "
-                "an on-chain transfer can only be cashed out once. If you think "
-                "this is a mistake, contact support.", reply_markup=hide_kb())
-            return
-        lang, footer = await _ctx(session, message.from_user)
-        address = order.deposit_address
-
-    # verify on-chain BEFORE accepting — decline a tx that didn't reach us (wrong
-    # address / not found / far too old) on the user's face, with proof, and never
-    # create an admin claim card for it
-    ok, reject, verify = await _verify_deposit_tx(txid, address, order, lang)
-    if not ok:
-        await message.answer(reject + footer, reply_markup=hide_kb(),
-                             disable_web_page_preview=True)
-        return
-
-    async with Session() as session:
-        order = await session.get(Order, order_id)
-        if order is None or order.status not in _CLAIMABLE:
-            await message.answer("This order can't be confirmed by TXID anymore — "
-                                 "contact support.", reply_markup=hide_kb())
-            return
-        order.claim_txid = txid
-        await session.commit()
-    await message.answer(texts.claim_submitted(order_id, lang) + footer,
-                         reply_markup=hide_kb())
-    await _post_claim_card(message.bot, order_id, txid, verify)
-    # "TXID valid — under manual verification" email for /email users
-    try:
-        from .. import sender as _sender
-        email, name = await _sender.email_for_uid(order.user_id)
-        if email:
-            site = (settings.site_url or "").rstrip("/")
-            track = (site + f"/o/{order.web_token}"
-                     if order.web_token and site else site or "/")
-            subj, inner = _sender.claim_submitted_email(
-                texts.tag(order_id), order.usd_amount,
-                SERVICES.get(order.service, order.service), txid, track)
-            await _sender.send_transactional(email, name, subj, inner)
-    except Exception:
-        log.exception("claim-submitted email failed")
+    await _finish_claim(message.bot, message.answer, message.from_user,
+                        data.get("order_id"), txid)
 
 
 @router.message(ClaimFlow.txid)
 async def claim_txid_not_text(message: Message) -> None:
     await message.answer("Please paste the <b>TXID</b> (transaction hash) as text — "
                          "not a photo — or tap ❌ Cancel.")
+
+
+# ── cold-pasted TXID: "which order is this for?" ─────────────────────────────
+# A customer often just pastes the hash from their exchange with no context.
+# Instead of ignoring it, ask which of their pending orders it pays for — the
+# pick decides the network (a BEP20 order checks BscScan even for a bare hash).
+
+@router.message(StateFilter(None), F.text.regexp(r"^\s*(?:0x)?[0-9a-fA-F]{64}\s*$"))
+async def pasted_txid(message: Message, state: FSMContext) -> None:
+    txid = norm_txid(message.text)
+    async with Session() as session:
+        lang, _footer = await _ctx(session, message.from_user)
+        orders = (await session.scalars(
+            select(Order).where(
+                Order.user_id == message.from_user.id,
+                Order.status.in_(_CLAIMABLE))
+            .order_by(Order.id.desc()).limit(6))).all()
+        orders = [o for o in orders if not o.claim_txid or o.claim_unverified]
+    if not orders:
+        await message.answer(texts.claim_pick_none(lang))
+        return
+    await state.set_state(ClaimFlow.pick)
+    await state.update_data(txid=txid)
+    rows = [[InlineKeyboardButton(
+        text=f"{texts.tag(o.id)} · {o.usd_amount:g} USDT · "
+             f"{order_display_address(o)[1]}",
+        callback_data=ClaimPickCb(order_id=o.id).pack())] for o in orders]
+    rows.append([InlineKeyboardButton(
+        text="✖ Cancel", callback_data=ClaimPickCb(order_id=0).pack())])
+    await message.answer(texts.claim_pick_order(lang),
+                         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(ClaimFlow.pick, ClaimPickCb.filter())
+async def claim_pick(callback: CallbackQuery, callback_data: ClaimPickCb,
+                     state: FSMContext) -> None:
+    data = await state.get_data()
+    txid = data.get("txid") or ""
+    await state.clear()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    if callback_data.order_id == 0 or not txid:
+        await callback.answer("Cancelled.")
+        return
+    await callback.answer()
+    await _finish_claim(callback.bot, callback.message.answer,
+                        callback.from_user, callback_data.order_id, txid)
+
+
+@router.callback_query(ClaimPickCb.filter())
+async def claim_pick_expired(callback: CallbackQuery) -> None:
+    await callback.answer("This picker has expired — paste the TXID again.",
+                          show_alert=True)
