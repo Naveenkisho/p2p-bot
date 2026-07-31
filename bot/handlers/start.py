@@ -162,9 +162,9 @@ async def _submit_email(message: Message, cand: str) -> None:
         await message.answer(f"⚠️ {esc(result)}")
         return
     await message.answer(
-        f"📨 Code sent to <code>{esc(result)}</code> — check the inbox (and spam "
-        "folder) and reply:\n<code>/verify 123456</code>\n"
-        "The code expires in 15 minutes.")
+        f"📨 Code sent to <code>{esc(result)}</code> — check the inbox (and "
+        "spam folder), then <b>just send the 6-digit code here</b>.\n"
+        "It expires in 15 minutes.")
 
 
 @router.message(Command("email"))
@@ -228,17 +228,10 @@ async def email_address_not_text(message: Message) -> None:
                          "e.g. <code>name@gmail.com</code> — or tap ❌ Cancel.")
 
 
-@router.message(Command("verify"))
-async def cmd_verify(message: Message) -> None:
-    """Confirm the /email OTP — only then does the address start receiving mail."""
+async def _submit_code(message: Message, code: str) -> None:
+    """One pasted 6-digit code → the address goes live (or a clear error)."""
     from ..models import User
     from ..sender import verify_email_otp
-    args = (message.text or "").split(maxsplit=1)
-    code = args[1].strip() if len(args) > 1 else ""
-    if not code:
-        await message.answer("Usage: <code>/verify 123456</code> — the 6-digit "
-                             "code we emailed you after /email.")
-        return
     ok, result = verify_email_otp(message.from_user.id, code)
     if not ok:
         await message.answer(f"⚠️ {esc(result)}")
@@ -255,6 +248,29 @@ async def cmd_verify(message: Message) -> None:
         f"✅ <b>{esc(result)} verified.</b> You'll now get order confirmations, "
         "deposit alerts and payment receipts by email — alongside the usual "
         "Telegram updates. Change it any time with /email.")
+
+
+@router.message(Command("verify"))
+async def cmd_verify(message: Message) -> None:
+    """Old-style /verify 123456 still works — but just pasting the 6 digits
+    in chat does the same thing now."""
+    args = (message.text or "").split(maxsplit=1)
+    code = args[1].strip() if len(args) > 1 else ""
+    if not code:
+        await message.answer("Just send the <b>6-digit code</b> we emailed you "
+                             "as a plain message — no command needed.")
+        return
+    await _submit_code(message, code)
+
+
+@router.message(StateFilter(None), F.text.regexp(r"^\s*\d{6}\s*$"))
+async def pasted_code(message: Message) -> None:
+    """A bare 6-digit number in chat: it's the email code IF one is pending
+    for this user; otherwise it's not ours to interpret — stay silent."""
+    from ..sender import has_pending_otp
+    if not has_pending_otp(message.from_user.id):
+        return
+    await _submit_code(message, (message.text or "").strip())
 
 
 @router.callback_query(F.data == "menu:home")
