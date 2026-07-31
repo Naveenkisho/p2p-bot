@@ -8,6 +8,7 @@ import logging
 
 from aiogram import Bot
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from . import texts
 from .config import SERVICES
@@ -381,12 +382,44 @@ async def confirm_deposit(bot: Bot, order_id: int, txid: str = "manual") -> tupl
             warn = " ⚠️ Couldn't reach TronGrid — credited the ORDERED amount; check the actual on Tronscan."
         else:
             warn = " ⚠️ TXID not found on-chain — credited the ORDERED amount; verify on Tronscan."
+    # amount-collision guard: if the transfer's ACTUAL on-chain amount exactly
+    # matches a DIFFERENT awaiting order's unique-cents tag, this hash is that
+    # order's deposit — confirming it here would strip the rightful order (and
+    # a staged unverified claim could otherwise double-cash one transfer).
+    if actual is not None:
+        from .scanner import AMOUNT_TOLERANCE
+        async with Session() as session:
+            other = await session.scalar(select(Order).where(
+                Order.id != order_id,
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value,
+                Order.usd_amount >= actual - AMOUNT_TOLERANCE,
+                Order.usd_amount <= actual + AMOUNT_TOLERANCE).limit(1))
+        if other is not None:
+            return False, (f"🚫 That transfer's on-chain amount ({actual:g} USDT) "
+                           f"matches AWAITING order {texts.tag(other.id)} — it "
+                           "looks like that order's deposit. Not confirming here; "
+                           "assign it to the matching order instead.")
     async with Session() as session:
         if txid != "manual":
+            # claim the tx for THIS order in seen_txs so the scanner can never
+            # auto-credit the same transfer to another order later — the missing
+            # row here was a double-pay window (manual confirm now, scan later)
             seen = await session.get(SeenTx, txid)
+            if seen is not None and seen.order_id not in (None, order_id):
+                return False, (f"🚫 That TXID is already credited to order "
+                               f"{texts.tag(seen.order_id)} — not confirming.")
             if seen is not None and seen.order_id is None:
                 seen.order_id = order_id
+            elif seen is None:
+                session.add(SeenTx(txid=txid,
+                                   amount=actual if actual is not None else 0.0,
+                                   order_id=order_id))
+            try:
                 await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                return False, ("🚫 That TXID was just credited to another "
+                               "order — not confirming.")
         extra = {"txid": txid, "deposit_detected_at": utcnow()}
         if actual is not None:
             extra["usd_amount"] = actual
