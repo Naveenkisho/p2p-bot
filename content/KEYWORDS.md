@@ -25,20 +25,32 @@ that can share one page (Google treats them as the same intent).
 | 14 | sell tether in india | done | usdt-selling-india-complete-guide |
 | 15 | binance p2p alternative india | done | binance-p2p-alternative-india |
 | 16 | sell usdt without binance | done | binance-p2p-alternative-india |
-| 17 | sell usdt instantly | pending | |
-| 18 | usdt to imps transfer | pending | |
-| 19 | convert usdt to inr | pending | |
-| 20 | usdt to inr | pending | |
-| 21 | sell usdt trc20 | pending | |
-| 22 | sell usdt bep20 | pending | |
-| 23 | tether to rupees | pending | |
-| 24 | usdt otc desk india | pending | |
-| 25 | sell large amount usdt india | pending | |
-| 26 | usdt p2p india | pending | |
-| 27 | sell crypto for cash india | pending | |
-| 28 | is it legal to sell usdt in india | pending | |
-| 29 | usdt inr rate today | pending | |
-| 30 | sell usdt from trust wallet | pending | |
+| 17 | clean funds | done | sell-usdt-clean-funds |
+| 18 | sell usdt clean funds | done | sell-usdt-clean-funds |
+| 19 | sell usdt get clean funds | done | sell-usdt-clean-funds |
+| 20 | clean inr funds | done | sell-usdt-clean-funds |
+| 21 | verified indian platform | done | verified-indian-usdt-platform |
+| 22 | verified usdt platform india | done | verified-indian-usdt-platform |
+| 23 | sell usdt instantly | pending | |
+| 24 | usdt to imps transfer | pending | |
+| 25 | convert usdt to inr | pending | |
+| 26 | usdt to inr | pending | |
+| 27 | sell usdt trc20 | pending | |
+| 28 | sell usdt bep20 | pending | |
+| 29 | tether to rupees | pending | |
+| 30 | usdt otc desk india | pending | |
+| 31 | sell large amount usdt india | pending | |
+| 32 | usdt p2p india | pending | |
+| 33 | sell crypto for cash india | pending | |
+| 34 | is it legal to sell usdt in india | pending | |
+| 35 | usdt inr rate today | pending | |
+| 36 | sell usdt from trust wallet | pending | |
+
+Priority note: the owner's core conversion terms — "sell usdt", "clean
+funds", "sell usdt get clean funds", "verified indian platform" — are
+covered by dedicated pages AND woven into the home page title/description/
+hero. Future articles should interlink to those two pages whenever the
+topic touches money sourcing or trust.
 
 Style notes for every article:
 - 600–900 words, `##` sections, one `###` max per section.
