@@ -758,12 +758,13 @@ summary.btn::-webkit-details-marker{display:none}
 summary.btn::marker{content:""}
 .confwrap{padding:16px 0 4px;text-align:center}
 .conftitle{font-weight:900;font-size:1.02rem;margin-bottom:12px}
-.confbar{position:relative;height:6px;border-radius:999px;background:var(--accent-soft);
- overflow:hidden;max-width:330px;margin:0 auto 12px}
-.confbar i{position:absolute;left:-40%;top:0;bottom:0;width:40%;border-radius:999px;
- background:var(--accent);animation:confslide 1.5s ease-in-out infinite}
-@keyframes confslide{to{left:100%}}
-@media (prefers-reduced-motion:reduce){.confbar i{animation:none;left:0;width:100%}}
+.confspin{width:46px;height:46px;border-radius:50%;margin:0 auto 14px;
+ border:4px solid var(--accent-soft);border-top-color:var(--accent);
+ animation:spin .9s linear infinite}
+.confspin.sm{width:18px;height:18px;border-width:3px;margin:0 8px 0 0;
+ display:inline-block;vertical-align:-4px}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.confspin{animation:spin 2.5s linear infinite}}
 .confnote{font-size:.83rem;color:var(--muted);font-weight:600;max-width:360px;
  margin:0 auto 14px}
 .txrow{display:flex;align-items:center;gap:10px;background:var(--surface-2);
@@ -2745,7 +2746,7 @@ to our address is accepted.</p>
  aria-label="Copy amount">{copy_svg}</button></div>
 <div id=seenbn class=confwrap style="display:none">
 <div class=conftitle>Deposit detected on-chain</div>
-<div class=confbar><i></i></div>
+<div class=confspin></div>
 <div class=confnote>Confirming on the blockchain now — usually under a minute.
 This page updates by itself the moment it credits.</div>
 <div class=txrow><span class=txk>TxID</span><span class=txv id=seentx></span>
@@ -2763,7 +2764,7 @@ the amount, and send the funds — or copy the address above.</p>
 <div class=livestrip id=livestrip><span class=livedot></span>
 Waiting for payment — we watch the blockchain and this page updates by itself.</div>
 <button class=btn id=checkbtn onclick="checkNow()">I've sent it — check now</button>
-<div id=checking class="banner warn" style="display:none">Checking the blockchain…
+<div id=checking class="banner warn" style="display:none"><span class="confspin sm"></span>Checking the blockchain…
 a fresh transfer is usually spotted within seconds and credits once it confirms.</div>
 {claim_form}
 <p class='muted small' style="margin:10px 0 4px">Sent the USDT but nothing happened?
