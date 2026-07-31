@@ -951,10 +951,14 @@ def _fabs_html(support: str, whatsapp: str, email: str = "") -> str:
 
 
 def _support_html(support: str) -> str:
-    links = " · ".join(
-        f"<a href='https://t.me/{_esc(h.lstrip('@'))}' target=_blank rel=noopener>{_esc(h)}</a>"
-        for h in support.split() if h.strip())
-    return links or _esc(support)
+    """A neutral 'message us on Telegram' link — the raw @handle is never shown
+    in page copy (it lives only in the href and the floating support button,
+    both fed by the panel's editable support setting)."""
+    first = next((h for h in support.split() if h.startswith("@")), "")
+    if first:
+        return (f"<a href='https://t.me/{_esc(first.lstrip('@'))}' target=_blank "
+                "rel=noopener>message us on Telegram</a>")
+    return "contact support"
 
 
 def _email_html(email: str, prefix: str = " · ") -> str:
@@ -971,6 +975,54 @@ def _email_pill(email: str) -> str:
         return ""
     return (f"<a class=emailpill href='mailto:{_esc(email)}'>✉️ Email us — "
             f"{_esc(email)}</a>")
+
+
+# ── brand SVG graphics (self-drawn; no external images, CSP-safe) ─────────────
+# Clean vector guides in the site palette (navy #0e1330 / green #00c26f). Each
+# scales fluidly (viewBox + width:100%) and carries a role/label for a11y.
+
+def _figure(svg: str, caption: str = "") -> str:
+    cap = (f"<figcaption style='color:#5a657d;font-size:.85rem;margin-top:8px;"
+           f"text-align:center'>{caption}</figcaption>" if caption else "")
+    return (f"<figure style='margin:0 0 8px'>{svg}{cap}</figure>")
+
+
+# 4-step sell flow — choose → send USDT → verified on-chain → paid in INR
+_SVG_FLOW = """<svg viewBox="0 0 920 210" width="100%" style="height:auto;max-width:920px;display:block;margin:0 auto" role="img" aria-label="How selling works in four steps">
+<line x1="115" y1="72" x2="805" y2="72" stroke="#e6eaf1" stroke-width="4" stroke-dasharray="1 12" stroke-linecap="round"/>
+<g font-family="Arial,Helvetica,sans-serif">
+<g transform="translate(115,72)"><circle r="40" fill="#ffffff" stroke="#0e1330" stroke-width="2.5"/><rect x="-16" y="-18" width="32" height="36" rx="4" fill="none" stroke="#0e1330" stroke-width="2.5"/><line x1="-9" y1="-8" x2="9" y2="-8" stroke="#00c26f" stroke-width="2.5" stroke-linecap="round"/><line x1="-9" y1="0" x2="9" y2="0" stroke="#00c26f" stroke-width="2.5" stroke-linecap="round"/><line x1="-9" y1="8" x2="2" y2="8" stroke="#00c26f" stroke-width="2.5" stroke-linecap="round"/><circle cx="30" cy="-30" r="13" fill="#00c26f"/><text x="30" y="-25" font-size="15" font-weight="800" fill="#062b1a" text-anchor="middle">1</text></g>
+<g transform="translate(345,72)"><circle r="40" fill="#ffffff" stroke="#0e1330" stroke-width="2.5"/><circle r="18" fill="none" stroke="#00c26f" stroke-width="2.5"/><text y="6" font-size="18" font-weight="800" fill="#0e1330" text-anchor="middle">&#8366;</text><circle cx="30" cy="-30" r="13" fill="#00c26f"/><text x="30" y="-25" font-size="15" font-weight="800" fill="#062b1a" text-anchor="middle">2</text></g>
+<g transform="translate(575,72)"><circle r="40" fill="#ffffff" stroke="#0e1330" stroke-width="2.5"/><path d="M-14 0 l9 10 l19 -20" fill="none" stroke="#00c26f" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><circle r="24" fill="none" stroke="#0e1330" stroke-width="2" stroke-dasharray="3 4"/><circle cx="30" cy="-30" r="13" fill="#00c26f"/><text x="30" y="-25" font-size="15" font-weight="800" fill="#062b1a" text-anchor="middle">3</text></g>
+<g transform="translate(805,72)"><circle r="40" fill="#0e1330"/><rect x="-19" y="-13" width="38" height="26" rx="4" fill="none" stroke="#00c26f" stroke-width="2.5"/><text y="6" font-size="17" font-weight="800" fill="#ffffff" text-anchor="middle">&#8377;</text><circle cx="30" cy="-30" r="13" fill="#00c26f"/><text x="30" y="-25" font-size="15" font-weight="800" fill="#062b1a" text-anchor="middle">4</text></g>
+<g font-size="15" font-weight="700" fill="#0e1330" text-anchor="middle"><text x="115" y="140">Choose &amp; enter bank</text><text x="345" y="140">Send exact USDT</text><text x="575" y="140">Verified on-chain</text><text x="805" y="140">Paid in INR</text></g>
+<g font-size="12.5" fill="#5a657d" text-anchor="middle"><text x="115" y="162">method, amount, IFSC</text><text x="345" y="162">to your address</text><text x="575" y="162">in seconds, no screenshots</text><text x="805" y="162">UPI / IMPS to any bank</text></g>
+</g></svg>"""
+
+# Pricing — USDT coin → 1:1 locked rate → INR note
+_SVG_RATE = """<svg viewBox="0 0 460 150" width="100%" style="height:auto;max-width:460px;display:block;margin:0 auto" role="img" aria-label="The rate you see is the rate you are paid">
+<g font-family="Arial,Helvetica,sans-serif">
+<circle cx="70" cy="70" r="42" fill="#e1f9ee" stroke="#00c26f" stroke-width="2.5"/><text x="70" y="82" font-size="38" font-weight="800" fill="#00a85f" text-anchor="middle">&#8366;</text><text x="70" y="128" font-size="13" font-weight="700" fill="#0e1330" text-anchor="middle">1 USDT</text>
+<g transform="translate(230,70)"><line x1="-58" y1="0" x2="52" y2="0" stroke="#0e1330" stroke-width="3" stroke-linecap="round"/><polygon points="52,-8 68,0 52,8" fill="#0e1330"/><rect x="-46" y="-26" width="92" height="26" rx="13" fill="#0e1330"/><text x="0" y="-7" font-size="14" font-weight="800" fill="#ffffff" text-anchor="middle">LIVE RATE</text><text x="0" y="30" font-size="12.5" fill="#5a657d" text-anchor="middle">locked when you order</text></g>
+<rect x="330" y="34" width="96" height="64" rx="10" fill="#0e1330"/><text x="378" y="80" font-size="34" font-weight="800" fill="#ffffff" text-anchor="middle">&#8377;</text><text x="378" y="128" font-size="13" font-weight="700" fill="#0e1330" text-anchor="middle">to your bank</text>
+</g></svg>"""
+
+# AML — shield with a magnifier over a checkmark: clean-funds screening
+_SVG_AML = """<svg viewBox="0 0 200 200" width="150" style="height:auto;max-width:170px;display:block;margin:0 auto" role="img" aria-label="Every deposit and payout is screened for clean funds">
+<path d="M100 18 L168 44 V96 C168 140 138 172 100 186 C62 172 32 140 32 96 V44 Z" fill="#e1f9ee" stroke="#00c26f" stroke-width="4"/>
+<path d="M100 30 L156 51 V96 C156 133 131 160 100 172 Z" fill="#00c26f" opacity="0.12"/>
+<circle cx="90" cy="88" r="30" fill="#ffffff" stroke="#0e1330" stroke-width="5"/>
+<path d="M78 88 l9 10 l18 -20" fill="none" stroke="#00c26f" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="111" y1="109" x2="132" y2="130" stroke="#0e1330" stroke-width="8" stroke-linecap="round"/>
+</svg>"""
+
+# Guarantee — shield with ₹ and a chain link: clean funds, on-chain verified
+_SVG_GUARANTEE = """<svg viewBox="0 0 200 200" width="150" style="height:auto;max-width:170px;display:block;margin:0 auto" role="img" aria-label="100 percent clean funds guarantee, verified on-chain">
+<path d="M100 16 L170 43 V97 C170 142 139 175 100 189 C61 175 30 142 30 97 V43 Z" fill="#0e1330"/>
+<path d="M100 30 L156 52 V97 C156 134 131 161 100 173 C69 161 44 134 44 97 V52 Z" fill="none" stroke="#00c26f" stroke-width="3" stroke-dasharray="4 5"/>
+<text x="100" y="112" font-family="Arial,Helvetica,sans-serif" font-size="66" font-weight="800" fill="#ffffff" text-anchor="middle">&#8377;</text>
+<g transform="translate(100,150)"><rect x="-26" y="-9" width="24" height="18" rx="9" fill="none" stroke="#00c26f" stroke-width="4"/><rect x="2" y="-9" width="24" height="18" rx="9" fill="none" stroke="#00c26f" stroke-width="4"/></g>
+</svg>"""
 
 
 # ── landing ───────────────────────────────────────────────────────────────────
@@ -1052,9 +1104,10 @@ Telegram, now on the web.</p>
 <div class=card id=rates><h2 style="margin-top:0">Live rates <span class=livewrap><span class=livedot></span>LIVE<span class=livebars><i></i><i></i><i></i></span></span></h2>
 <div class=rategrid>{rows or "<span class=muted>No rates live right now.</span>"}</div>
 <p class='muted small' style="margin:10px 0 0">Rates are live — the rate you see when you
-order is the rate you're paid at. Networks accepted: <b>{nets}</b>.</p></div>
+order is the rate you're paid at. Networks accepted: <b>{nets}</b>.</p>
+{_figure(_SVG_RATE, "The live rate is locked the moment you order — you're paid at exactly that rate.")}</div>
 <h2>How it works</h2>
-<div class=card><div class=steps3>
+<div class=card>{_figure(_SVG_FLOW)}<div class=steps3>
 <div class=step><div class=n>1</div><div><b>Choose method &amp; amount</b><br>
 <span class='muted small'>Pick your payout method, enter the USDT amount (each method
 shows its min/max), and your bank details for the INR payout.</span></div></div>
@@ -2903,6 +2956,7 @@ async def guarantee_page(request: web.Request):
         whatsapp = await get_whatsapp(s)
     body = f"""
 <h1>The 100% Clean-Funds <span class=g>Guarantee</span></h1>
+{_figure(_SVG_GUARANTEE)}
 <p class="muted lead">The biggest fear when selling USDT in India isn't the rate —
 it's receiving money from an unknown source and having your bank account frozen.
 Our entire desk is built so that can't happen to you.</p>
@@ -3080,6 +3134,9 @@ async def legal_page(request: web.Request):
     if doc is None:
         raise web.HTTPNotFound()
     title, body_html = doc
+    if slug == "aml":
+        body_html = _figure(_SVG_AML, "Every deposit and payout is screened — "
+                            "clean funds in, clean funds out.") + body_html
     if slug == "privacy":
         # keep the policy truthful about whatever tracking is actually live
         if _tracking_active():
