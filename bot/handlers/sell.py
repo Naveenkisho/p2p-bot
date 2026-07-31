@@ -872,6 +872,20 @@ async def claim_txid(message: Message, state: FSMContext) -> None:
     await message.answer(texts.claim_submitted(order_id, lang) + footer,
                          reply_markup=hide_kb())
     await _post_claim_card(message.bot, order_id, txid, verify)
+    # "TXID valid — under manual verification" email for /email users
+    try:
+        from .. import sender as _sender
+        email, name = await _sender.email_for_uid(order.user_id)
+        if email:
+            site = (settings.site_url or "").rstrip("/")
+            track = (site + f"/o/{order.web_token}"
+                     if order.web_token and site else site or "/")
+            subj, inner = _sender.claim_submitted_email(
+                texts.tag(order_id), order.usd_amount,
+                SERVICES.get(order.service, order.service), txid, track)
+            await _sender.send_transactional(email, name, subj, inner)
+    except Exception:
+        log.exception("claim-submitted email failed")
 
 
 @router.message(ClaimFlow.txid)

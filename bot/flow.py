@@ -82,7 +82,7 @@ async def notify_deposit_received(bot: Bot, order_id: int) -> None:
                         SERVICES.get(order.service, order.service),
                         card.label if card else "", position, track)
                     await sender.send_transactional(
-                        email, name, subj, inner,
+                        email, name, subj, inner, legal=True,
                         fail_bot=bot, fail_uid=max(order.user_id, 0))
             except Exception:
                 log.exception("deposit-received email failed")
