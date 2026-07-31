@@ -210,8 +210,6 @@ _claim_times: dict[str, deque] = {}
 _CLAIM_MAX_PER_HOUR = 8
 # per-IP throttle for the on-demand "I've sent it" re-scan (each drives a sweep).
 _check_times: dict[str, deque] = {}
-_order_email_last: dict[int, float] = {}   # uid → last order-created email
-_ORDER_EMAIL_GAP = 600
 _CHECK_MAX_PER_MIN = 6
 # support-ticket throttle: bounds junk tickets per IP
 _ticket_times: dict[str, deque] = {}
@@ -2550,12 +2548,30 @@ async def _sell_gate(request: web.Request, error: str = "") -> web.Response:
     return resp
 
 
+async def _pending_order_token(request: web.Request) -> str:
+    """One live quote per customer: the token of their AWAITING order, if any.
+    /sell resumes it instead of quietly voiding it and emailing a fresh
+    confirmation — pay it, cancel it, or let the timer expire it."""
+    uid = await _uid_from_cookie(request)
+    if uid is None:
+        return ""
+    async with Session() as s:
+        pend = await s.scalar(select(Order).where(
+            Order.user_id == uid,
+            Order.status == OrderStatus.AWAITING_DEPOSIT.value)
+            .order_by(Order.id.desc()))
+    return (pend.web_token or "") if pend is not None else ""
+
+
 async def sell_get(request: web.Request):
     acct = await _account_from_request(request)
     if acct is None:
         return await _sell_gate(request)
     if not acct.stock:
         raise web.HTTPFound("/signup/stock?next=/sell")
+    resume = await _pending_order_token(request)
+    if resume:
+        raise web.HTTPFound(f"/o/{resume}?resume=1")
     return await _sell_form(request)
 
 
@@ -2569,6 +2585,9 @@ async def sell_post(request: web.Request):
     uid = await _uid_from_cookie(request)
     if uid is None:
         return await _sell_form(request, "Please enable cookies and try again.")
+    resume = await _pending_order_token(request)
+    if resume:
+        raise web.HTTPFound(f"/o/{resume}?resume=1")
     if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"sell:{uid}")):
         return await _sell_form(request, "That form expired — please try again.")
     prefill = {k: str(data.get(k, "")).strip()
@@ -2650,12 +2669,6 @@ async def sell_post(request: web.Request):
         if inflight >= settings.open_orders_max:
             return await _sell_form(request, "You already have orders being paid out — "
                                     "please wait for those to finish.", prefill)
-        for prev in (await s.scalars(select(Order).where(
-                Order.user_id == uid,
-                Order.status == OrderStatus.AWAITING_DEPOSIT.value))).all():
-            await try_transition(s, prev.id, (OrderStatus.AWAITING_DEPOSIT,),
-                                 OrderStatus.EXPIRED)
-
         if reuse_card_id is not None:
             card = await s.get(BankCard, reuse_card_id)
             if card is None or card.user_id != uid:
@@ -2705,14 +2718,7 @@ async def sell_post(request: web.Request):
     # VERIFIED address gets mail — unverified/fake signups stay silent.
     try:
         from . import sender as _sender
-        now_m = time.monotonic()
-        recently = now_m - _order_email_last.get(uid, -1e9) < _ORDER_EMAIL_GAP
-        if len(_order_email_last) > 5000:      # bound the in-process map
-            cutoff = now_m - _ORDER_EMAIL_GAP
-            for k in [k for k, v in _order_email_last.items() if v < cutoff]:
-                _order_email_last.pop(k, None)
-        if acct.email and acct.email_verified and not recently:
-            _order_email_last[uid] = now_m
+        if acct.email and acct.email_verified:
             base = ((settings.site_url or "").rstrip("/")
                     or ("https://" if _is_https(request) else "http://")
                     + request.host)
@@ -2796,6 +2802,12 @@ to our address is accepted.</p>
                 "<b>Send the exact amount.</b>")
         if seen_tx:
             claim_form = ""      # deposit already visible — nothing to submit
+        resume_note = ""
+        if request.query.get("resume") and not seen_tx:
+            resume_note = ("<div class='banner warn'><b>You already have this "
+                           "order pending.</b> Pay it, or cancel it below, to "
+                           "start a new one — or let the timer run out and it "
+                           "expires by itself.</div>")
         claim_note = ""
         if order.claim_txid:
             claim_note = ("<div class='banner warn'>Your TXID is <b>under review</b>"
@@ -2821,7 +2833,7 @@ to our address is accepted.</p>
 <span class=pill>Order {texts.tag(order.id)}</span>
 <span class=pill>Rate locked <span id=cd class=count>--:--</span></span>
 </div>
-</div>{claim_note}
+</div>{resume_note}{claim_note}
 <div class=paybox>
 <div class=payrow><div class=pmain>
 <div class=pk>Wallet address for transfer:</div>
