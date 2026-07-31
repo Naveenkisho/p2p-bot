@@ -42,7 +42,9 @@ from ..helpers import (
     ist_time_str,
     norm_txid,
     order_card,
+    order_display_address,
     strip_kb,
+    txid_for_network,
 )
 from ..keyboards import PANEL_TABS, AdminCb, admin_order_kb, bot_link_kb, panel_kb
 from ..models import OPEN_STATUSES, BankCard, Order, OrderMsg, OrderStatus, User, utcnow
@@ -527,7 +529,8 @@ async def cmd_setrefund(message: Message, command: CommandObject) -> None:
         if order is None:
             await message.answer("No such order.")
             return
-        order.refund_txid = txid
+        # canonicalise for the order's network (bare BSC hash -> 0x-prefixed)
+        order.refund_txid = txid_for_network(txid, order_display_address(order)[2])
         if order.status == OrderStatus.CANCELLED.value:
             order.status = OrderStatus.REFUND_REQUESTED.value
         await session.commit()
