@@ -759,6 +759,12 @@ summary.btn::-webkit-details-marker{display:none}
 summary.btn::marker{content:""}
 .confwrap{padding:16px 0 4px;text-align:center}
 .conftitle{font-weight:700;font-size:1.02rem;margin-bottom:12px}
+#boot{position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;
+ align-items:center;justify-content:center;transition:opacity .35s}
+#boot.off{opacity:0;pointer-events:none}
+#boot .bb{font-weight:800;font-size:1.15rem;margin-bottom:18px;color:var(--text)}
+#boot .bd{display:inline-block;width:10px;height:10px;border-radius:50%;
+ background:var(--accent);margin-right:8px;animation:pulse 1.6s ease-in-out infinite}
 .okball{width:64px;height:64px;border-radius:50%;background:var(--accent-soft);
  color:var(--accent-dark);display:flex;align-items:center;justify-content:center;
  margin:0 auto 14px}
@@ -960,7 +966,14 @@ document.addEventListener('click',function(e){
 
 
 def _page(title: str, body: str, desc: str = "", wide: bool = False,
-          path: str = "", noindex: bool = False, acct: str = "") -> web.Response:
+          path: str = "", noindex: bool = False, acct: str = "",
+          boot: bool | None = None) -> web.Response:
+    # Boot preloader: hold a brand + spinner screen until the WHOLE page —
+    # images (QR), data, webfont — is ready, then reveal it complete in one
+    # go. Defaults to customer-flow (noindex) pages; indexable marketing
+    # pages stay instant-render so search ranking (LCP) is untouched.
+    if boot is None:
+        boot = noindex
     desc = desc or "Sell USDT for INR — instant bank payout, on-chain verified."
     head_extra = ""
     if noindex:
@@ -976,6 +989,24 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
                    "<meta name=twitter:card content=summary>")
     if not noindex:
         head_extra += _tracking_head()      # marketing pixels on public pages
+    boot_html = ""
+    if boot:
+        boot_html = (
+            "<div id=boot><div style='text-align:center'>"
+            "<div class=bb><span class=bd></span>P2P Desk</div>"
+            "<span class=confspin style='display:block'></span></div></div>"
+            "<noscript><style>#boot{display:none}</style></noscript>"
+            "<script>(function(){var b=document.getElementById('boot');"
+            "if(!b)return;var t0=Date.now(),gone=false;"
+            "function off(){if(gone||!b)return;gone=true;"
+            "var w=Math.max(0,450-(Date.now()-t0));"
+            "setTimeout(function(){b.classList.add('off');"
+            "setTimeout(function(){if(b&&b.parentNode)b.parentNode.removeChild(b)},400)},w)}"
+            "function ready(){if(document.fonts&&document.fonts.ready){"
+            "document.fonts.ready.then(off,off);setTimeout(off,900)}else off()}"
+            "if(document.readyState==='complete')ready();"
+            "else window.addEventListener('load',ready);"
+            "setTimeout(off,4000);})();</script>")
     if acct:
         label = acct if len(acct) <= 18 else acct[:16] + "…"
         acct_link = (f"<a class='nav me' href='/account' title='{_esc(acct)}'>"
@@ -994,6 +1025,7 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
 <link rel=preconnect href=https://fonts.gstatic.com crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel=stylesheet>
 <title>{_esc(title)}</title><style>{_STYLE}{_TRUST_CSS}{_FOOTER_CSS}</style></head><body>
+{boot_html}
 <div class="wrap{' wide' if wide else ''}">
 <div class=topbar><a href="/" class=brand><span class=dot></span>P2P Desk</a>
 <nav class=topnav>{_NAVLINKS}</nav>
@@ -2518,7 +2550,7 @@ if(sform&&nval)sform.addEventListener('submit',function(e){
         resp = _page("Sell USDT for INR — Live Rate & Instant Quote | P2P Desk",
                      body, "Get your USDT deposit address and a locked INR rate "
                      "in one step. UPI, IMPS, CDM payouts across India.",
-                     path="/sell", acct=me)
+                     path="/sell", acct=me, boot=True)
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
@@ -2542,7 +2574,7 @@ async def _sell_gate(request: web.Request, error: str = "") -> web.Response:
     resp = _page("Sell USDT for INR — Live Rate & Instant Quote | P2P Desk",
                  body, "Get your USDT deposit address and a locked INR rate "
                  "in one step. UPI, IMPS, CDM payouts across India.",
-                 path="/sell")
+                 path="/sell", boot=True)
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
