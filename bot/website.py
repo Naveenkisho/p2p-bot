@@ -741,6 +741,25 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
  border:1px solid var(--border);border-radius:14px;padding:12px 14px;margin:12px 0;
  font-size:.88rem;font-weight:700;color:var(--muted)}
 .livestrip .livedot{flex:0 0 8px;margin:0}
+summary.btn{list-style:none}
+summary.btn::-webkit-details-marker{display:none}
+summary.btn::marker{content:""}
+.confwrap{padding:16px 0 4px;text-align:center}
+.conftitle{font-weight:900;font-size:1.02rem;margin-bottom:12px}
+.confbar{position:relative;height:6px;border-radius:999px;background:var(--accent-soft);
+ overflow:hidden;max-width:330px;margin:0 auto 12px}
+.confbar i{position:absolute;left:-40%;top:0;bottom:0;width:40%;border-radius:999px;
+ background:var(--accent);animation:confslide 1.5s ease-in-out infinite}
+@keyframes confslide{to{left:100%}}
+@media (prefers-reduced-motion:reduce){.confbar i{animation:none;left:0;width:100%}}
+.confnote{font-size:.83rem;color:var(--muted);font-weight:600;max-width:360px;
+ margin:0 auto 14px}
+.txrow{display:flex;align-items:center;gap:10px;background:var(--surface-2);
+ border:1px solid var(--border);border-radius:14px;padding:10px 12px;text-align:left}
+.txrow .txk{flex:0 0 auto;font-size:.78rem;font-weight:800;color:var(--muted)}
+.txrow .txv{flex:1;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+ font-size:.8rem;word-break:break-all}
+.txrow .cico{flex:0 0 36px;width:36px;height:36px}
 .qrimg{display:block;margin:14px auto;width:190px;height:190px;border-radius:16px;
  background:#fff;padding:10px;border:1px solid var(--border)}
 .count{font-variant-numeric:tabular-nums;font-weight:900}
@@ -2654,7 +2673,7 @@ async def order_page(request: web.Request):
     show_addr = order.display_address or order.deposit_address
     tagline = f"<code>{texts.tag(order.id)}</code>"
     claim_form = f"""
-<details><summary>Already sent the USDT? Submit your TXID</summary>
+<details id=claimwrap><summary class="btn ghost">Already sent the USDT? Submit your TXID</summary>
 <form method=post action="/o/{_esc(token)}/claim"><div class=card>
 <input type=hidden name=csrf value='{csrf}'>
 <p class='muted small' style="margin-top:0">Paste the <b>transaction hash (TXID)</b> from your
@@ -2693,11 +2712,8 @@ to our address is accepted.</p>
 <h1>Send your USDT {tagline}</h1>{claim_note}
 <div class=banner><b>You'll receive ₹{order.inr_amount:,.2f}</b>
 <span class=muted>→ {_esc(bank_label)}</span><br>
-<span class='muted small'>⏳ The rate is locked for <span id=cd class=count>--:--</span>
+<span class='muted small'>The rate is locked for <span id=cd class=count>--:--</span>
 · auto-verified in seconds after it confirms</span></div>
-<div id=seenbn class="banner ok" style="display:none"><b>⚡ Deposit detected
-on-chain!</b> It's confirming now — usually under a minute. This page updates
-by itself the moment it credits.</div>
 <div class=paybox>
 <div class=payrow><div class=pmain>
 <div class=pk>Wallet address for transfer:</div>
@@ -2709,6 +2725,16 @@ by itself the moment it credits.</div>
 <div class="pv amtv">{_esc(amt)} <span class=pvnet>USDT · {_esc(net_label)}</span></div></div>
 <button class=cico onclick="copyAmt(this)" title="Copy amount"
  aria-label="Copy amount">{copy_svg}</button></div>
+<div id=seenbn class=confwrap style="display:none">
+<div class=conftitle>Deposit detected on-chain</div>
+<div class=confbar><i></i></div>
+<div class=confnote>Confirming on the blockchain now — usually under a minute.
+This page updates by itself the moment it credits.</div>
+<div class=txrow><span class=txk>TxID</span><span class=txv id=seentx></span>
+<button class=cico onclick="copyTx(this)" title="Copy TxID"
+ aria-label="Copy TxID">{copy_svg}</button></div>
+</div>
+<div id=qrwrap>
 <img class=qrimg src="/o/{_esc(token)}/qr.png" alt="Deposit QR"
  onerror="this.remove();var q=document.getElementById('qrhint');if(q)q.remove()">
 <p class=qrhint id=qrhint>Scan the QR code (it contains only the address), enter
@@ -2716,6 +2742,7 @@ the amount, and send the funds — or copy the address above.</p>
 <div class=pills>
 <span class=pill>{net_dot} Network: {_esc(net_label)}</span>
 <span class=pill>USDT only</span>
+</div>
 </div>
 <div class=topay><span class=l>To pay:</span>
 <span class=v>{_esc(amt)} USDT</span></div>
@@ -2748,13 +2775,18 @@ function copyAddr(b){{navigator.clipboard.writeText(document.getElementById('add
 .then(function(){{_flash(b)}});}}
 function copyAmt(b){{navigator.clipboard.writeText('{_esc(amt)}')
 .then(function(){{_flash(b)}});}}
+function copyTx(b){{navigator.clipboard.writeText(document.getElementById('seentx').textContent.trim())
+.then(function(){{_flash(b)}});}}
 function checkNow(){{var b=document.getElementById('checkbtn');b.disabled=true;b.style.opacity=.6;
 document.getElementById('checking').style.display='block';
 fetch('/o/{_esc(token)}/check',{{method:'POST',headers:{{'X-CSRF':'{csrf}'}}}});}}
+function showSeen(tx){{document.getElementById('seenbn').style.display='block';
+if(tx)document.getElementById('seentx').textContent=tx;
+['qrwrap','livestrip','checkbtn','checking','claimwrap'].forEach(function(i){{
+var e=document.getElementById(i);if(e)e.style.display='none';}});}}
 setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();
-else if(j.seen){{document.getElementById('seenbn').style.display='block';
-var L=document.getElementById('livestrip');if(L)L.style.display='none';}}}})
+else if(j.seen)showSeen(j.txid);}})
 .catch(function(){{}});}},5000);
 </script>"""
         return _page(f"Order {texts.tag(order.id)} — send USDT", body + fabs,
@@ -2780,7 +2812,7 @@ back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 
     if st == OrderStatus.COMPLETED.value:
         body = f"""
-<h1>Paid! {tagline}</h1>
+<h1>Payment complete {tagline}</h1>
 <div class="banner ok"><b>₹{order.inr_amount:,.2f} sent to {_esc(bank_label)}.</b><br>
 <span class=small>Thanks for trading with us — proof is shared on every deal.</span></div>
 <a class=btn href="/sell">Sell more USDT</a>
@@ -2830,7 +2862,11 @@ async def order_status(request: web.Request):
     from . import scanner
     seen = (order.status == OrderStatus.AWAITING_DEPOSIT.value
             and order.id in scanner.deposit_seen)
-    return web.json_response({"status": order.status, "seen": seen})
+    # the sighted hash goes to the page so the customer watches THEIR real
+    # TxID confirm — only ever on the order's own tokened page, never public
+    seen_tx = scanner.deposit_seen[order.id][0] if seen else ""
+    return web.json_response({"status": order.status, "seen": seen,
+                              "txid": seen_tx})
 
 
 async def order_qr(request: web.Request):
