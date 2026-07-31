@@ -2443,37 +2443,46 @@ if(sform&&nval)sform.addEventListener('submit',function(e){
         # and a no-JS browser still posts natively.
         body += """
 <div id=procwrap style="display:none;position:fixed;inset:0;z-index:80;
- background:rgba(14,19,48,.55);backdrop-filter:blur(3px)">
- <div style="max-width:380px;margin:18vh auto 0;background:var(--surface);
-  border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);
-  padding:26px 26px 20px">
-  <div style="font-weight:800;font-size:1.05rem;margin-bottom:14px">
+ background:rgba(14,19,48,.55);backdrop-filter:blur(3px);animation:procfade .25s ease-out">
+ <div class=procard>
+  <div style="font-weight:700;font-size:1.05rem;margin-bottom:18px">
    Setting up your order&hellip;</div>
   <div id=procsteps></div>
-  <p class="muted small" style="margin:14px 0 0">Do not close this page.</p>
+  <p class="muted small" style="margin:16px 0 0">Do not close this page.</p>
  </div>
 </div>
 <style>
-.pstep{display:flex;gap:10px;align-items:center;padding:7px 0;color:var(--muted);
- font-size:.95rem;transition:color .2s}
-.pstep .pic{width:22px;height:22px;border-radius:50%;flex:none;display:flex;
- align-items:center;justify-content:center;font-size:13px;font-weight:800;
- border:2px solid var(--border);color:transparent}
-.pstep.on{color:var(--text)}
+.procard{max-width:380px;margin:18vh auto 0;background:var(--surface);
+ border-radius:20px;box-shadow:0 18px 50px rgba(14,19,48,.25);
+ padding:26px 26px 20px;animation:procin .35s cubic-bezier(.2,.7,.3,1)}
+@keyframes procfade{from{opacity:0}}
+@keyframes procin{from{opacity:0;transform:translateY(16px) scale(.97)}}
+.pstep{display:flex;gap:14px;align-items:flex-start;color:var(--muted);
+ font-size:.95rem}
+.pstep .prail{display:flex;flex-direction:column;align-items:center;flex:none}
+.pstep .pic{width:26px;height:26px;border-radius:50%;display:flex;
+ align-items:center;justify-content:center;font-size:13px;font-weight:700;
+ border:2.5px solid var(--border);color:transparent;
+ transition:border-color .3s,background .3s,color .3s}
+.pstep .pline{width:2.5px;height:24px;background:var(--border);margin:3px 0;
+ border-radius:2px;transition:background .5s ease .15s}
+.pstep .ptxt{padding-top:4px;transition:color .3s}
+.pstep.on .ptxt{color:var(--text);font-weight:600}
 .pstep.on .pic{border-color:var(--accent);border-top-color:transparent;
- animation:pspin .7s linear infinite}
-.pstep.done{color:var(--text)}
+ animation:pspin .8s linear infinite}
+.pstep.done .ptxt{color:var(--text)}
 .pstep.done .pic{border-color:var(--accent);background:var(--accent);
- color:#062b1a;animation:none}
+ color:#fff;animation:none}
+.pstep.done .pline{background:var(--accent)}
 @keyframes pspin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.pstep.on .pic{animation:none;
- border-top-color:var(--accent)}}
+ border-top-color:var(--accent)}.procard,#procwrap{animation:none}}
 </style>
 <script>
 (function(){
  var f=document.getElementById('sellform');if(!f)return;
- var STEPS=['Verifying your details','Locking today\\u2019s rate',
-   'Reserving your unique deposit amount','Creating your secure order'];
+ var STEPS=['Verifying your details','Locking your rate',
+   'Creating your secure order'];
  var wrap=document.getElementById('procwrap'),
      box=document.getElementById('procsteps'),armed=false,bypass=false;
  f.addEventListener('submit',function(e){
@@ -2482,8 +2491,10 @@ if(sform&&nval)sform.addEventListener('submit',function(e){
    if(!f.checkValidity())return; // let the browser show what's missing
    e.preventDefault();armed=true;
    var go=document.getElementById('go');if(go){go.disabled=true;go.style.opacity=.6}
-   box.innerHTML=STEPS.map(function(s){
-     return '<div class=pstep><span class=pic>\\u2713</span><span>'+s+'</span></div>'}).join('');
+   box.innerHTML=STEPS.map(function(s,idx){
+     return '<div class=pstep><div class=prail><span class=pic>\\u2713</span>'
+       +(idx<STEPS.length-1?'<i class=pline></i>':'')
+       +'</div><span class=ptxt>'+s+'</span></div>'}).join('');
    wrap.style.display='block';document.body.style.overflow='hidden';
    var rows=box.children,i=0;
    // steps advance while the REAL request is in flight; the last one keeps
