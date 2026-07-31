@@ -88,7 +88,16 @@ async def _secret() -> bytes:
 
 
 async def _sign_uid(uid: int) -> str:
-    mac = hmac.new(await _secret(), f"web:{uid}".encode(), hashlib.sha256).hexdigest()
+    """Signed cookie value. Account cookies also bind the account's session
+    version, so bumping sess_ver (password reset, Google takeover) instantly
+    invalidates every previously issued cookie on every device."""
+    extra = ""
+    if uid <= -_ACCT_BASE:
+        async with Session() as s:
+            a = await s.get(Account, -uid - _ACCT_BASE)
+        extra = f":{(getattr(a, 'sess_ver', 0) or 0) if a else 0}"
+    mac = hmac.new(await _secret(), f"web:{uid}{extra}".encode(),
+                   hashlib.sha256).hexdigest()
     return f"{uid}.{mac}"
 
 
@@ -287,6 +296,23 @@ def _norm_phone(phone: str) -> str:
     plus = phone.lstrip().startswith("+")
     digits = re.sub(r"[\s\-()]", "", phone).lstrip("+")
     return ("+" if plus else "") + digits
+
+
+def _valid_password(pw: str) -> str:
+    """'' when acceptable, else the error message to show."""
+    if not 8 <= len(pw) <= 128:
+        return "Password must be 8+ characters."
+    if not re.search(r"[^A-Za-z0-9]", pw):
+        return "Password must include a special character, e.g. @ or #."
+    return ""
+
+
+async def _everify_token(uid: int, email: str) -> str:
+    """Signed proof that THIS browser (uid) OTP-verified THIS email — issued
+    by /signup/otp/check, demanded again by signup_post, so the client-side
+    gating can't simply be bypassed with a hand-built POST."""
+    msg = f"everify:{uid}:{(email or '').strip().lower()}".encode()
+    return hmac.new(await _secret(), msg, hashlib.sha256).hexdigest()[:32]
 
 
 def _safe_next(nxt: str) -> str:
@@ -1187,29 +1213,125 @@ def _auth_body(csrf: str, nxt: str, mode: str, error: str, p: dict) -> str:
 <label>Password</label>
 <input name=password type=password autocomplete=current-password required>
 <div style=margin-top:16px><button class=btn>Sign in</button></div>
+<p class='muted small' style='margin:12px 0 0'>
+<a href='/reset?next={_uq(nxt)}'>Forgot your password?</a> Reset it with a code
+sent to your email.</p>
 </div></form>"""
     else:
-        form = f"""<form method=post action=/signup><div class=card>
+        # Inline email verification: the address is OTP-verified IN the form,
+        # BEFORE the account exists — the everify hidden field carries a signed
+        # proof the server checks again in signup_post (JS gating alone would
+        # be bypassable). Fixed +91 prefix: customers type just the 10 digits.
+        form = f"""<form method=post action=/signup id=suform><div class=card>
 <input type=hidden name=csrf value='{csrf}'>
 <input type=hidden name=next value='{_esc(nxt)}'>
+<input type=hidden name=everify id=everify value=''>
 <label>Your name</label>
 <input name=name autocomplete=name required maxlength=120
  value="{_esc(p.get('name', ''))}">
 <label>Email</label>
-<input name=email type=email autocomplete=email required
+<div class=vrow>
+<input name=email id=suemail type=email autocomplete=email required
  value="{_esc(p.get('email', ''))}">
-<label>Phone (with country code)</label>
-<input name=phone inputmode=tel placeholder="+91…" required
- value="{_esc(p.get('phone', ''))}">
-<label>Password (8+ characters)</label>
-<input name=password type=password autocomplete=new-password minlength=8 required>
+<button type=button class=vlink id=vbtn>Verify now</button>
+</div>
+<div id=vcodebox style='display:none;margin-top:8px'>
+<div class=vrow>
+<input id=vcode inputmode=numeric maxlength=6 placeholder='6-digit code'
+ autocomplete=one-time-code style='letter-spacing:4px'>
+<button type=button class=vlink id=vok>Confirm</button>
+</div>
+<p class='muted small' id=vhint style='margin:6px 0 0'>We emailed a code to
+your address — enter it here. <a href='#' id=vresend>Resend</a></p>
+</div>
+<p class='small' id=vstate style='display:none;margin:6px 0 0'></p>
+<label>Mobile number</label>
+<div class=vrow>
+<span class=cc>&#127470;&#127475; +91</span>
+<input name=phone inputmode=numeric maxlength=10 pattern='[6-9][0-9]{{9}}'
+ placeholder='98765 43210' required value="{_esc(p.get('phone', ''))}"
+ title='10-digit Indian mobile number'>
+</div>
+<label>Password</label>
+<input name=password id=supw type=password autocomplete=new-password
+ minlength=8 required>
+<p class='muted small' style='margin:4px 0 0'>8+ characters including a special
+character (e.g. <b>@</b> or <b>#</b>).</p>
+<label>Confirm password</label>
+<input name=password2 id=supw2 type=password autocomplete=new-password
+ minlength=8 required>
 <label>How much USDT do you sell per day?</label>
 {_stock_pick(p.get('stock', ''))}
-<div style=margin-top:16px><button class=btn>Create account →</button></div>
+<div style=margin-top:16px><button class=btn id=subtn>Create account →</button></div>
 <p class='muted small' style='margin:10px 0 0'>By signing up you agree to the
 <a href='/legal/terms'>Terms of Use</a> and
 <a href='/legal/privacy'>Privacy Policy</a>.</p>
-</div></form>"""
+</div></form>
+<style>
+.vrow{{display:flex;gap:8px;align-items:stretch}}
+.vrow input{{flex:1;min-width:0}}
+.vlink{{flex:none;background:none;border:none;color:#2456d6;font-weight:700;
+ cursor:pointer;font-size:.92rem;padding:0 6px}}
+.vlink:disabled{{color:var(--faint);cursor:default}}
+.cc{{flex:none;display:flex;align-items:center;padding:0 12px;background:var(--surface-2);
+ border:1px solid var(--border);border-radius:10px;font-weight:700;white-space:nowrap}}
+.vok{{color:var(--ok);font-weight:700}}
+.verr{{color:var(--danger);font-weight:600}}
+</style>
+<script>
+(function(){{
+ var csrf='{csrf}',em=document.getElementById('suemail'),
+     vb=document.getElementById('vbtn'),box=document.getElementById('vcodebox'),
+     code=document.getElementById('vcode'),ok=document.getElementById('vok'),
+     res=document.getElementById('vresend'),st=document.getElementById('vstate'),
+     ev=document.getElementById('everify'),f=document.getElementById('suform');
+ function state(msg,cls){{st.style.display='block';st.className='small '+cls;
+   st.textContent=msg}}
+ function send(){{
+   if(!em.checkValidity()){{em.reportValidity();return}}
+   vb.disabled=true;vb.textContent='Sending…';
+   fetch('/signup/otp',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+     body:JSON.stringify({{csrf:csrf,email:em.value.trim()}})}})
+   .then(function(r){{return r.json()}})
+   .then(function(d){{
+     vb.textContent='Verify now';vb.disabled=false;
+     if(!d.ok){{state(d.error||'Could not send the code.','verr');return}}
+     box.style.display='block';st.style.display='none';code.focus();
+   }})
+   .catch(function(){{vb.textContent='Verify now';vb.disabled=false;
+     state('Network error — try again.','verr')}});
+ }}
+ function check(){{
+   ok.disabled=true;
+   fetch('/signup/otp/check',{{method:'POST',
+     headers:{{'Content-Type':'application/json'}},
+     body:JSON.stringify({{csrf:csrf,email:em.value.trim(),code:code.value.trim()}})}})
+   .then(function(r){{return r.json()}})
+   .then(function(d){{
+     ok.disabled=false;
+     if(!d.ok){{state(d.error||'Wrong code.','verr');return}}
+     ev.value=d.token;box.style.display='none';
+     state('\\u2713 '+em.value.trim()+' verified','vok');
+     em.readOnly=true;vb.style.display='none';
+   }})
+   .catch(function(){{ok.disabled=false;state('Network error — try again.','verr')}});
+ }}
+ if(vb){{vb.addEventListener('click',send)}}
+ if(res){{res.addEventListener('click',function(e){{e.preventDefault();send()}})}}
+ if(ok){{ok.addEventListener('click',check)}}
+ if(code){{code.addEventListener('keydown',function(e){{
+   if(e.key==='Enter'){{e.preventDefault();check()}}}})}}
+ em.addEventListener('input',function(){{ev.value='';em.readOnly=false;
+   vb.style.display='';st.style.display='none'}});
+ f.addEventListener('submit',function(e){{
+   var p1=document.getElementById('supw'),p2=document.getElementById('supw2');
+   if(p1.value!==p2.value){{e.preventDefault();
+     state('Passwords do not match.','verr');p2.focus();return}}
+   if(!/[^A-Za-z0-9]/.test(p1.value)){{e.preventDefault();
+     state('Password needs a special character, e.g. @','verr');p1.focus();return}}
+ }});
+}})();
+</script>"""
     return tabs + err + g + form
 
 
@@ -1259,19 +1381,42 @@ async def signup_post(request: web.Request):
                                await _csrf(f"auth:{uid}")):
         return await signup_get(request, "That form expired — please try again.", p)
     password = str(data.get("password", ""))
+    password2 = str(data.get("password2", ""))
     email = p["email"].lower()
     if not _EMAIL_RE.match(email) or len(email) > 190:
         return await signup_get(request, "Please enter a valid email address.", p)
     if not p["name"] or len(p["name"]) > 120:
         return await signup_get(request, "Please enter your name.", p)
-    if not _valid_phone(p["phone"]):
-        return await signup_get(request, "Please enter a valid phone number "
-                                "with country code, e.g. +91 98765 43210.", p)
-    if not 8 <= len(password) <= 128:
-        return await signup_get(request, "Password must be 8+ characters.", p)
+    # the form shows a fixed +91 prefix, so a bare 10-digit Indian mobile is
+    # the normal case; a full +country-code number still validates for safety
+    digits = re.sub(r"[\s\-()]", "", p["phone"])
+    if re.fullmatch(r"[6-9]\d{9}", digits):
+        p["phone"] = "+91" + digits
+    elif not _valid_phone(p["phone"]):
+        return await signup_get(request, "Please enter your 10-digit mobile "
+                                "number (the +91 is already there).", p)
+    pw_err = _valid_password(password)
+    if pw_err:
+        return await signup_get(request, pw_err, p)
+    if password != password2:
+        return await signup_get(request, "The two passwords don't match — "
+                                "please retype them.", p)
     if p["stock"] not in _STOCK_TIERS:
         return await signup_get(request, "Please pick how much USDT you sell "
                                 "per day.", p)
+    # email must be OTP-verified BEFORE the account exists (Verify now in the
+    # form). The signed everify token is the proof; JS-only gating would be
+    # bypassable with a hand-built POST. Skipped only while SMTP is unset
+    # (no way to send codes), in which case signups stay open as before.
+    from . import sender as _sender
+    email_gate = _sender.email_ready(await _sender.email_config())
+    if email_gate:
+        token = str(data.get("everify", ""))
+        if not hmac.compare_digest(token, await _everify_token(uid, email)):
+            return await signup_get(
+                request, "Please verify your email first — tap the blue "
+                "“Verify now” next to the email box and enter the code we "
+                "send you.", p)
     ip = _client_ip(request)
     if _bucket_throttled(_signup_times, ip, _SIGNUP_MAX_PER_HOUR, 3600):
         return await signup_get(request, "Too many signups from this "
@@ -1294,28 +1439,14 @@ async def signup_post(request: web.Request):
                            phone=_norm_phone(p["phone"]),
                            provider="email", pw_salt=salt,
                            pw_hash=await _hash_pw(password, salt),
-                           stock=p["stock"])
+                           stock=p["stock"],
+                           email_verified=True)   # OTP proven above (or no SMTP)
             s.add(acct)
             await s.commit()
     except IntegrityError:      # signup race on the same email
         return await signup_get(request, "That email is already registered — "
                                 "sign in instead.", p, mode="in")
-    # OTP-verify the address when email delivery is available; without SMTP
-    # there's no way to send a code, so the flow stays as before (no email is
-    # ever sent to an unverified address either way).
-    from . import sender as _sender
-    if _sender.email_ready(await _sender.email_config()):
-        new_uid = -(_ACCT_BASE + acct.id)
-        await _sender.issue_email_otp(new_uid, acct.email)
-        resp = web.HTTPFound(f"/verify-email?next={_uq(nxt)}")
-    else:
-        async with Session() as s:
-            fresh = await s.get(Account, acct.id)
-            if fresh is not None:
-                fresh.email_verified = True
-                await s.commit()
-        acct.email_verified = True
-        resp = web.HTTPFound(nxt)
+    resp = web.HTTPFound(nxt)
     await _login_account(request, resp, acct, uid)
     await _notify_signup(request, acct)
     log.info("web signup #%s via email from %s", acct.id, ip)
@@ -1405,6 +1536,7 @@ async def auth_google(request: web.Request):
                     acct.pw_hash = ""
                     acct.pw_salt = ""
                     acct.email_verified = True   # Google verified the address
+                    acct.sess_ver = (acct.sess_ver or 0) + 1   # kill old sessions
                     if not acct.name:
                         acct.name = name
                 else:
@@ -1427,6 +1559,218 @@ async def auth_google(request: web.Request):
     await _login_account(request, resp, acct, uid)
     log.info("web google sign-in #%s from %s", acct.id, ip)
     return resp
+
+
+_signup_otp_times: dict[str, deque] = {}       # per source IP
+_signup_otp_email_times: dict[str, deque] = {}  # per TARGET email (churn-proof)
+_reset_times: dict[str, deque] = {}
+
+
+async def _auth_json(request: web.Request):
+    """(uid, data) for the signup-page AJAX endpoints, or (None, error_resp)."""
+    try:
+        data = await request.json()
+        assert isinstance(data, dict)
+    except Exception:
+        return None, web.json_response({"ok": False, "error": "Bad request."})
+    uid = await _uid_from_cookie(request)
+    if uid is None:
+        return None, web.json_response(
+            {"ok": False, "error": "Enable cookies and reload the page."})
+    if not hmac.compare_digest(str(data.get("csrf", "")),
+                               await _csrf(f"auth:{uid}")):
+        return None, web.json_response(
+            {"ok": False, "error": "This form expired — reload the page."})
+    return (uid, data), None
+
+
+async def signup_otp_post(request: web.Request):
+    """Send the inline signup verification code (the blue 'Verify now')."""
+    ctx, err = await _auth_json(request)
+    if err is not None:
+        return err
+    uid, data = ctx
+    email = str(data.get("email", "")).strip().lower()
+    if not _EMAIL_RE.match(email) or len(email) > 190:
+        return web.json_response({"ok": False, "error": "Enter a valid email address."})
+    ip = _client_ip(request)
+    # Per-TARGET-email cap first: the anon browser uid is minted fresh on every
+    # GET /signup, so a per-uid cap is defeated by cookie churn — but the target
+    # address is attack-invariant, so this bounds how many codes any one inbox
+    # can receive no matter how many uids/IPs an attacker cycles through.
+    if _bucket_throttled(_signup_otp_email_times, email, 4, 3600):
+        return web.json_response({"ok": False, "error": "That address was just "
+                                  "sent several codes — check your inbox/spam or "
+                                  "try again later."})
+    if _bucket_throttled(_signup_otp_times, ip, 8, 3600):
+        return web.json_response({"ok": False, "error": "Too many codes from this "
+                                  "connection — try again later."})
+    from . import sender as _sender
+    if not _sender.email_ready(await _sender.email_config()):
+        return web.json_response({"ok": False, "error": "Verification is briefly "
+                                  "unavailable — try again in a few minutes."})
+    ok, msg = await _sender.issue_email_otp(uid, email)
+    if not ok:
+        return web.json_response({"ok": False, "error": msg})
+    _bucket_record(_signup_otp_email_times, email, 3600)
+    _bucket_record(_signup_otp_times, ip, 3600)
+    return web.json_response({"ok": True})
+
+
+async def signup_otp_check(request: web.Request):
+    """Check the inline code; hands back the signed everify token the signup
+    POST requires."""
+    ctx, err = await _auth_json(request)
+    if err is not None:
+        return err
+    uid, data = ctx
+    email = str(data.get("email", "")).strip().lower()
+    from . import sender as _sender
+    ok, result = _sender.verify_email_otp(uid, str(data.get("code", "")))
+    if not ok:
+        return web.json_response({"ok": False, "error": result})
+    if result.lower() != email:
+        return web.json_response({"ok": False, "error": "That code was for a "
+                                  "different address — request a fresh one."})
+    return web.json_response({"ok": True, "token": await _everify_token(uid, email)})
+
+
+def _reset_body(csrf: str, nxt: str, stage: str, email: str = "",
+                error: str = "", note: str = "") -> str:
+    err = f"<p class=err>{_esc(error)}</p>" if error else ""
+    ok = f"<div class='banner ok'>{_esc(note)}</div>" if note else ""
+    if stage == "done":
+        inner = (f"{ok}<p class='muted lead'>You can sign in with your new "
+                 f"password now.</p><a class=btn href='/signup?mode=in&next={_uq(nxt)}'>"
+                 "Sign in →</a>")
+    elif stage == "confirm":
+        inner = f"""{ok}{err}
+<form method=post action='/reset?next={_uq(nxt)}'><div class=card>
+<input type=hidden name=csrf value='{csrf}'>
+<input type=hidden name=act value=confirm>
+<input type=hidden name=email value='{_esc(email)}'>
+<label>6-digit code (sent to {_esc(email)})</label>
+<input name=code inputmode=numeric maxlength=6 autocomplete=one-time-code
+ placeholder='123456' style='letter-spacing:4px' required>
+<label>New password</label>
+<input name=password type=password autocomplete=new-password minlength=8 required>
+<p class='muted small' style='margin:4px 0 0'>8+ characters including a special
+character (e.g. <b>@</b>).</p>
+<label>Confirm new password</label>
+<input name=password2 type=password autocomplete=new-password minlength=8 required>
+<div style=margin-top:14px><button class=btn>Set new password</button></div>
+</div></form>
+<form method=post action='/reset?next={_uq(nxt)}' style='margin-top:10px'>
+<input type=hidden name=csrf value='{csrf}'>
+<input type=hidden name=act value=request>
+<input type=hidden name=email value='{_esc(email)}'>
+<button class=linkbtn>Resend the code</button></form>"""
+    else:
+        inner = f"""{err}
+<p class='muted lead'>Enter your account email — we'll send a 6-digit code so
+only the real owner of the inbox can set a new password.</p>
+<form method=post action='/reset?next={_uq(nxt)}'><div class=card>
+<input type=hidden name=csrf value='{csrf}'>
+<input type=hidden name=act value=request>
+<label>Email</label>
+<input name=email type=email autocomplete=email required value='{_esc(email)}'>
+<div style=margin-top:14px><button class=btn>Email me a code</button></div>
+</div></form>"""
+    return "<h1>Reset your <span class=g>password</span></h1>" + inner
+
+
+async def reset_get(request: web.Request):
+    uid, is_new = await _ensure_uid(request)
+    csrf = await _csrf(f"auth:{uid}")
+    nxt = _safe_next(request.query.get("next", "/sell"))
+    resp = _page("Reset password", _reset_body(csrf, nxt, "email"), noindex=True)
+    if is_new:
+        _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
+    return resp
+
+
+async def reset_post(request: web.Request):
+    """Password reset by email OTP only. The generic 'if registered, a code is
+    on its way' phrasing never confirms whether an address has an account."""
+    uid = await _uid_from_cookie(request)
+    if uid is None:
+        raise web.HTTPFound("/reset")
+    data = await request.post()
+    nxt = _safe_next(request.query.get("next", "/sell"))
+    csrf = await _csrf(f"auth:{uid}")
+    if not hmac.compare_digest(str(data.get("csrf", "")), csrf):
+        return _page("Reset password", _reset_body(
+            csrf, nxt, "email", error="That form expired — try again."),
+            noindex=True)
+    act = str(data.get("act", ""))
+    email = str(data.get("email", "")).strip().lower()
+    if not _EMAIL_RE.match(email) or len(email) > 190:
+        return _page("Reset password", _reset_body(
+            csrf, nxt, "email", error="Enter a valid email address."),
+            noindex=True)
+    async with Session() as s:
+        acct = await s.scalar(select(Account).where(Account.email == email))
+
+    if act == "request":
+        ip = _client_ip(request)
+        if _bucket_throttled(_reset_times, ip, 6, 3600):
+            return _page("Reset password", _reset_body(
+                csrf, nxt, "email", email=email,
+                error="Too many reset requests — try again later."), noindex=True)
+        _bucket_record(_reset_times, ip, 3600)
+        from . import sender as _sender
+        if acct is not None and acct.pw_hash:
+            await _sender.issue_email_otp(-(_ACCT_BASE + acct.id), email)
+        elif acct is not None and acct.google_sub:
+            # a Google account has no password to reset — adding one via
+            # mailbox access would reopen the pre-hijack hole Google closed
+            return _page("Reset password", _reset_body(
+                csrf, nxt, "email", email=email,
+                error="This account signs in with Google — use the Google "
+                "button on the sign-in page."), noindex=True)
+        return _page("Reset password", _reset_body(
+            csrf, nxt, "confirm", email=email,
+            note=f"If {email} is registered, a 6-digit code is on its way."),
+            noindex=True)
+
+    if act == "confirm":
+        password = str(data.get("password", ""))
+        pw_err = _valid_password(password)
+        if pw_err:
+            return _page("Reset password", _reset_body(
+                csrf, nxt, "confirm", email=email, error=pw_err), noindex=True)
+        if password != str(data.get("password2", "")):
+            return _page("Reset password", _reset_body(
+                csrf, nxt, "confirm", email=email,
+                error="The two passwords don't match."), noindex=True)
+        from . import sender as _sender
+        ok = False
+        if acct is not None and acct.pw_hash:
+            got, result = _sender.verify_email_otp(-(_ACCT_BASE + acct.id),
+                                                   str(data.get("code", "")))
+            ok = got and result.lower() == email
+        if not ok:
+            return _page("Reset password", _reset_body(
+                csrf, nxt, "confirm", email=email,
+                error="That code isn't right (or expired) — check the email "
+                "or resend."), noindex=True)
+        salt = secrets.token_hex(16)
+        async with Session() as s:
+            fresh = await s.scalar(select(Account).where(Account.email == email))
+            if fresh is None:
+                raise web.HTTPFound("/reset")
+            fresh.pw_salt = salt
+            fresh.pw_hash = await _hash_pw(password, salt)
+            fresh.email_verified = True     # the OTP just proved the mailbox
+            # sign out EVERY device that used the old password — a thief with
+            # a stolen session doesn't survive the reset
+            fresh.sess_ver = (fresh.sess_ver or 0) + 1
+            await s.commit()
+        log.info("password reset via email OTP for account #%s", fresh.id)
+        return _page("Reset password", _reset_body(
+            csrf, nxt, "done", note="✅ Password updated."), noindex=True)
+
+    raise web.HTTPFound("/reset")
 
 
 async def verify_email_get(request: web.Request, error: str = "", ok: str = ""):
@@ -1951,7 +2295,8 @@ async def sell_post(request: web.Request):
                 SERVICES.get(service, service), rate, order.inr_amount,
                 bank_label, "BEP20 (BSC)" if net_key == "BEP20" else "TRC20 (TRON)",
                 f"{base}/o/{token}", ttl_min)
-            await _sender.send_transactional(acct.email, acct.name or "", subj, inner)
+            await _sender.send_transactional(acct.email, acct.name or "", subj,
+                                             inner, legal=True)
     except Exception:
         log.exception("order confirmation email failed")
     resp = web.HTTPFound(f"/o/{token}")
@@ -2262,6 +2607,21 @@ async def order_claim(request: web.Request):
     bot = request.app.get("bot")
     if bot is not None:
         await _post_claim_card(bot, order.id, txid, verify)
+    # "TXID valid — under manual verification" email (fire-and-forget)
+    try:
+        from . import sender as _sender
+        email, name = await _sender.email_for_uid(order.user_id)
+        if email:
+            base = ((settings.site_url or "").rstrip("/")
+                    or ("https://" if _is_https(request) else "http://")
+                    + request.host)
+            subj, inner = _sender.claim_submitted_email(
+                texts.tag(order.id), order.usd_amount,
+                SERVICES.get(order.service, order.service), txid,
+                f"{base}/o/{token}")
+            await _sender.send_transactional(email, name, subj, inner)
+    except Exception:
+        log.exception("claim-submitted email failed")
     raise web.HTTPFound(f"/o/{token}")
 
 
@@ -3071,6 +3431,10 @@ async def start_site(bot):
         web.post("/auth/google", auth_google),
         web.get("/signup/stock", stock_get),
         web.post("/signup/stock", stock_post),
+        web.post("/signup/otp", signup_otp_post),
+        web.post("/signup/otp/check", signup_otp_check),
+        web.get("/reset", reset_get),
+        web.post("/reset", reset_post),
         web.get("/verify-email", verify_email_get),
         web.post("/verify-email", verify_email_post),
         web.post("/logout", logout),

@@ -102,7 +102,7 @@ async def complete_order(bot: Bot, order_id: int) -> tuple[bool, str]:
                 updated.inr_amount, SERVICES.get(order.service, order.service),
                 card.label if card else "", live_rates=live_rates,
                 paid_at=ist_now_str())
-            await sender.send_transactional(email, name, subj, inner,
+            await sender.send_transactional(email, name, subj, inner, legal=True,
                                             fail_bot=bot,
                                             fail_uid=max(order.user_id, 0))
     except Exception:
@@ -407,6 +407,18 @@ async def reject_claim(bot: Bot, order_id: int) -> tuple[bool, str]:
     delivered = await notify_user(bot, uid,
                                   texts.claim_rejected(order_id, support, lang))
     await notify_admins(bot, f"🚫 Payment claim for {texts.tag(order_id)} rejected.")
+    # "deposit could not be verified" email (fire-and-forget; verified addresses)
+    try:
+        from . import sender
+        email, name = await sender.email_for_uid(uid)
+        if email:
+            subj, inner = sender.claim_rejected_email(
+                texts.tag(order_id), order.usd_amount,
+                SERVICES.get(order.service, order.service))
+            await sender.send_transactional(email, name, subj, inner,
+                                            fail_bot=bot, fail_uid=max(uid, 0))
+    except Exception:
+        log.exception("claim-rejected email failed")
     return True, ("Claim rejected — user notified 🚫" if delivered
                   else "Claim rejected — the customer sees it on the site 🚫"
                   if is_web_user(uid)

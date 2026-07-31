@@ -27,6 +27,7 @@ _ADDED_COLUMNS = [
     ("users", "email", "VARCHAR(190) DEFAULT ''"),
     ("users", "email_verified", "BOOLEAN DEFAULT 0"),
     ("accounts", "email_verified", "BOOLEAN DEFAULT 0"),
+    ("accounts", "sess_ver", "INTEGER DEFAULT 0"),
 ]
 
 # One-off SQL run only when its column was just added by _migrate. Existing

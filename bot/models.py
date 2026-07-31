@@ -162,6 +162,9 @@ class Account(Base):
     pw_salt: Mapped[str] = mapped_column(String(32), default="")
     pw_hash: Mapped[str] = mapped_column(String(64), default="")
     stock: Mapped[str] = mapped_column(String(8), default="")   # daily USDT stock tier
+    # session version — baked into the login cookie's signature; bumping it
+    # (password reset, Google takeover) instantly signs out EVERY device
+    sess_ver: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_login: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

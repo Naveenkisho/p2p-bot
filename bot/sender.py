@@ -521,13 +521,43 @@ def _usd(v: float) -> str:
     return f"{v:.2f}"
 
 
-def brand_wrap(inner: str, contact: str = "") -> str:
+def brand_wrap(inner: str, contact: str = "", legal: bool = False,
+               tg_handle: str = "") -> str:
     """Shared email chrome: navy header band with the ₹ mark + wordmark, white
-    card, muted footer. Inline-styled tables so Gmail/Outlook render it."""
+    card, muted footer. Inline-styled tables so Gmail/Outlook render it.
+    legal=True appends the professional compliance footer (links row, security
+    notice, copyright) — used on the order lifecycle emails only."""
     site = (settings.site_url or "").rstrip("/")
     contact_line = (f"<a href='mailto:{_html.escape(contact)}' "
                     f"style='color:{_C_GREEN_DARK};text-decoration:none'>"
                     f"{_html.escape(contact)}</a>" if contact else "the support desk")
+    extra = ""
+    if legal:
+        links = []
+        if site:
+            links.append(f"<a href='{_html.escape(site)}' style='color:{_C_GREEN_DARK};"
+                         f"text-decoration:none;font-weight:bold'>"
+                         f"{_html.escape(site.split('://')[-1])}</a>")
+        if tg_handle:
+            links.append(f"<a href='https://t.me/{_html.escape(tg_handle)}' "
+                         f"style='color:{_C_GREEN_DARK};text-decoration:none;"
+                         f"font-weight:bold'>Telegram support</a>")
+        if contact:
+            links.append(f"<a href='mailto:{_html.escape(contact)}' "
+                         f"style='color:{_C_GREEN_DARK};text-decoration:none;"
+                         f"font-weight:bold'>{_html.escape(contact)}</a>")
+        links_row = " &nbsp;&middot;&nbsp; ".join(links)
+        year = datetime.now(timezone.utc).year
+        extra = f"""<p style="margin:10px 0 0;color:#8b95a8;font-size:12px;line-height:1.7">{links_row}</p>
+<p style="margin:12px 0 0;color:#9aa3b8;font-size:11px;line-height:1.7">
+<strong>Security notice:</strong> {_BRAND_NAME} will never ask for your password
+or verification codes, and will never ask you to send USDT to any address other
+than the one shown on your own order page. Genuine mail from us always comes
+from an address ending in <strong>@{_html.escape(site.split('://')[-1]) if site else 'our domain'}</strong>.
+If anything looks off, forward the email to {contact_line} before acting.</p>
+<p style="margin:12px 0 0;color:#9aa3b8;font-size:11px;line-height:1.6">
+&copy; {year} {_BRAND_NAME}. All rights reserved. This message was sent to you
+about an order or account activity you initiated.</p>"""
     return f"""<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f7fa;margin:0;padding:24px 0;font-family:Arial,Helvetica,sans-serif">
 <tr><td align="center">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e6eaf1">
@@ -540,8 +570,8 @@ def brand_wrap(inner: str, contact: str = "") -> str:
 <tr><td style="padding:18px 28px 22px;border-top:1px solid #e6eaf1">
 <p style="margin:0;color:#8b95a8;font-size:12px;line-height:1.6">
 <strong style="color:#5a657d">{_BRAND_NAME}</strong> &mdash; USDT&nbsp;&rarr;&nbsp;INR trading desk<br>
-Questions? Just reply to this email or write to {contact_line}.{f"<br>{_html.escape(site)}" if site else ""}</p>
-</td></tr></table></td></tr></table>"""
+Questions? Just reply to this email or write to {contact_line}.{f"<br>{_html.escape(site)}" if site and not legal else ""}</p>
+{extra}</td></tr></table></td></tr></table>"""
 
 
 def _btn(href: str, label: str) -> str:
@@ -727,6 +757,55 @@ Rates stay live around the clock whenever you want to sell:</p>
     return subject, inner
 
 
+def claim_submitted_email(tag: str, usd: float, service_label: str,
+                          txid: str, track_url: str) -> tuple[str, str]:
+    """Sent when a customer's manual TXID passes the automatic on-chain check
+    and is queued for the desk's final human approval."""
+    subject = f"TXID received — order {tag} under verification"
+    short = f"{txid[:10]}…{txid[-6:]}" if len(txid) > 20 else txid
+    rows = _kv_rows([
+        ("Order", _html.escape(tag)),
+        ("Amount", f"{_usd(usd)} USDT"),
+        ("Payout method", _html.escape(service_label)),
+        ("Transaction", f"<span style='font-family:monospace'>{_html.escape(short)}</span>"),
+        ("Status", f"<span style='color:#b45309'>Under manual verification</span>"),
+    ])
+    inner = f"""{_badge("&#8635;", bg="#b45309")}
+<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">Your TXID checks out &mdash; final verification running</h1>
+<p style="margin:0 0 6px;color:{_C_INK};font-size:15px;line-height:1.6">Good news: our system matched your transaction on-chain. A desk operator now makes the final confirmation &mdash; this typically takes <b>10&ndash;20 minutes</b>.</p>
+{rows}
+<p style="margin:0 0 16px;color:{_C_INK};font-size:14px;line-height:1.65">
+Nothing more to do. The moment it's approved you'll get the <b>deposit received</b>
+email and your bank payout is queued; if it can't be matched you'll hear that too.
+Track it live any time:</p>
+{_btn(track_url, "Track your order &rarr;")}
+{_ld_order(tag, service_label, 0.0, "OrderProblem")}"""
+    return subject, inner
+
+
+def claim_rejected_email(tag: str, usd: float,
+                         service_label: str) -> tuple[str, str]:
+    """Sent when the desk's manual check can NOT match the claimed TXID to a
+    real deposit — closes the claim loop honestly."""
+    subject = f"Order {tag} — deposit could not be verified"
+    rows = _kv_rows([
+        ("Order", _html.escape(tag)),
+        ("Amount claimed", f"{_usd(usd)} USDT"),
+        ("Payout method", _html.escape(service_label)),
+        ("Status", "<span style='color:#c0271c'>Closed — no deposit received</span>"),
+    ])
+    inner = f"""{_badge("&#10005;", bg="#c0271c")}
+<h1 style="margin:0 0 10px;color:{_C_NAVY};font-size:23px;line-height:1.25">We could not verify a deposit for this order</h1>
+<p style="margin:0 0 6px;color:{_C_INK};font-size:15px;line-height:1.6">The desk checked the submitted transaction against our address on-chain and no matching USDT deposit was found. The order stays closed and <b>no payout will be made</b>.</p>
+{rows}
+<p style="margin:0 0 16px;color:{_C_INK};font-size:14px;line-height:1.65">
+If you believe this is a mistake, just reply to this email with your full
+transaction hash and a screenshot from your wallet — a human will re-check it
+personally.</p>
+{_ld_order(tag, service_label, 0.0, "OrderCancelled")}"""
+    return subject, inner
+
+
 def order_completed_email(tag: str, usd: float, rate: float, inr: float,
                           service_label: str, bank_label: str,
                           live_rates: dict[str, float] | None = None,
@@ -855,20 +934,29 @@ def verify_email_otp(uid: int, code: str) -> tuple[bool, str]:
 
 async def send_transactional(to_addr: str, to_name: str, subject: str,
                              inner_html: str, fail_bot=None,
-                             fail_uid: int = 0, stream: str = "tx") -> bool:
+                             fail_uid: int = 0, stream: str = "tx",
+                             legal: bool = False) -> bool:
     """Fire-and-forget single branded email (order confirmations/receipts).
     Never raises into the order flow; returns False when email isn't set up.
     Skips the unsubscribe list by design — these are receipts, not marketing —
     and carries no unsubscribe footer. When fail_bot + a positive fail_uid are
     given and the SMTP relay rejects the address, the Telegram user is told
     their email bounced so they can fix it with /email. `stream` picks the
-    From address ('tx' for order mail, 'otp' for verification codes)."""
+    From address ('tx' for order mail, 'otp' for verification codes);
+    legal=True adds the compliance footer (order lifecycle emails only)."""
     cfg = await email_config()
     if not email_ready(cfg) or not _EMAIL_RE.match((to_addr or "").strip()):
         return False
     cfg = _stream_cfg(cfg, stream)
+    tg_handle = ""
+    if legal:
+        async with Session() as s:
+            support = await get_setting(s, "support") or ""
+        tg_handle = next((h.lstrip("@") for h in support.split()
+                          if h.startswith("@")), "")
     body = brand_wrap(inner_html,
-                      contact=cfg.get("reply_to") or cfg["from_addr"])
+                      contact=cfg.get("reply_to") or cfg["from_addr"],
+                      legal=legal, tg_handle=tg_handle)
 
     async def _run():
         def _noop(_s, _f):
