@@ -163,8 +163,9 @@ async def get_bscscan_key(session: AsyncSession) -> str:
 
 
 async def bep20_active(session: AsyncSession) -> bool:
-    """BEP20 is live only when both the deposit address and an API key are set."""
-    return bool(await get_bep20_address(session)) and bool(await get_bscscan_key(session))
+    """BEP20 needs only an address now — BSC reads free public RPC nodes, so
+    no API key gates the second chain anymore."""
+    return bool(await get_bep20_address(session))
 
 
 # ── Per-network deposit QR (admin can upload a custom QR image per chain) ───────
