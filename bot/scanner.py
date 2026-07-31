@@ -304,50 +304,98 @@ def bsc_transfer_amount(tx: dict) -> float | None:
         return None
 
 
-async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
-                              min_ts: int, key: str) -> list[dict]:
-    """Inbound USDT (BEP20) transfers to `address` with a block time after
-    `min_ts` (unix seconds), via BscScan/Etherscan-v2, oldest-first across pages
-    (so a burst larger than one page is never dropped). Never lets the key-bearing
-    request URL reach the logs."""
-    base = {
-        "chainid": str(settings.bsc_chainid), "module": "account", "action": "tokentx",
-        "contractaddress": settings.bep20_usdt_contract, "address": address,
-        "sort": "desc", "offset": str(settings.scan_page_limit), "apikey": key,
-    }
-    out: list[dict] = []
-    for page in range(1, settings.scan_max_pages + 1):
-        params = {**base, "page": str(page)}
+# ERC20 Transfer(address,address,uint256) event signature
+_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+_BSC_BLOCK_SECS = 3                 # BSC block time — used to size scan windows
+_BSC_MAX_BLOCKS = 40_000            # ~33h; public getLogs range limits
+
+
+def _pad_topic_addr(addr: str) -> str:
+    """0x… address → 32-byte topic form (lower-cased)."""
+    return "0x" + "0" * 24 + (addr or "").lower().removeprefix("0x")
+
+
+async def _bsc_rpc(http: aiohttp.ClientSession, method: str, params: list):
+    """One JSON-RPC call against the public BSC node, with a fallback node.
+    Raises BscApiError on failure — callers must never read that as 'no data'."""
+    body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    last = "unknown"
+    for url in (settings.bsc_rpc_url, settings.bsc_rpc_fallback):
+        if not url:
+            continue
         try:
-            async with http.get(settings.bscscan_url, params=params) as resp:
+            async with http.post(url, json=body) as resp:
                 resp.raise_for_status()
                 payload = await resp.json()
-        except Exception as e:                     # never log the URL (carries the apikey)
-            log.warning("BSC fetch failed: %s", type(e).__name__)
-            raise BscApiError(type(e).__name__) from None
-        if str(payload.get("status")) != "1":
-            # status "0" covers BOTH a genuinely empty page and API errors —
-            # telling them apart is what keeps a rate-limited claim check from
-            # reading as "your tx doesn't exist" on a customer's face
-            note = f"{payload.get('message') or ''} {payload.get('result') or ''}"
-            if "no transactions" in note.lower():
-                break                              # really nothing (more) here
-            log.warning("BSC api NOTOK: %s", note.strip()[:120])
-            raise BscApiError("api NOTOK")
-        rows = payload.get("result") or []
-        reached_old = False
-        for tx in rows:                            # newest-first
-            try:
-                ts = int(tx.get("timeStamp", 0) or 0)
-            except (TypeError, ValueError):
-                continue
-            if ts <= min_ts:
-                reached_old = True                 # everything past here is older too
-                break
-            if (tx.get("to") or "").lower() == address.lower():
-                out.append(tx)
-        if reached_old or len(rows) < settings.scan_page_limit:
-            break
+        except Exception as e:
+            last = type(e).__name__
+            continue
+        if "error" in payload:
+            last = str(payload["error"])[:120]
+            continue
+        return payload.get("result")
+    log.warning("BSC rpc %s failed on both nodes: %s", method, last)
+    raise BscApiError(f"rpc {method}: {last}")
+
+
+async def _bsc_block_ts(http: aiohttp.ClientSession, block_hex: str,
+                        cache: dict) -> int:
+    if block_hex in cache:
+        return cache[block_hex]
+    blk = await _bsc_rpc(http, "eth_getBlockByNumber", [block_hex, False])
+    ts = int(blk.get("timestamp", "0x0"), 16) if blk else 0
+    cache[block_hex] = ts
+    return ts
+
+
+def _bsc_log_row(lg: dict, ts: int) -> dict:
+    """A raw Transfer log → the row shape the credit path has always used
+    (BscScan tokentx style), so nothing downstream changes."""
+    return {"hash": (lg.get("transactionHash") or "").lower(),
+            "to": "0x" + (lg.get("topics") or ["", "", ""])[2][-40:],
+            "contractAddress": lg.get("address") or "",
+            "value": str(int(lg.get("data") or "0x0", 16)),
+            "tokenDecimal": "18",
+            "timeStamp": str(ts)}
+
+
+async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
+                              min_ts: int, key: str = "") -> list[dict]:
+    """Inbound USDT (BEP20) transfers to `address` with a block time after
+    `min_ts` (unix seconds) — read straight from public BSC JSON-RPC
+    (eth_getLogs on the USDT contract, filtered to our address as receiver).
+    Free and keyless: Etherscan dropped BSC from its free API plan, and the
+    desk must never depend on a paid data plan to see its own deposits.
+    `key` is accepted for signature compatibility and ignored. Only blocks at
+    least `bsc_confirmations` behind head are returned (settled money only).
+    Raises BscApiError on node failure — never 'no transfers'."""
+    head = int(await _bsc_rpc(http, "eth_blockNumber", []), 16)
+    safe_head = head - settings.bsc_confirmations
+    now_s = int(time.time())
+    blocks_back = (max(0, now_s - min_ts) // _BSC_BLOCK_SECS) + 400
+    if blocks_back > _BSC_MAX_BLOCKS:
+        # a very old watermark (long downtime) — scan the max window; anything
+        # older is recoverable through the claim flow, and we say so loudly
+        log.warning("BSC scan window clamped to ~%dh — older deposits need a "
+                    "TXID claim", _BSC_MAX_BLOCKS * _BSC_BLOCK_SECS // 3600)
+        blocks_back = _BSC_MAX_BLOCKS
+    from_block = max(1, safe_head - blocks_back)
+    logs = await _bsc_rpc(http, "eth_getLogs", [{
+        "fromBlock": hex(from_block), "toBlock": hex(safe_head),
+        "address": settings.bep20_usdt_contract,
+        "topics": [_TRANSFER_TOPIC, None, _pad_topic_addr(address)],
+    }]) or []
+    out: list[dict] = []
+    ts_cache: dict = {}
+    for lg in logs:                                # node returns oldest-first
+        if lg.get("removed"):
+            continue
+        ts = await _bsc_block_ts(http, lg.get("blockNumber") or "0x0", ts_cache)
+        if ts <= min_ts:
+            continue
+        row = _bsc_log_row(lg, ts)
+        if row["to"].lower() == (address or "").lower():
+            out.append(row)
     return out
 
 
@@ -369,17 +417,16 @@ async def bsc_watermark(session, address: str) -> int:
 
 
 async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
-    from .db import bep20_active, get_bep20_address, get_bscscan_key
+    from .db import bep20_active, get_bep20_address
     async with Session() as session:
         if not await bep20_active(session):
             return
         address = await get_bep20_address(session)
-        key = await get_bscscan_key(session)
         watermark = await bsc_watermark(session, address)
     try:
-        transfers = await fetch_bsc_transfers(http, address, watermark, key)
+        transfers = await fetch_bsc_transfers(http, address, watermark)
     except Exception as e:
-        log.warning("BSC scan fetch failed: %s", type(e).__name__)   # no key in logs
+        log.warning("BSC scan fetch failed: %s", type(e).__name__)
         return
     newest = watermark
     for tx in transfers:
@@ -397,38 +444,57 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
 
 async def lookup_bsc_tx(txid: str, since_ms: int,
                         address: str | None = None) -> dict:
-    """Look up a BEP20 TXID on-chain (BscScan) to verify a claim / reconcile the
-    actual amount. `address` should be the ORDER's own BSC address (the one the
-    customer was shown) — falling back to the currently configured one. Without
-    that, rotating the desk's BEP20 address would make every older order's
-    claim read as "not found" despite a perfectly good payment.
-    Returns the same shape as lookup_claim_tx (timestamp in ms)."""
-    from .db import get_bep20_address, get_bscscan_key
+    """Look up a BEP20 TXID by RECEIPT on public RPC — a true by-hash, any-
+    destination lookup: it reports where the transfer actually went, so a
+    wrong-address claim is declined with proof instead of a vague not-found.
+    `address` should be the ORDER's own BSC address (falls back to the
+    configured one) — that's what to_ok is judged against.
+    Returns the lookup_claim_tx shape (timestamp in ms)."""
+    from .db import get_bep20_address
     async with Session() as session:
-        key = await get_bscscan_key(session)
-        address = address or await get_bep20_address(session)
-        if not address or not key:
-            return {"found": False, "error": False}
+        address = address or await get_bep20_address(session) or ""
     timeout = aiohttp.ClientTimeout(total=15)
-    transfers = None
-    for attempt in (1, 2, 3):        # ride out a rate-limit blip from the 5s scanner
+    for attempt in (1, 2, 3):                  # ride out a public-node blip
         try:
             async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as http:
-                transfers = await fetch_bsc_transfers(http, address, 0, key)
-            break
+                receipt = await _bsc_rpc(http, "eth_getTransactionReceipt",
+                                         [(txid or "").lower()])
+                if receipt is None:
+                    return {"found": False, "error": False}   # not mined / unknown
+                if (receipt.get("status") or "0x1") != "0x1":
+                    return {"found": False, "error": False}   # reverted — no money moved
+                usdt = settings.bep20_usdt_contract.lower()
+                best = None
+                for lg in receipt.get("logs") or []:
+                    topics = lg.get("topics") or []
+                    if ((lg.get("address") or "").lower() != usdt
+                            or len(topics) < 3 or topics[0] != _TRANSFER_TOPIC):
+                        continue
+                    to = "0x" + topics[2][-40:]
+                    row = {"to": to, "value": str(int(lg.get("data") or "0x0", 16))}
+                    if to.lower() == address.lower():
+                        best = row
+                        break                     # the transfer that paid US wins
+                    best = best or row            # else report where it DID go
+                if best is None:
+                    return {"found": False, "error": False}   # no USDT transfer inside
+                ts = 0
+                try:
+                    blk = await _bsc_rpc(http, "eth_getBlockByNumber",
+                                         [receipt.get("blockNumber") or "0x0", False])
+                    ts = int(blk.get("timestamp", "0x0"), 16) if blk else 0
+                except BscApiError:
+                    pass                          # timestamp is advisory only
+                amount = int(best["value"]) / (10 ** 18)
+                return {"found": True, "error": False, "amount": amount,
+                        "to": best["to"],
+                        "to_ok": best["to"].lower() == address.lower(),
+                        "timestamp": ts * 1000}
         except Exception as e:
             if attempt == 3:
-                log.warning("BSC claim lookup failed: %s", type(e).__name__)  # no key in logs
+                log.warning("BSC claim lookup failed: %s", type(e).__name__)
                 return {"found": False, "error": True}
             await asyncio.sleep(1.5)
-    for tx in transfers:
-        if (tx.get("hash") or "").lower() == (txid or "").lower():
-            return {"found": True, "error": False,
-                    "amount": bsc_transfer_amount(tx),
-                    "to": tx.get("to") or "",
-                    "to_ok": (tx.get("to") or "").lower() == address.lower(),
-                    "timestamp": int(tx.get("timeStamp", 0) or 0) * 1000}
-    return {"found": False, "error": False}
 
 
 async def expire_stale_orders(bot: Bot) -> None:

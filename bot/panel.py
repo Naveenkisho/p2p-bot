@@ -983,8 +983,8 @@ async def settings_get(request: web.Request):
             f"<input name=addr value='{_esc(addr)}'>"
             "<label>🟡 BEP20 (BSC) deposit address — 0x… (blank = off)</label>"
             f"<input name=addr_bep20 value='{_esc(bep20)}'>"
-            "<label>BscScan / Etherscan API key "
-            f"({'set ✓ — blank keeps it' if bsc_key_set else 'needed to detect BEP20'})</label>"
+            "<label>BscScan / Etherscan API key (no longer needed — BSC reads "
+            f"free public RPC nodes directly{'; a key is stored' if bsc_key_set else ''})</label>"
             "<input type=password name=bscscan_key autocomplete=off placeholder='••••••'>"
             "</div>"
 
