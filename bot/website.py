@@ -895,7 +895,7 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name=description content="{_esc(desc)}">{_FAVICON}{head_extra}
-<title>{_esc(title)}</title><style>{_STYLE}</style></head><body>
+<title>{_esc(title)}</title><style>{_STYLE}{_TRUST_CSS}</style></head><body>
 <div class="wrap{' wide' if wide else ''}">
 <div class=topbar><a href="/" class=brand><span class=dot></span>P2P Desk</a>
 <nav class=topnav>{_NAVLINKS}</nav>
@@ -980,6 +980,39 @@ def _email_pill(email: str) -> str:
 # ── brand SVG graphics (self-drawn; no external images, CSP-safe) ─────────────
 # Clean vector guides in the site palette (navy #0e1330 / green #00c26f). Each
 # scales fluidly (viewBox + width:100%) and carries a role/label for a11y.
+
+_TRUST_POINTS = [
+    ("Full INR paid", "no 1% TDS deducted"),
+    ("100% clean, verified funds", "every rupee from legitimate sources"),
+    ("No cyber-complaint or freeze risk", "clean funds can't be traced to a scam"),
+    ("Private &amp; on-chain verified", "proof shared on every completed deal"),
+]
+
+
+def _trust_strip() -> str:
+    """Highlighted reassurance strip shown wherever prices appear — every claim
+    is backed by the clean-funds guarantee (nothing here promises tax evasion
+    or non-cooperation with authorities; it's the customer-safety that verified
+    clean funds actually deliver)."""
+    pills = "".join(
+        f"<div class=tpill><span class=tcheck>&#10003;</span><div>"
+        f"<b>{a}</b><br><span class=tsub>{b}</span></div></div>"
+        for a, b in _TRUST_POINTS)
+    return (f"<div class=trust>{pills}</div>")
+
+
+_TRUST_CSS = """
+.trust{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
+.tpill{display:flex;gap:9px;align-items:flex-start;background:var(--accent-soft,#e1f9ee);
+ border:1px solid #bdead2;border-radius:12px;padding:11px 13px}
+.tpill b{color:#0e1330;font-size:.92rem;line-height:1.25}
+.tcheck{flex:none;width:20px;height:20px;border-radius:50%;background:#00c26f;color:#062b1a;
+ font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.tsub{color:#3c6b53;font-size:.78rem;line-height:1.3}
+@media(max-width:760px){.trust{grid-template-columns:1fr 1fr}}
+@media(max-width:420px){.trust{grid-template-columns:1fr}}
+"""
+
 
 def _figure(svg: str, caption: str = "") -> str:
     cap = (f"<figcaption style='color:#5a657d;font-size:.85rem;margin-top:8px;"
@@ -1106,6 +1139,7 @@ Telegram, now on the web.</p>
 <p class='muted small' style="margin:10px 0 0">Rates are live — the rate you see when you
 order is the rate you're paid at. Networks accepted: <b>{nets}</b>.</p>
 {_figure(_SVG_RATE, "The live rate is locked the moment you order — you're paid at exactly that rate.")}</div>
+{_trust_strip()}
 <h2>How it works</h2>
 <div class=card>{_figure(_SVG_FLOW)}<div class=steps3>
 <div class=step><div class=n>1</div><div><b>Choose method &amp; amount</b><br>
@@ -2036,8 +2070,23 @@ async def _sell_form(request: web.Request, error: str = "",
         else:
             card_pick = ""
             nb_style = ""
+        from . import banks as _banks
+        pbank = p.get("bank", "")
+        bank_opts = ("<option value='' disabled" +
+                     (" selected" if not pbank else "") + ">Select your bank…</option>"
+                     + "".join(
+                         f"<option{' selected' if n == pbank else ''}>{_esc(n)}</option>"
+                         for n in _banks.bank_names()))
+        pat = p.get("acctype", "")
+        acctype_opts = ("<option value='' disabled" +
+                        (" selected" if not pat else "") + ">Type…</option>"
+                        + "".join(
+                            f"<option{' selected' if t == pat else ''}>{_esc(t)}</option>"
+                            for t in _banks.ACCOUNT_TYPES))
+        bank_codes_js = json.dumps({n: c for n, c in _banks.BANKS})
         body = f"""
 <h1>Sell USDT</h1>
+{_trust_strip()}
 <p class='muted small'>Fill this once — your deposit address and exact amount come next.
 The quote stays live for {ttl} minutes after you submit.</p>
 {err}
@@ -2059,13 +2108,20 @@ The quote stays live for {ttl} minutes after you submit.</p>
 {card_pick}
 <div id=newbank{nb_style}>
 <label>Account holder name</label>
-<input name=holder value="{_esc(p.get('holder', ''))}">
-<label>Bank name</label>
-<input name=bank value="{_esc(p.get('bank', ''))}">
-<label>Account number</label>
-<input name=account inputmode=numeric value="{_esc(p.get('account', ''))}">
-<label>IFSC</label>
-<input name=ifsc value="{_esc(p.get('ifsc', ''))}">
+<input name=holder autocomplete="name" value="{_esc(p.get('holder', ''))}">
+<label>Bank</label>
+<select name=bank id=bank>{bank_opts}</select>
+<div class=row style="gap:12px">
+<div style="flex:2"><label>Account number</label>
+<input name=account id=acct inputmode=numeric autocomplete="off"
+ value="{_esc(p.get('account', ''))}"></div>
+<div style="flex:1"><label>Account type</label>
+<select name=acctype id=acctype>{acctype_opts}</select></div></div>
+<label>IFSC code</label>
+<input name=ifsc id=ifsc autocapitalize=characters autocomplete="off" maxlength=11
+ placeholder="e.g. HDFC0001234" value="{_esc(p.get('ifsc', ''))}"
+ style="text-transform:uppercase">
+<p class=hint id=ifschint style="margin:6px 0 0"></p>
 </div>
 <div style="margin-top:18px"><button class=btn id=go>Get my deposit address →</button></div>
 </div></form>
@@ -2095,7 +2151,7 @@ function upd(){
   go.disabled=false;go.style.opacity=1}
 svc.addEventListener('change',upd);usd.addEventListener('input',upd);upd();
 var pick=document.getElementById('cardpick'),nb=document.getElementById('newbank');
-function bankReq(on){['holder','bank','account','ifsc'].forEach(function(n){
+function bankReq(on){['holder','bank','account','ifsc','acctype'].forEach(function(n){
   var el=document.getElementsByName(n)[0];if(el)el.required=on});}
 function updBank(){
   if(!pick){bankReq(true);return}
@@ -2103,6 +2159,22 @@ function updBank(){
   var isNew=!sel||sel.value==='new';
   nb.style.display=isNew?'':'none';bankReq(isNew);}
 if(pick)pick.addEventListener('change',updBank);updBank();
+// live IFSC ↔ bank check: the 4-letter IFSC prefix must match the picked bank
+var CODES=""" + bank_codes_js + """;
+var bsel=document.getElementById('bank'),ifsc=document.getElementById('ifsc'),
+    ih=document.getElementById('ifschint');
+function ifscChk(){
+  if(!ifsc||!ih)return true;
+  var v=(ifsc.value||'').toUpperCase().replace(/\\s/g,'');ifsc.value=v;
+  var bank=bsel?bsel.value:'',code=CODES[bank]||'';
+  if(!v){ih.className='hint';ih.textContent=code?('This bank\\u2019s IFSC starts with '+code+'0'):'';return false}
+  if(!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(v)){ih.className='hint bad';
+    ih.textContent='IFSC should be 11 chars, e.g. HDFC0001234.';return false}
+  if(code&&v.slice(0,4)!==code){ih.className='hint bad';
+    ih.textContent='That IFSC isn\\u2019t '+bank+' \\u2014 its codes start with '+code+'0.';return false}
+  ih.className='hint';ih.innerHTML='\\u2713 IFSC looks valid';ih.style.color='var(--ok)';return true}
+if(ifsc){ifsc.addEventListener('input',ifscChk)}
+if(bsel){bsel.addEventListener('change',function(){ih.style.color='';ifscChk()})}
 </script>""")
         # Staged submit overlay: the browser POST is near-instant, so without
         # this the "processing" moment is invisible. Steps tick while the form
@@ -2217,14 +2289,14 @@ async def sell_post(request: web.Request):
         return await _sell_form(request, "That form expired — please try again.")
     prefill = {k: str(data.get(k, "")).strip()
                for k in ("service", "usd", "holder", "bank", "account", "ifsc",
-                         "network", "card_id")}
+                         "acctype", "network", "card_id")}
     ip = _client_ip(request)
     if _throttled(ip):
         return await _sell_form(request, "Too many orders from this connection — "
                                 "please wait a while or contact support.", prefill)
 
     from .handlers.sell import _tag_amount
-    from .handlers.start import bank_details_error, make_bank_label
+    from .handlers.start import make_bank_label
 
     service = prefill["service"]
     try:
@@ -2236,18 +2308,28 @@ async def sell_post(request: web.Request):
     reuse_card_id = int(prefill["card_id"]) if prefill["card_id"].isdigit() else None
     details = ""
     if reuse_card_id is None:
+        from . import banks as _banks
+        bank = prefill["bank"]
+        ifsc = _banks.norm_ifsc(prefill["ifsc"])
+        prefill["ifsc"] = ifsc                       # echo the normalised IFSC back
+        acctype = prefill["acctype"]
+        if not _banks.is_bank(bank):
+            return await _sell_form(request, "Please pick your bank from the list.", prefill)
+        if not (prefill["holder"] and prefill["account"].isdigit()
+                and 6 <= len(prefill["account"]) <= 20):
+            return await _sell_form(request, "Please check the details — the account "
+                                    "number should be digits only (6–20).", prefill)
+        if not _banks.acct_type_ok(acctype):
+            return await _sell_form(request, "Please choose the account type "
+                                    "(Savings or Current).", prefill)
+        ifsc_err = _banks.ifsc_error(bank, ifsc)
+        if ifsc_err:
+            return await _sell_form(request, ifsc_err, prefill)
+        if len(prefill["holder"]) > 80:
+            return await _sell_form(request, "That holder name looks too long.", prefill)
         # bank name first — make_bank_label derives "<Bank> ••1234" from line 0
-        details = (f"{prefill['bank']}\nA/c holder: {prefill['holder']}\n"
-                   f"A/C {prefill['account']}\nIFSC {prefill['ifsc']}")
-        if not (prefill["holder"] and prefill["bank"] and prefill["ifsc"]
-                and prefill["account"].isdigit() and len(prefill["account"]) >= 6):
-            return await _sell_form(request, "Please check the bank details — the account "
-                                    "number should be digits only (6+).", prefill)
-        bank_err = bank_details_error(details)
-        if bank_err:
-            return await _sell_form(request, bank_err, prefill)
-        if len(prefill["holder"]) > 80 or len(prefill["bank"]) > 60 or len(prefill["ifsc"]) > 20:
-            return await _sell_form(request, "Those bank details look too long.", prefill)
+        details = (f"{bank}\nA/c holder: {prefill['holder']}\n"
+                   f"A/C {prefill['account']}\nIFSC {ifsc}\nType: {acctype}")
 
     async with Session() as s:
         is_open, reason = await desk_state(s)
@@ -2957,6 +3039,7 @@ async def guarantee_page(request: web.Request):
     body = f"""
 <h1>The 100% Clean-Funds <span class=g>Guarantee</span></h1>
 {_figure(_SVG_GUARANTEE)}
+{_trust_strip()}
 <p class="muted lead">The biggest fear when selling USDT in India isn't the rate —
 it's receiving money from an unknown source and having your bank account frozen.
 Our entire desk is built so that can't happen to you.</p>
