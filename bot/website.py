@@ -210,6 +210,8 @@ _claim_times: dict[str, deque] = {}
 _CLAIM_MAX_PER_HOUR = 8
 # per-IP throttle for the on-demand "I've sent it" re-scan (each drives a sweep).
 _check_times: dict[str, deque] = {}
+_order_email_last: dict[int, float] = {}   # uid → last order-created email
+_ORDER_EMAIL_GAP = 600
 _CHECK_MAX_PER_MIN = 6
 # support-ticket throttle: bounds junk tickets per IP
 _ticket_times: dict[str, deque] = {}
@@ -759,6 +761,10 @@ summary.btn::-webkit-details-marker{display:none}
 summary.btn::marker{content:""}
 .confwrap{padding:16px 0 4px;text-align:center}
 .conftitle{font-weight:700;font-size:1.02rem;margin-bottom:12px}
+.okball{width:64px;height:64px;border-radius:50%;background:var(--accent-soft);
+ color:var(--accent-dark);display:flex;align-items:center;justify-content:center;
+ margin:0 auto 14px}
+.okball svg{width:30px;height:30px}
 .confspin{width:46px;height:46px;border-radius:50%;margin:0 auto 14px;
  border:4px solid var(--accent-soft);border-top-color:var(--accent);
  animation:spin .9s linear infinite}
@@ -2688,7 +2694,14 @@ async def sell_post(request: web.Request):
     # VERIFIED address gets mail — unverified/fake signups stay silent.
     try:
         from . import sender as _sender
-        if acct.email and acct.email_verified:
+        now_m = time.monotonic()
+        recently = now_m - _order_email_last.get(uid, -1e9) < _ORDER_EMAIL_GAP
+        if len(_order_email_last) > 5000:      # bound the in-process map
+            cutoff = now_m - _ORDER_EMAIL_GAP
+            for k in [k for k, v in _order_email_last.items() if v < cutoff]:
+                _order_email_last.pop(k, None)
+        if acct.email and acct.email_verified and not recently:
+            _order_email_last[uid] = now_m
             base = ((settings.site_url or "").rstrip("/")
                     or ("https://" if _is_https(request) else "http://")
                     + request.host)
@@ -2737,6 +2750,9 @@ async def order_page(request: web.Request):
     fabs = _fabs_html(support, whatsapp)
     csrf = await _csrf(f"o:{token}")
     nav = await _nav_acct(request)
+    from . import scanner as _scanner
+    seen_pair = _scanner.deposit_seen.get(order.id)
+    seen_tx = seen_pair[0] if seen_pair else ""
     st = order.status
     amt = texts.usd_str(order.usd_amount)
     dec = f".{amt.split('.')[1]}" if "." in amt else ""
@@ -2746,6 +2762,11 @@ async def order_page(request: web.Request):
                "<span class=d style='background:#2470ff'></span>")
     show_addr = order.display_address or order.deposit_address
     tagline = f"<code>{texts.tag(order.id)}</code>"
+    copy_svg = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+                'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+                '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>'
+                '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 '
+                '2 2v1"></path></svg>')
     claim_form = f"""
 <details id=claimwrap><summary class="btn ghost">Already sent the USDT? Submit your TXID</summary>
 <form method=post action="/o/{_esc(token)}/claim"><div class=card>
@@ -2762,6 +2783,8 @@ to our address is accepted.</p>
         warn = (f"<b>Include the {dec}</b> — send the EXACT amount, decimals and all. "
                 f"A wrong amount may not auto-detect." if dec else
                 "<b>Send the exact amount.</b>")
+        if seen_tx:
+            claim_form = ""      # deposit already visible — nothing to submit
         claim_note = ""
         if order.claim_txid:
             claim_note = ("<div class='banner warn'>Your TXID is <b>under review</b>"
@@ -2777,11 +2800,6 @@ to our address is accepted.</p>
             addr_html = f"<span class=pfx>0x</span>{_esc(show_addr[2:])}"
         else:
             addr_html = _esc(show_addr)
-        copy_svg = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
-                    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-                    '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>'
-                    '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 '
-                    '2 2v1"></path></svg>')
         body = f"""
 <div class=payhead>
 <div class=phrow><span class=phl>To pay:</span>
@@ -2804,16 +2822,16 @@ to our address is accepted.</p>
 <div class="pv amtv">{_esc(amt)} <span class=pvnet>USDT · {_esc(net_label)}</span></div></div>
 <button class=cico onclick="copyAmt(this)" title="Copy amount"
  aria-label="Copy amount">{copy_svg}</button></div>
-<div id=seenbn class=confwrap style="display:none">
+<div id=seenbn class=confwrap{'' if seen_tx else ' style=display:none'}>
 <div class=conftitle>Deposit detected on-chain</div>
 <div class=confspin></div>
 <div class=confnote>Confirming on the blockchain now — usually under a minute.
 This page updates by itself the moment it credits.</div>
-<div class=txrow><span class=txk>TxID</span><span class=txv id=seentx></span>
+<div class=txrow><span class=txk>TxID</span><span class=txv id=seentx>{_esc(seen_tx)}</span>
 <button class=cico onclick="copyTx(this)" title="Copy TxID"
  aria-label="Copy TxID">{copy_svg}</button></div>
 </div>
-<div id=qrwrap>
+<div id=qrwrap{' style=display:none' if seen_tx else ''}>
 <img class=qrimg src="/o/{_esc(token)}/qr.png" alt="Deposit QR"
  onerror="this.remove();var q=document.getElementById('qrhint');if(q)q.remove()">
 <p class=qrhint id=qrhint>Scan the QR code (it contains only the address), enter
@@ -2821,19 +2839,20 @@ the amount, and send the funds — or copy the address above.</p>
 </div>
 </div>
 <p class='muted small' style="margin:6px 2px 10px">{warn}</p>
-<div class=livestrip id=livestrip><span class=livedot></span>
+<div class=livestrip id=livestrip{' style=display:none' if seen_tx else ''}><span class=livedot></span>
 Waiting for payment — we watch the blockchain and this page updates by itself.</div>
-<button class=btn id=checkbtn onclick="checkNow()">I've sent it — check now</button>
+<button class=btn id=checkbtn onclick="checkNow()"{' style=display:none' if seen_tx else ''}>I've sent it — check now</button>
 <div id=checking class="banner warn" style="display:none"><span class="confspin sm"></span>Checking the blockchain…
 a fresh transfer is usually spotted within seconds and credits once it confirms.</div>
 {claim_form}
 <p class='muted small' style="margin:10px 0 4px">Sent the USDT but nothing happened?
 <a href="/support?order={_esc(token)}&amp;cat=deposit"><b>Create a support ticket</b></a>
 — admins are alerted instantly.</p>
+<div id=cancelwrap{' style=display:none' if seen_tx else ''}>
 <form method=post action="/o/{_esc(token)}/cancel"
  onsubmit="return confirm('Cancel this order? Only do this if you have NOT paid.')">
 <input type=hidden name=csrf value='{csrf}'>
-<button class="btn ghost">No, I'm not paid — cancel</button></form>
+<button class="btn ghost">No, I'm not paid — cancel</button></form></div>
 <p class='muted small'>Need help? {_support_html(support)} — mention {tagline}</p>
 <script>
 var deadline={deadline};
@@ -2855,7 +2874,7 @@ document.getElementById('checking').style.display='block';
 fetch('/o/{_esc(token)}/check',{{method:'POST',headers:{{'X-CSRF':'{csrf}'}}}});}}
 function showSeen(tx){{document.getElementById('seenbn').style.display='block';
 if(tx)document.getElementById('seentx').textContent=tx;
-['qrwrap','livestrip','checkbtn','checking','claimwrap'].forEach(function(i){{
+['qrwrap','livestrip','checkbtn','checking','claimwrap','cancelwrap'].forEach(function(i){{
 var e=document.getElementById(i);if(e)e.style.display='none';}});}}
 setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();
@@ -2867,18 +2886,35 @@ else if(j.seen)showSeen(j.txid);}})
 
     if st in (OrderStatus.DEPOSIT_RECEIVED.value, OrderStatus.PENDING_PAYOUT.value):
         qtxt = (f"You're <b>#{pos}</b> in the payout queue." if pos
-                else "Finalizing your payout…")
+                else "Finalizing your payout now.")
+        tx_full = order.txid or ""
+        tx_row = ""
+        if tx_full and tx_full != "manual":
+            tx_row = (f"<div class=txrow><span class=txk>TxID</span>"
+                      f"<span class=txv id=donetx>{_esc(tx_full)}</span>"
+                      f"<button class=cico onclick=\"copyDone(this)\" title=\"Copy TxID\""
+                      f" aria-label=\"Copy TxID\">{copy_svg}</button></div>"
+                      f"<p class='muted small' style='margin:8px 0 0;text-align:center'>"
+                      f"<a href=\"{_esc(explorer_tx(tx_full))}\" target=_blank "
+                      f"rel=noopener>View on the blockchain explorer</a></p>")
         body = f"""
-<h1>Deposit verified {tagline}</h1>
-<div class="banner ok"><b>{texts.usd_str(order.usd_amount)} USDT received &amp; verified on-chain.</b><br>
-<span class=small>₹{order.inr_amount:,.2f} is being paid to
-{_esc(bank_label)}. {qtxt}</span></div>
-<div class=card class=small><span class=muted>TX:</span>
-<code>{_esc((order.txid or '')[:20])}…</code>
-{f'<a href="{_esc(explorer_tx(order.txid))}" target=_blank rel=noopener>view on explorer</a>' if order.txid and order.txid != 'manual' else ''}</div>
+<div class=paybox style="text-align:center;padding-top:26px">
+<div class=okball><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+ stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M20 6 9 17l-5-5"></path></svg></div>
+<div class=conftitle style="font-size:1.3rem">Deposit received</div>
+<p class=confnote style="max-width:400px">
+<b>{texts.usd_str(order.usd_amount)} USDT</b> verified on-chain for order
+{tagline}. <b>₹{order.inr_amount:,.2f}</b> is on its way to
+{_esc(bank_label)}. {qtxt}</p>
+{tx_row}
+</div>
 <p class='muted small'>This page refreshes automatically — you can keep it open or come
 back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
-<script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
+<script>
+function copyDone(b){{navigator.clipboard.writeText(document.getElementById('donetx').textContent.trim())
+.then(function(){{b.classList.add('done');setTimeout(function(){{b.classList.remove('done')}},1200)}});}}
+setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
         return _page(f"Order {texts.tag(order.id)} — verified", body + fabs,
                      noindex=True, acct=nav)
@@ -2995,6 +3031,12 @@ async def order_cancel(request: web.Request):
     data = await request.post()
     if not hmac.compare_digest(str(data.get("csrf", "")), await _csrf(f"o:{token}")):
         raise web.HTTPForbidden(text="bad csrf")
+    from . import scanner as _scanner
+    seen_pair = _scanner.deposit_seen.get(order.id)
+    if seen_pair and time.monotonic() - seen_pair[1] < 1800:
+        # their deposit is already visible on-chain — "I'm not paid" is no
+        # longer true, and cancelling now would orphan real money mid-credit
+        raise web.HTTPFound(f"/o/{token}")
     async with Session() as s:
         updated = await try_transition(s, order.id, (OrderStatus.AWAITING_DEPOSIT,),
                                        OrderStatus.CANCELLED)
