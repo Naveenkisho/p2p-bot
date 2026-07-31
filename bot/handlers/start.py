@@ -3,7 +3,8 @@ import re
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (CallbackQuery, InlineKeyboardButton,
+                           InlineKeyboardMarkup, Message)
 from sqlalchemy import select
 
 from .. import texts
@@ -119,7 +120,8 @@ def _email_try_throttled(uid: int) -> bool:
     return False
 
 
-async def _submit_email(message: Message, cand: str) -> None:
+async def _submit_email(message: Message, cand: str,
+                        state: FSMContext | None = None) -> None:
     """One pasted address → instant activation (already verified anywhere in
     the system) or the OTP dance. Shared by /email, the guided flow, and the
     paste-an-email-in-chat shortcut."""
@@ -146,17 +148,26 @@ async def _submit_email(message: Message, cand: str) -> None:
             tg_ok = await session.scalar(select(User.id).where(
                 _f.lower(User.email) == low,
                 User.email_verified.is_(True), User.id != uid).limit(1))
-            if acct_ok or tg_ok:
-                u = await get_or_create_user(session, uid, message.from_user.username,
-                                             message.from_user.first_name)
-                u.email = cand
-                u.email_verified = True
-                await session.commit()
+        if acct_ok or tg_ok:
+            # instant activation would skip the OTP — so make the customer
+            # LOOK at the address once before any order mail can go there
+            # (a typo that hits someone else's registered address must never
+            # silently receive this user's order details)
+            if state is not None:
+                await state.set_state(EmailFlow.confirm)
+                await state.update_data(email=cand)
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Yes — send my receipts there",
+                                          callback_data="emconf:yes")],
+                    [InlineKeyboardButton(text="✏️ No — let me re-type it",
+                                          callback_data="emconf:no")]])
                 await message.answer(
-                    f"✅ <code>{esc(cand)}</code> is already verified with us — "
-                    "your order confirmations and payout receipts now go there. "
-                    "No code needed.\n<code>/email off</code> to stop.")
+                    "⚠️ <b>Please check this is YOUR address:</b>\n"
+                    f"<code>{esc(cand)}</code>\n\n"
+                    "Your order details and payout receipts will be sent "
+                    "there. Is it correct?", reply_markup=kb)
                 return
+            # no FSM context — fall through to the OTP, which proves ownership
     ok, result = await issue_email_otp(uid, cand)
     if not ok:
         await message.answer(f"⚠️ {esc(result)}")
@@ -201,7 +212,7 @@ async def cmd_email(message: Message, state: FSMContext) -> None:
                 "— e.g. <code>name@gmail.com</code>", reply_markup=cancel_kb())
             await state.set_state(EmailFlow.address)
         return
-    await _submit_email(message, arg)
+    await _submit_email(message, arg, state)
 
 
 @router.message(EmailFlow.address, F.text)
@@ -219,7 +230,72 @@ async def email_address_typed(message: Message, state: FSMContext) -> None:
             "<code>name@gmail.com</code>. Send it again, or tap ❌ Cancel.")
         return
     await state.clear()
-    await _submit_email(message, text)
+    await _submit_email(message, text, state)
+
+
+async def _activate_email(uid: int, username, first_name, cand: str) -> None:
+    from ..models import User
+    async with Session() as session:
+        u = await get_or_create_user(session, uid, username, first_name)
+        u.email = cand
+        u.email_verified = True
+        await session.commit()
+
+
+@router.callback_query(EmailFlow.confirm, F.data == "emconf:yes")
+async def email_confirm_yes(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    cand = (data.get("email") or "").strip()
+    await state.clear()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    if not cand:
+        await callback.answer("Expired — send the address again.", show_alert=True)
+        return
+    await _activate_email(callback.from_user.id, callback.from_user.username,
+                          callback.from_user.first_name, cand)
+    await callback.answer()
+    await callback.message.answer(
+        f"✅ <code>{esc(cand)}</code> confirmed — your order confirmations and "
+        "payout receipts now go there. No code needed.\n"
+        "<code>/email off</code> to stop.")
+
+
+@router.callback_query(EmailFlow.confirm, F.data == "emconf:no")
+async def email_confirm_no(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(EmailFlow.address)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer()
+    await callback.message.answer("No problem — send the correct address, "
+                                  "e.g. <code>name@gmail.com</code>")
+
+
+@router.callback_query(F.data.startswith("emconf:"))
+async def email_confirm_expired(callback: CallbackQuery) -> None:
+    await callback.answer("This check expired — just send your email address "
+                          "again.", show_alert=True)
+
+
+@router.message(EmailFlow.confirm, F.text)
+async def email_confirm_retype(message: Message, state: FSMContext) -> None:
+    """They typed instead of tapping — treat a fresh address as a correction;
+    a command closes the step."""
+    text = (message.text or "").strip()
+    await state.clear()
+    if text.startswith("/"):
+        return
+    from ..sender import _EMAIL_RE as _EM
+    if _EM.match(text):
+        await _submit_email(message, text, state)
+    else:
+        await message.answer("Tap one of the buttons above, or send the "
+                             "correct address like <code>name@gmail.com</code>.")
 
 
 @router.message(EmailFlow.address)
@@ -461,8 +537,8 @@ async def banks_remove(callback: CallbackQuery, callback_data: BankRmCb) -> None
 
 @router.message(StateFilter(None),
                 F.text.regexp(r"^\s*[^@\s]+@[^@\s]+\.[^@\s]+\s*$"))
-async def pasted_email(message: Message) -> None:
+async def pasted_email(message: Message, state: FSMContext) -> None:
     """A bare email pasted into the chat with no command — treat it as 'send my
-    receipts here'. Instant activation when it's already verified anywhere;
+    receipts here'. Already-verified addresses get the are-you-sure step;
     otherwise the usual 6-digit code."""
-    await _submit_email(message, (message.text or "").strip())
+    await _submit_email(message, (message.text or "").strip(), state)
