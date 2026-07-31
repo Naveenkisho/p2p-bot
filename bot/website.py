@@ -777,13 +777,36 @@ summary.btn::marker{content:""}
 .qrimg{display:block;margin:14px auto;width:190px;height:190px;border-radius:16px;
  background:#fff;padding:10px;border:1px solid var(--border)}
 .count{font-variant-numeric:tabular-nums;font-weight:900}
-.netpick{display:flex;gap:10px}
-.netpick label{flex:1;margin:0;border:1.5px solid var(--border);border-radius:16px;
- padding:14px;text-align:center;font-weight:800;color:var(--text);cursor:pointer;background:var(--surface)}
-.netpick input{display:none}
-.netpick input:checked+span{color:var(--accent-dark)}
-.netpick label:has(input:checked){border-color:var(--accent);background:var(--accent-soft);
- box-shadow:0 0 0 3px var(--accent-soft)}
+.selfield{display:flex;align-items:center;gap:10px;width:100%;border:1.5px solid var(--border);
+ border-radius:16px;padding:13px 16px;background:var(--surface);font-size:1rem;
+ font-weight:600;color:var(--text);font-family:inherit;text-align:left;cursor:default}
+button.selfield{cursor:pointer}
+.selfield .sic{width:30px;height:30px;border-radius:50%;background:#26a17b;color:#fff;
+ flex:0 0 30px;display:inline-flex;align-items:center;justify-content:center;
+ font-size:.95rem;font-weight:700}
+.selfield .phold{color:var(--faint);font-weight:500}
+.selfield .chev{margin-left:auto;color:var(--faint);width:20px;height:20px;flex:0 0 20px}
+.sheetback{position:fixed;inset:0;background:rgba(14,19,48,.45);z-index:90;opacity:0;
+ pointer-events:none;transition:opacity .25s}
+.sheetback.open{opacity:1;pointer-events:auto}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:91;background:var(--surface);
+ border-radius:22px 22px 0 0;padding:16px 18px calc(20px + env(safe-area-inset-bottom,0px));
+ box-shadow:0 -12px 40px rgba(14,19,48,.18);transform:translateY(105%);
+ transition:transform .3s cubic-bezier(.2,.7,.3,1)}
+.sheet.open{transform:none}
+.sheethead{display:flex;align-items:center;justify-content:space-between;
+ margin-bottom:6px;font-size:1.05rem}
+.sheetx{border:0;background:transparent;color:var(--text);width:34px;height:34px;
+ border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+ cursor:pointer;padding:0}
+.sheetx:hover{background:var(--surface-2)}
+.sheetx svg{width:18px;height:18px}
+.netopt{display:flex;align-items:center;gap:12px;padding:16px 2px;font-size:1.05rem;
+ font-weight:500;cursor:pointer}
+.netopt+.netopt{border-top:1px solid var(--border)}
+.netopt .badge{margin-left:auto;background:#fdf1d7;color:#b7791f;border-radius:999px;
+ padding:6px 13px;font-size:.78rem;font-weight:600}
+@media (prefers-reduced-motion:reduce){.sheet,.sheetback{transition:none}}
 .banner{border:0;border-left:5px solid var(--muted);background:var(--surface-2);
  border-radius:12px;padding:13px 15px;margin:12px 0}
 .banner.ok{border-left-color:var(--accent)} .banner.warn{border-left-color:var(--warn)}
@@ -2232,18 +2255,43 @@ async def _sell_form(request: web.Request, error: str = "",
         meta_js = json.dumps({k: {"lo": limits[k][0], "hi": limits[k][1],
                                   "rate": rates[k],
                                   "name": SERVICES.get(k, k)} for k in rates})
-        net_html = ""
+        chev = ('<svg class=chev viewBox="0 0 24 24" fill="none" '
+                'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+                'stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>')
+        cur_html = ("<label>Currency</label>"
+                    "<div class=selfield><span class=sic>\u20ae</span><b>USDT</b>"
+                    "<span class='muted small'>Tether</span></div>")
         if two_chains:
-            trc_sel = "checked" if p.get("network", "TRC20") == "TRC20" else ""
-            bep_sel = "checked" if p.get("network") == "BEP20" else ""
+            _net_names = {"BEP20": "BSC (BEP-20)", "TRC20": "Tron (TRC-20)"}
+            picked_net = p.get("network", "")
+            cur_label = _net_names.get(picked_net, "")
             net_html = (
-                "<label>Network you'll send USDT on</label><div class=netpick>"
-                f"<label><input type=radio name=network value=TRC20 {trc_sel}>"
-                "<span><span class=d style='background:#2470ff'></span> TRC20<br>"
-                "<span class='muted small'>TRON</span></span></label>"
-                f"<label><input type=radio name=network value=BEP20 {bep_sel}>"
-                "<span><span class=d style='background:#f0b90b'></span> BEP20<br>"
-                "<span class='muted small'>BSC</span></span></label></div>")
+                cur_html
+                + "<label>Select network</label>"
+                "<button type=button class=selfield id=netfield onclick='openSheet()' "
+                "aria-haspopup=listbox aria-controls=netsheet>"
+                f"<span id=netlabel class={'sel' if cur_label else 'phold'}>"
+                f"{cur_label or 'Select network'}</span>{chev}</button>"
+                f"<input type=hidden name=network id=netval value='{picked_net}'>"
+                "<div class=sheetback id=sheetback onclick='closeSheet()'></div>"
+                "<div class=sheet id=netsheet role=listbox aria-label='Select network'>"
+                "<div class=sheethead><b>Select network</b>"
+                "<button type=button class=sheetx onclick='closeSheet()' aria-label=Close>"
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+                'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+                '<path d="M18 6 6 18M6 6l12 12"></path></svg></button></div>'
+                "<div class=netopt role=option onclick=\"pickNet('BEP20','BSC (BEP-20)')\">"
+                "<span class=d style='background:#f0b90b'></span>BSC (BEP-20)"
+                "<span class=badge>Best choice</span></div>"
+                "<div class=netopt role=option onclick=\"pickNet('TRC20','Tron (TRC-20)')\">"
+                "<span class=d style='background:#2470ff'></span>Tron (TRC-20)</div>"
+                "</div>")
+        else:
+            # one chain configured — same calm fields, network shown fixed
+            net_html = (cur_html + "<label>Network</label>"
+                        "<div class=selfield>"
+                        "<span class=d style='background:#2470ff'></span>"
+                        "Tron (TRC-20)</div>")
         async with Session() as s:
             ttl = await get_deposit_ttl(s)
         err = f"<p class=err>{_esc(error)}</p>" if error else ""
@@ -2374,6 +2422,14 @@ function ifscPh(){if(!ifsc)return;var code=CODES[bsel?bsel.value:'']||'';
 if(ifsc){ifsc.addEventListener('input',ifscChk)}
 if(bsel){bsel.addEventListener('change',function(){ih.style.color='';ifscPh();ifscChk()})}
 ifscPh();
+var nsheet=document.getElementById('netsheet'),nback=document.getElementById('sheetback'),
+    nval=document.getElementById('netval'),nlab=document.getElementById('netlabel');
+function openSheet(){if(!nsheet)return;nback.classList.add('open');nsheet.classList.add('open')}
+function closeSheet(){if(!nsheet)return;nback.classList.remove('open');nsheet.classList.remove('open')}
+function pickNet(k,label){nval.value=k;nlab.textContent=label;nlab.className='sel';closeSheet()}
+var sform=document.getElementById('sellform');
+if(sform&&nval)sform.addEventListener('submit',function(e){
+  if(!nval.value){e.preventDefault();e.stopImmediatePropagation();openSheet()}});
 </script>""")
         # Staged submit overlay: the browser POST is near-instant, so without
         # this the "processing" moment is invisible. Steps tick while the form
