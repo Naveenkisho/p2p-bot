@@ -239,14 +239,20 @@ def _prune_seen() -> None:
 
 
 async def _note_unconfirmed(bot: Bot, tx: dict, address: str) -> None:
-    """Match one unconfirmed transfer to its awaiting order by unique amount
-    and announce the sighting. No state transition, no SeenTx row — if the
-    transfer never solidifies, nothing was promised or credited."""
+    """TRON wrapper: match one unconfirmed TronGrid transfer to its order."""
     txid = tx.get("transaction_id")
     amount = transfer_amount(tx)
-    if not txid or amount is None or amount <= 0:
-        return
     if (tx.get("to") or "") != address:
+        return
+    await _note_sighting(bot, txid, amount, address, "TRC20")
+
+
+async def _note_sighting(bot: Bot, txid: str, amount: float | None,
+                         address: str, chain: str) -> None:
+    """Match one just-mined (not yet settled) transfer to its awaiting order by
+    unique amount and announce the sighting. No state transition, no SeenTx
+    row — if the transfer never settles, nothing was promised or credited."""
+    if not txid or amount is None or amount <= 0:
         return
     async with Session() as session:
         if await session.get(SeenTx, txid) is not None:
@@ -268,7 +274,7 @@ async def _note_unconfirmed(bot: Bot, tx: dict, address: str) -> None:
     # same tx later lands in the confirmed sweep it is deduped, never double-paid.
     if instant:
         deposit_seen.pop(order.id, None)
-        await _credit_amount(bot, txid, amount, address, "TRC20")
+        await _credit_amount(bot, txid, amount, address, chain)
         return
     if order.id in deposit_seen:
         return
@@ -416,6 +422,35 @@ async def bsc_watermark(session, address: str) -> int:
     return int(raw) if raw and raw.isdigit() else int(utcnow().timestamp())
 
 
+async def _scan_bsc_seen(bot: Bot, http: aiohttp.ClientSession,
+                         address: str) -> None:
+    """Instant sighting for BSC: sweep the newest blocks still inside the
+    confirmation window (settled crediting ignores them) and announce
+    just-mined deposits — the order page flips to "detected, confirming now"
+    within seconds of the transfer being mined, same as the TRON side."""
+    async with Session() as session:
+        awaiting = await session.scalar(
+            select(Order.id).where(
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value).limit(1))
+    if awaiting is None:
+        return                          # nobody waiting — skip the extra call
+    head = int(await _bsc_rpc(http, "eth_blockNumber", []), 16)
+    logs = await _bsc_rpc(http, "eth_getLogs", [{
+        "fromBlock": hex(max(1, head - settings.bsc_confirmations)),
+        "toBlock": hex(head),
+        "address": settings.bep20_usdt_contract,
+        "topics": [_TRANSFER_TOPIC, None, _pad_topic_addr(address)],
+    }]) or []
+    for lg in logs:
+        if lg.get("removed"):
+            continue
+        row = _bsc_log_row(lg, 0)
+        if row["to"].lower() != (address or "").lower():
+            continue
+        await _note_sighting(bot, row["hash"], bsc_transfer_amount(row),
+                             address, "BEP20")
+
+
 async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
     from .db import bep20_active, get_bep20_address
     async with Session() as session:
@@ -423,6 +458,10 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
             return
         address = await get_bep20_address(session)
         watermark = await bsc_watermark(session, address)
+    try:
+        await _scan_bsc_seen(bot, http, address)
+    except Exception as e:
+        log.warning("BSC seen sweep failed: %s", type(e).__name__)
     try:
         transfers = await fetch_bsc_transfers(http, address, watermark)
     except Exception as e:
