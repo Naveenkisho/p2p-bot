@@ -56,25 +56,23 @@ OFFPAGE_ACTIONS = [
 
 
 def keyword_stats() -> dict:
-    """Parse content/KEYWORDS.md — {done, pending, next, total}."""
-    done = pending = 0
-    next_kw = ""
+    """Parse content/KEYWORDS.md — counts plus the actual keyword lists."""
+    done_list: list[str] = []
+    pending_list: list[str] = []
     try:
         text = _KEYWORDS_MD.read_text(encoding="utf-8")
     except OSError:
-        return {"done": 0, "pending": 0, "next": "", "total": 0}
+        return {"done": 0, "pending": 0, "next": "", "total": 0,
+                "done_list": [], "pending_list": []}
     for line in text.splitlines():
         m = re.match(r"^\|\s*\d+\s*\|\s*([^|]+?)\s*\|\s*(done|pending)\s*\|", line)
         if not m:
             continue
-        if m.group(2) == "done":
-            done += 1
-        else:
-            pending += 1
-            if not next_kw:
-                next_kw = m.group(1)
-    return {"done": done, "pending": pending, "next": next_kw,
-            "total": done + pending}
+        (done_list if m.group(2) == "done" else pending_list).append(m.group(1))
+    return {"done": len(done_list), "pending": len(pending_list),
+            "next": pending_list[0] if pending_list else "",
+            "total": len(done_list) + len(pending_list),
+            "done_list": done_list, "pending_list": pending_list}
 
 
 async def build_report() -> tuple[str, str]:
@@ -93,6 +91,18 @@ async def build_report() -> tuple[str, str]:
         f"{_html.escape(a['title'])}</a></li>" for a in arts[:3])
     subject = (f"SEO daily — {len(arts)} articles live, "
                f"{kw['pending']} keywords to go")
+    covered = " &middot; ".join(_html.escape(k) for k in kw["done_list"])
+    queue = "".join(
+        f"<li>{'<b>' if i == 0 else ''}{_html.escape(k)}"
+        f"{'</b> &larr; next' if i == 0 else ''}</li>"
+        for i, k in enumerate(kw["pending_list"]))
+    kw_lists = ""
+    if covered or queue:
+        kw_lists = f"""
+<p style='margin:14px 0 4px'><b>Keywords covered ({kw['done']})</b></p>
+<p style='margin:0;color:#5a6478;font-size:.85rem;line-height:1.7'>{covered or '&mdash;'}</p>
+<p style='margin:12px 0 4px'><b>Still in the queue ({kw['pending']})</b></p>
+<ol style='margin:0;padding-left:20px;color:#333;font-size:.9rem'>{queue or '<li>none</li>'}</ol>"""
     nxt = (f"<p style='margin:12px 0 0'><b>Next keyword to target:</b> "
            f"&ldquo;{_html.escape(kw['next'])}&rdquo;</p>" if kw["next"] else
            "<p style='margin:12px 0 0'><b>Keyword plan complete</b> — time to "
@@ -115,6 +125,7 @@ async def build_report() -> tuple[str, str]:
 <div style='color:#5a6478;font-size:.85rem'>keywords pending</div></td>
 </tr></table>
 {nxt}
+{kw_lists}
 <div style='background:#eef4ff;border-radius:10px;padding:14px;margin:16px 0'>
 <b>Today's off-page action — {_html.escape(action_title)}</b>
 <p style='margin:6px 0 0;color:#333'>{_html.escape(action_body)}</p></div>
