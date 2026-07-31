@@ -273,6 +273,15 @@ async def _account_from_request(request: web.Request) -> Account | None:
         return await s.get(Account, -uid - _ACCT_BASE)
 
 
+async def _nav_acct(request: web.Request) -> str:
+    """Top-bar chip label for the signed-in account. Order pages were the one
+    place not passing this to _page, so a signed-in customer watching their
+    payment saw a Sign up button — and understandably thought their account
+    was gone."""
+    a = await _account_from_request(request)
+    return (a.email or a.name) if a else ""
+
+
 def _hash_pw_sync(password: str, salt_hex: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode(),
                                bytes.fromhex(salt_hex), 200_000).hex()
@@ -732,11 +741,14 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .pill{display:inline-flex;align-items:center;gap:7px;background:var(--surface-2);
  border:1px solid var(--border);border-radius:999px;padding:6px 13px;
  font-size:.78rem;font-weight:800;color:var(--text)}
-.topay{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
- border-top:1px solid var(--border);margin-top:12px;padding:14px 2px 0}
-.topay .l{font-size:.9rem;color:var(--muted);font-weight:700}
-.topay .v{font-size:1.6rem;font-weight:900;letter-spacing:-.02em;
+.payhead{margin:6px 0 14px}
+.payhead .phrow{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.payhead .phl{font-size:1.2rem;font-weight:800}
+.payhead .phv{font-size:2rem;font-weight:900;letter-spacing:-.02em;
  font-variant-numeric:tabular-nums}
+.payhead .phsub{color:var(--muted);font-weight:700;margin:2px 0 12px}
+.payhead .phsub b{color:var(--accent-dark);font-size:1.15rem}
+.payhead .pills{justify-content:flex-start;margin:0}
 .livestrip{display:flex;align-items:center;gap:10px;background:var(--surface-2);
  border:1px solid var(--border);border-radius:14px;padding:12px 14px;margin:12px 0;
  font-size:.88rem;font-weight:700;color:var(--muted)}
@@ -2663,6 +2675,7 @@ async def order_page(request: web.Request):
                   else SERVICES.get(order.service, order.service))
     fabs = _fabs_html(support, whatsapp)
     csrf = await _csrf(f"o:{token}")
+    nav = await _nav_acct(request)
     st = order.status
     amt = texts.usd_str(order.usd_amount)
     dec = f".{amt.split('.')[1]}" if "." in amt else ""
@@ -2709,11 +2722,16 @@ to our address is accepted.</p>
                     '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 '
                     '2 2v1"></path></svg>')
         body = f"""
-<h1>Send your USDT {tagline}</h1>{claim_note}
-<div class=banner><b>You'll receive ₹{order.inr_amount:,.2f}</b>
-<span class=muted>→ {_esc(bank_label)}</span><br>
-<span class='muted small'>The rate is locked for <span id=cd class=count>--:--</span>
-· auto-verified in seconds after it confirms</span></div>
+<div class=payhead>
+<div class=phrow><span class=phl>To pay:</span>
+<span class=phv>{_esc(amt)} USDT</span></div>
+<div class=phsub>You receive <b>₹{order.inr_amount:,.2f}</b> → {_esc(bank_label)}</div>
+<div class=pills>
+<span class=pill>{net_dot} Network: {_esc(net_label)}</span>
+<span class=pill>Order {texts.tag(order.id)}</span>
+<span class=pill>Rate locked <span id=cd class=count>--:--</span></span>
+</div>
+</div>{claim_note}
 <div class=paybox>
 <div class=payrow><div class=pmain>
 <div class=pk>Wallet address for transfer:</div>
@@ -2739,13 +2757,7 @@ This page updates by itself the moment it credits.</div>
  onerror="this.remove();var q=document.getElementById('qrhint');if(q)q.remove()">
 <p class=qrhint id=qrhint>Scan the QR code (it contains only the address), enter
 the amount, and send the funds — or copy the address above.</p>
-<div class=pills>
-<span class=pill>{net_dot} Network: {_esc(net_label)}</span>
-<span class=pill>USDT only</span>
 </div>
-</div>
-<div class=topay><span class=l>To pay:</span>
-<span class=v>{_esc(amt)} USDT</span></div>
 </div>
 <p class='muted small' style="margin:6px 2px 10px">{warn}</p>
 <div class=livestrip id=livestrip><span class=livedot></span>
@@ -2790,7 +2802,7 @@ else if(j.seen)showSeen(j.txid);}})
 .catch(function(){{}});}},5000);
 </script>"""
         return _page(f"Order {texts.tag(order.id)} — send USDT", body + fabs,
-                     noindex=True)
+                     noindex=True, acct=nav)
 
     if st in (OrderStatus.DEPOSIT_RECEIVED.value, OrderStatus.PENDING_PAYOUT.value):
         qtxt = (f"You're <b>#{pos}</b> in the payout queue." if pos
@@ -2808,7 +2820,7 @@ back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
         return _page(f"Order {texts.tag(order.id)} — verified", body + fabs,
-                     noindex=True)
+                     noindex=True, acct=nav)
 
     if st == OrderStatus.COMPLETED.value:
         body = f"""
@@ -2819,7 +2831,7 @@ back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 <a class="btn ghost" href="/my">All my orders</a>
 <p class='muted small'>{_support_html(support)}</p>"""
         return _page(f"Order {texts.tag(order.id)} — paid", body + fabs,
-                     noindex=True)
+                     noindex=True, acct=nav)
 
     if st in (OrderStatus.EXPIRED.value, OrderStatus.CANCELLED.value):
         head = ("This quote expired" if st == OrderStatus.EXPIRED.value
@@ -2843,14 +2855,16 @@ back later from <a href="/my">My orders</a>. {_support_html(support)}</p>
 <p class='muted small'>{_support_html(support)} — mention {tagline}</p>
 <script>setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();}}).catch(function(){{}});}},8000);</script>"""
-        return _page(f"Order {texts.tag(order.id)}", body + fabs, noindex=True)
+        return _page(f"Order {texts.tag(order.id)}", body + fabs, noindex=True,
+                     acct=nav)
 
     # refund / rejected / anything else — simple status card
     body = f"""
 <h1>Order {tagline}</h1>
 <div class=banner>Status: <b>{_esc(st.replace('_', ' '))}</b></div>
 <p class='muted small'>{_support_html(support)} — mention {tagline}</p>"""
-    return _page(f"Order {texts.tag(order.id)}", body + fabs, noindex=True)
+    return _page(f"Order {texts.tag(order.id)}", body + fabs, noindex=True,
+                 acct=nav)
 
 
 
