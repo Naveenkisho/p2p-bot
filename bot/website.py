@@ -706,14 +706,41 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .hint{font-size:.86rem;color:var(--muted);margin:8px 2px 0;font-weight:600}
 .hint.bad{color:var(--danger)}
 .hint .inr{color:var(--accent-dark);font-weight:900}
-.amtbox{border:2px solid var(--accent);border-radius:18px;background:var(--accent-soft);
- text-align:center;padding:16px 10px;margin:12px 0}
-.amtbox .v{font-size:1.85rem;font-weight:900;letter-spacing:-.02em}
-.amtbox .l{font-size:.72rem;font-weight:800;letter-spacing:.08em;color:var(--muted);
- text-transform:uppercase}
-.addr{display:block;background:var(--surface-2);border:1.5px dashed var(--accent);
- border-radius:14px;padding:14px 15px;margin:10px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
- font-size:.92rem;word-break:break-all;color:var(--text)}
+.paybox{background:var(--surface);border:1.5px solid var(--border);border-radius:20px;
+ padding:4px 18px 16px;margin:14px 0;
+ box-shadow:0 10px 24px rgba(14,19,48,.08),0 2px 5px rgba(14,19,48,.04)}
+.payrow{display:flex;align-items:center;gap:12px;padding:14px 0;
+ border-bottom:1px solid var(--border)}
+.payrow .pmain{flex:1;min-width:0}
+.payrow .pk{font-size:.78rem;color:var(--muted);font-weight:700;margin-bottom:4px}
+.payrow .pv{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.94rem;
+ font-weight:600;word-break:break-all;color:var(--text)}
+.payrow .pv .pfx{color:var(--accent-dark);font-weight:800}
+.payrow .pv.amtv{font-family:inherit;font-size:1.35rem;font-weight:900;
+ letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.payrow .pv .pvnet{font-size:.86rem;color:var(--muted);font-weight:700;letter-spacing:0}
+.cico{flex:0 0 42px;width:42px;height:42px;border-radius:12px;border:1.5px solid var(--border);
+ background:var(--surface-2);color:var(--muted);display:inline-flex;align-items:center;
+ justify-content:center;cursor:pointer;padding:0;
+ transition:border-color .15s,color .15s,background .15s}
+.cico:hover{border-color:var(--accent);color:var(--accent-dark)}
+.cico.done{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-dark)}
+.cico svg{width:19px;height:19px}
+.qrhint{font-size:.8rem;color:var(--muted);text-align:center;margin:14px auto 0;
+ max-width:360px;font-weight:600}
+.pills{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0 2px}
+.pill{display:inline-flex;align-items:center;gap:7px;background:var(--surface-2);
+ border:1px solid var(--border);border-radius:999px;padding:6px 13px;
+ font-size:.78rem;font-weight:800;color:var(--text)}
+.topay{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+ border-top:1px solid var(--border);margin-top:12px;padding:14px 2px 0}
+.topay .l{font-size:.9rem;color:var(--muted);font-weight:700}
+.topay .v{font-size:1.6rem;font-weight:900;letter-spacing:-.02em;
+ font-variant-numeric:tabular-nums}
+.livestrip{display:flex;align-items:center;gap:10px;background:var(--surface-2);
+ border:1px solid var(--border);border-radius:14px;padding:12px 14px;margin:12px 0;
+ font-size:.88rem;font-weight:700;color:var(--muted)}
+.livestrip .livedot{flex:0 0 8px;margin:0}
 .qrimg{display:block;margin:14px auto;width:190px;height:190px;border-radius:16px;
  background:#fff;padding:10px;border:1px solid var(--border)}
 .count{font-variant-numeric:tabular-nums;font-weight:900}
@@ -2650,28 +2677,55 @@ to our address is accepted.</p>
                              else " — verifying it on-chain now.")
                           + " This page updates automatically.</div>")
             claim_form = ""      # one submission is in flight — no second form
+        # Heleket-style pay card: labelled rows with inline icon copy buttons,
+        # the 0x prefix tinted so eyes land on it, QR with its hint, and a live
+        # "watching the blockchain" strip the poll swaps for the seen banner.
+        if show_addr.startswith("0x"):
+            addr_html = f"<span class=pfx>0x</span>{_esc(show_addr[2:])}"
+        else:
+            addr_html = _esc(show_addr)
+        copy_svg = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+                    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+                    '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>'
+                    '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 '
+                    '2 2v1"></path></svg>')
         body = f"""
 <h1>Send your USDT {tagline}</h1>{claim_note}
 <div class=banner><b>You'll receive ₹{order.inr_amount:,.2f}</b>
 <span class=muted>→ {_esc(bank_label)}</span><br>
-<span class='muted small'>⏳ Quote expires in <span id=cd class=count>--:--</span>
+<span class='muted small'>⏳ The rate is locked for <span id=cd class=count>--:--</span>
 · auto-verified in seconds after it confirms</span></div>
-<div id=seenbn class="banner ok" style="display:none"><b>Deposit detected
+<div id=seenbn class="banner ok" style="display:none"><b>⚡ Deposit detected
 on-chain!</b> It's confirming now — usually under a minute. This page updates
 by itself the moment it credits.</div>
-<div class=card>
-<b>{net_dot} On {_esc(net_label)} — copy the address</b>
-<span class=addr id=addr>{_esc(show_addr)}</span>
-<button class="btn ghost" onclick="copyAddr(this)">Copy address</button>
+<div class=paybox>
+<div class=payrow><div class=pmain>
+<div class=pk>Wallet address for transfer:</div>
+<div class=pv id=addr>{addr_html}</div></div>
+<button class=cico onclick="copyAddr(this)" title="Copy address"
+ aria-label="Copy address">{copy_svg}</button></div>
+<div class=payrow><div class=pmain>
+<div class=pk>Transfer amount — send exactly:</div>
+<div class="pv amtv">{_esc(amt)} <span class=pvnet>USDT · {_esc(net_label)}</span></div></div>
+<button class=cico onclick="copyAmt(this)" title="Copy amount"
+ aria-label="Copy amount">{copy_svg}</button></div>
 <img class=qrimg src="/o/{_esc(token)}/qr.png" alt="Deposit QR"
- onerror="this.remove()">
-<b>Then send exactly</b>
-<div class=amtbox><div class=l>send exactly</div><div class=v>{_esc(amt)} USDT</div></div>
-<p class='muted small' style="margin:6px 0 0">{warn}</p>
+ onerror="this.remove();var q=document.getElementById('qrhint');if(q)q.remove()">
+<p class=qrhint id=qrhint>Scan the QR code (it contains only the address), enter
+the amount, and send the funds — or copy the address above.</p>
+<div class=pills>
+<span class=pill>{net_dot} Network: {_esc(net_label)}</span>
+<span class=pill>USDT only</span>
 </div>
-<button class=btn id=checkbtn onclick="checkNow()">I've sent it — check it</button>
+<div class=topay><span class=l>To pay:</span>
+<span class=v>{_esc(amt)} USDT</span></div>
+</div>
+<p class='muted small' style="margin:6px 2px 10px">{warn}</p>
+<div class=livestrip id=livestrip><span class=livedot></span>
+Waiting for payment — we watch the blockchain and this page updates by itself.</div>
+<button class=btn id=checkbtn onclick="checkNow()">I've sent it — check now</button>
 <div id=checking class="banner warn" style="display:none">Checking the blockchain…
-a fresh transfer takes ~a minute to confirm. This page updates automatically.</div>
+a fresh transfer is usually spotted within seconds and credits once it confirms.</div>
 {claim_form}
 <p class='muted small' style="margin:10px 0 4px">Sent the USDT but nothing happened?
 <a href="/support?order={_esc(token)}&amp;cat=deposit"><b>Create a support ticket</b></a>
@@ -2687,15 +2741,21 @@ function tick(){{var s=Math.max(0,Math.floor((deadline-Date.now())/1000));
 document.getElementById('cd').textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
 if(s<=0)setTimeout(function(){{location.reload()}},4000);}}
 tick();setInterval(tick,1000);
+var _TICK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>';
+function _flash(b){{var h=b.innerHTML;b.innerHTML=_TICK;b.classList.add('done');
+setTimeout(function(){{b.innerHTML=h;b.classList.remove('done')}},1400);}}
 function copyAddr(b){{navigator.clipboard.writeText(document.getElementById('addr').textContent.trim())
-.then(function(){{b.textContent='Copied';setTimeout(function(){{b.textContent='Copy address'}},1500)}});}}
+.then(function(){{_flash(b)}});}}
+function copyAmt(b){{navigator.clipboard.writeText('{_esc(amt)}')
+.then(function(){{_flash(b)}});}}
 function checkNow(){{var b=document.getElementById('checkbtn');b.disabled=true;b.style.opacity=.6;
 document.getElementById('checking').style.display='block';
 fetch('/o/{_esc(token)}/check',{{method:'POST',headers:{{'X-CSRF':'{csrf}'}}}});}}
 setInterval(function(){{fetch('/o/{_esc(token)}/status.json').then(r=>r.json())
 .then(function(j){{if(j.status!=='{st}')location.reload();
-else if(j.seen)document.getElementById('seenbn').style.display='block';}})
-.catch(function(){{}});}},6000);
+else if(j.seen){{document.getElementById('seenbn').style.display='block';
+var L=document.getElementById('livestrip');if(L)L.style.display='none';}}}})
+.catch(function(){{}});}},5000);
 </script>"""
         return _page(f"Order {texts.tag(order.id)} — send USDT", body + fabs,
                      noindex=True)
