@@ -317,9 +317,24 @@ async def decline_order(bot: Bot, order_id: int) -> tuple[bool, str]:
                   else "Order declined — couldn't DM the user ⚠️")
 
 
+_BCAST_TAGS = ("b", "i", "u", "s", "code")
+
+
 def compose_announcement(raw_text: str) -> str:
-    """Wrap an admin's plain message as a safe HTML announcement."""
-    return "📢 <b>Announcement</b>\n\n" + html.escape(raw_text.strip())
+    """Wrap an admin's message as a safe HTML announcement. Simple formatting
+    tags (<b> <i> <u> <s> <code>) are allowed when properly paired; anything
+    else stays escaped. If any allowed tag is unbalanced the WHOLE text falls
+    back to plain — a typo must never make Telegram reject the blast for
+    every recipient."""
+    raw = raw_text.strip()
+    text = html.escape(raw)
+    balanced = all(raw.count(f"<{t}>") == raw.count(f"</{t}>")
+                   for t in _BCAST_TAGS)
+    if balanced:
+        for t in _BCAST_TAGS:
+            text = (text.replace(f"&lt;{t}&gt;", f"<{t}>")
+                        .replace(f"&lt;/{t}&gt;", f"</{t}>"))
+    return "📢 <b>Announcement</b>\n\n" + text
 
 
 async def broadcast(bot: Bot, text: str, to_proof: bool = False) -> tuple[int, int]:
