@@ -1506,40 +1506,72 @@ async def users_export(request: web.Request):
     WhatsApp Business broadcast list. The phones export also carries every
     number a customer has moved away from (status=previous), so a number an
     account once used is never dropped from a bulk list."""
-    from .models import PhoneHistory
+    from .models import BankCard, PhoneHistory, User
     kind = request.match_info["kind"]
     if kind not in ("emails", "phones"):
         raise web.HTTPNotFound()
+    _ACCT_BASE = 1 << 48                # website account → its stable user id
     async with Session() as s:
         accounts = (await s.scalars(select(Account)
                                     .order_by(Account.id.desc()))).all()
+        # bot users who verified an email in Telegram (no account row)
+        bot_users = (await s.scalars(select(User).where(
+            User.id > 0, User.email != "", User.email_verified.is_(True))
+            .order_by(User.id.desc()))).all()
+        # newest saved bank per customer, one query for everyone
+        uids = ([-( _ACCT_BASE + a.id) for a in accounts]
+                + [u.id for u in bot_users])
+        banks: dict[int, str] = {}
+        if uids:
+            for c in (await s.scalars(select(BankCard).where(
+                    BankCard.user_id.in_(uids)).order_by(BankCard.id))).all():
+                banks[c.user_id] = c.details.replace("\n", " | ")
         history = []
         if kind == "phones":
             names = {a.id: (a.name or "") for a in accounts}
             history = (await s.scalars(
                 select(PhoneHistory).order_by(PhoneHistory.id.desc()))).all()
+
+    def acct_bank(a) -> str:
+        return banks.get(-(_ACCT_BASE + a.id), "")
+
     buf = io.StringIO()
     w = csv.writer(buf)
     if kind == "emails":
-        w.writerow(["email", "name"])
+        w.writerow(["email", "name", "phone", "daily_stock", "bank",
+                    "verified", "source"])
         for a in accounts:
             if a.email:
-                w.writerow([_csv_safe(a.email), _csv_safe(a.name or "")])
+                w.writerow([_csv_safe(x) for x in
+                            (a.email, a.name or "", a.phone or "",
+                             a.stock or "", acct_bank(a),
+                             "yes" if a.email_verified else "no", "website")])
+        for u in bot_users:
+            w.writerow([_csv_safe(x) for x in
+                        (u.email, u.first_name or "", "", "",
+                         banks.get(u.id, ""), "yes", "telegram")])
     else:
-        w.writerow(["phone", "name", "status", "changed_at"])
+        w.writerow(["phone", "name", "email", "daily_stock", "bank",
+                    "status", "changed_at"])
         seen: set[str] = set()
         for a in accounts:
             if a.phone:
                 seen.add(a.phone)
                 w.writerow([_csv_safe(x) for x in
-                            (a.phone, a.name or "", "current", "")])
+                            (a.phone, a.name or "", a.email or "",
+                             a.stock or "", acct_bank(a), "current", "")])
         # previous numbers, most-recent first; skip any that's still someone's
         # current number so the list has no duplicates
+        by_id = {a.id: a for a in accounts}
         for h in history:
             if h.old_phone and h.old_phone not in seen:
                 seen.add(h.old_phone)
+                owner = by_id.get(h.account_id)
                 w.writerow([_csv_safe(x) for x in
                             (h.old_phone, names.get(h.account_id, ""),
+                             owner.email if owner else "",
+                             owner.stock if owner else "",
+                             acct_bank(owner) if owner else "",
                              "previous", f"{h.changed_at:%Y-%m-%d}")])
     return web.Response(
         body=("﻿" + buf.getvalue()).encode("utf-8"),
