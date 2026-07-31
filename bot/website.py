@@ -2262,13 +2262,17 @@ function ifscChk(){
   var v=(ifsc.value||'').toUpperCase().replace(/\\s/g,'');ifsc.value=v;
   var bank=bsel?bsel.value:'',code=CODES[bank]||'';
   if(!v){ih.className='hint';ih.textContent=code?('This bank\\u2019s IFSC starts with '+code+'0'):'';return false}
+  var ex=code?(code+'0001234'):'HDFC0001234';
   if(!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(v)){ih.className='hint bad';
-    ih.textContent='IFSC should be 11 chars, e.g. HDFC0001234.';return false}
+    ih.textContent='IFSC should be 11 chars, e.g. '+ex+'.';return false}
   if(code&&v.slice(0,4)!==code){ih.className='hint bad';
     ih.textContent='That IFSC isn\\u2019t '+bank+' \\u2014 its codes start with '+code+'0.';return false}
   ih.className='hint';ih.innerHTML='\\u2713 IFSC looks valid';ih.style.color='var(--ok)';return true}
+function ifscPh(){if(!ifsc)return;var code=CODES[bsel?bsel.value:'']||'';
+  ifsc.placeholder='e.g. '+(code?code+'0001234':'HDFC0001234')}
 if(ifsc){ifsc.addEventListener('input',ifscChk)}
-if(bsel){bsel.addEventListener('change',function(){ih.style.color='';ifscChk()})}
+if(bsel){bsel.addEventListener('change',function(){ih.style.color='';ifscPh();ifscChk()})}
+ifscPh();
 </script>""")
         # Staged submit overlay: the browser POST is near-instant, so without
         # this the "processing" moment is invisible. Steps tick while the form
@@ -3667,10 +3671,12 @@ var bsel=document.getElementById('bank'),ifsc=document.getElementById('ifsc'),
 function chk(){{var v=(ifsc.value||'').toUpperCase().replace(/\\s/g,'');ifsc.value=v;
   var code=CODES[bsel.value]||'';
   if(!v){{ih.className='hint';ih.textContent=code?('This bank\\u2019s IFSC starts with '+code+'0'):'';return}}
-  if(!/^[A-Z]{{4}}0[A-Z0-9]{{6}}$/.test(v)){{ih.className='hint bad';ih.textContent='IFSC should be 11 chars, e.g. HDFC0001234.';return}}
+  var ex=code?(code+'0001234'):'HDFC0001234';
+  if(!/^[A-Z]{{4}}0[A-Z0-9]{{6}}$/.test(v)){{ih.className='hint bad';ih.textContent='IFSC should be 11 chars, e.g. '+ex+'.';return}}
   if(code&&v.slice(0,4)!==code){{ih.className='hint bad';ih.textContent='That IFSC isn\\u2019t '+bsel.value+' \\u2014 codes start with '+code+'0.';return}}
   ih.className='hint';ih.style.color='var(--ok)';ih.innerHTML='\\u2713 IFSC looks valid'}}
-ifsc.addEventListener('input',chk);bsel.addEventListener('change',function(){{ih.style.color='';chk()}});
+function ph(){{var code=CODES[bsel.value]||'';ifsc.placeholder='e.g. '+(code?code+'0001234':'HDFC0001234')}}
+ifsc.addEventListener('input',chk);bsel.addEventListener('change',function(){{ih.style.color='';ph();chk()}});ph();
 </script>
 {_fabs_html(support, whatsapp)}"""
     return _page("My banks", body, noindex=True, acct=acct.email)
