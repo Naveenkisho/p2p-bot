@@ -926,6 +926,8 @@ async def settings_get(request: web.Request):
         whatsapp = await get_whatsapp(s)
         rate_auto = (await get_setting(s, "rate_email_auto")) != "0"
         seo_email = await get_setting(s, "seo_report_email")
+        ts_key = await get_setting(s, "turnstile_sitekey")
+        ts_sec = await get_setting(s, "turnstile_secret")
         if seo_email is None:                     # unset ≠ deliberately blank
             seo_email = "naveenvemareddy@gmail.com"
         instant_credit = (await get_setting(s, "instant_credit")) == "1"
@@ -1046,6 +1048,18 @@ async def settings_get(request: web.Request):
             "<p class='muted small' style='margin:4px 0 0'>A morning summary of "
             "the onsite SEO: articles live, keyword coverage, the next target "
             "and one off-page action for the day.</p>"
+            "<label>🤖 Human check — Cloudflare Turnstile site key</label>"
+            f"<input name=turnstile_sitekey value='{_esc(ts_key)}' "
+            "placeholder='0x4AAA…'>"
+            "<label>Turnstile secret key</label>"
+            f"<input name=turnstile_secret value='{_esc(ts_sec)}' "
+            "placeholder='0x4AAA…'>"
+            "<p class='muted small' style='margin:4px 0 0'>One-click "
+            "&ldquo;verify you are human&rdquo; box (no puzzles) on signup, "
+            "sign-in and password reset. Create the widget free at "
+            "Cloudflare dashboard &rarr; Turnstile &rarr; Add site "
+            "(domain: your site, mode: Managed), paste both keys here and "
+            "Save. Blank = off.</p>"
             "</div></div>"
 
             "</div>"
@@ -1161,6 +1175,13 @@ async def settings_post(request: web.Request):
             await set_setting(s, "support_email", semail)
         else:
             errors.append("support email looks invalid")
+
+        for k in ("turnstile_sitekey", "turnstile_secret"):
+            v = str(data.get(k, "")).strip()
+            if len(v) <= 200 and "'" not in v and "<" not in v:
+                await set_setting(s, k, v)
+            else:
+                errors.append(f"{k} looks invalid")
 
         seo_mail = str(data.get("seo_report_email", "")).strip()
         if seo_mail == "" or ("@" in seo_mail and "." in seo_mail.split("@")[-1]
