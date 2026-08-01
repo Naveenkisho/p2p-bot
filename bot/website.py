@@ -278,6 +278,48 @@ async def _account_from_request(request: web.Request) -> Account | None:
         return await s.get(Account, -uid - _ACCT_BASE)
 
 
+async def _turnstile_sitekey() -> str:
+    async with Session() as s:
+        return (await get_setting(s, "turnstile_sitekey") or "").strip()
+
+
+def _turnstile_html(sitekey: str) -> str:
+    # The "verify you are human" click box (Cloudflare Turnstile) — only
+    # rendered when the operator has pasted keys in panel Settings.
+    if not sitekey:
+        return ""
+    return ("<div class=cf-turnstile data-sitekey=\'" + _esc(sitekey) +
+            "\' style=\'margin-top:14px\'></div>"
+            "<script src=\'https://challenges.cloudflare.com/turnstile/v0/api.js\'"
+            " async defer></script>")
+
+
+async def _turnstile_ok(request: web.Request, data) -> bool:
+    # Server-side verify of the Turnstile token. No keys configured = check
+    # off. Cloudflare unreachable = fail OPEN (an outage must never lock every
+    # customer out of signing in) — but a missing/blank token when keys ARE
+    # set always fails, so bots cannot simply skip the widget.
+    async with Session() as s:
+        secret = (await get_setting(s, "turnstile_secret") or "").strip()
+    if not secret:
+        return True
+    token = str(data.get("cf-turnstile-response", "")).strip()
+    if not token or len(token) > 4096:
+        return False
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=8), trust_env=True) as http:
+            async with http.post(
+                    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                    data={"secret": secret, "response": token,
+                          "remoteip": _client_ip(request)}) as r:
+                payload = await r.json()
+        return bool(payload.get("success"))
+    except Exception:
+        log.warning("turnstile verify unreachable — allowing", exc_info=True)
+        return True
+
+
 async def _nav_acct(request: web.Request) -> str:
     """Top-bar chip label for the signed-in account. Order pages were the one
     place not passing this to _page, so a signed-in customer watching their
@@ -1517,7 +1559,8 @@ def _google_button(csrf: str, nxt: str) -> str:
         "</script><div class=orline>OR</div>")
 
 
-def _auth_body(csrf: str, nxt: str, mode: str, error: str, p: dict) -> str:
+def _auth_body(csrf: str, nxt: str, mode: str, error: str, p: dict,
+               ts_html: str = "") -> str:
     """Tabs + Google button + the signup or sign-in form (no heading)."""
     err = f"<p class=err>{_esc(error)}</p>" if error else ""
     tabs = (f"<div class=authtabs>"
@@ -1535,7 +1578,7 @@ def _auth_body(csrf: str, nxt: str, mode: str, error: str, p: dict) -> str:
  value="{_esc(p.get('email', ''))}">
 <label>Password</label>
 <input name=password type=password autocomplete=current-password required>
-<div style=margin-top:16px><button class=btn>Sign in</button></div>
+{ts_html}<div style=margin-top:16px><button class=btn>Sign in</button></div>
 <p class='muted small' style='margin:12px 0 0'>
 <a href='/reset?next={_uq(nxt)}'>Forgot your password?</a> Reset it with a code
 sent to your email.</p>
@@ -1586,7 +1629,7 @@ character (e.g. <b>@</b> or <b>#</b>).</p>
  minlength=8 required>
 <label>How much USDT do you sell per day?</label>
 {_stock_pick(p.get('stock', ''))}
-<div style=margin-top:16px><button class=btn id=subtn>Create account →</button></div>
+{ts_html}<div style=margin-top:16px><button class=btn id=subtn>Create account →</button></div>
 <p class='muted small' style='margin:10px 0 0'>By signing up you agree to the
 <a href='/legal/terms'>Terms of Use</a> and
 <a href='/legal/privacy'>Privacy Policy</a>.</p>
@@ -1695,7 +1738,9 @@ async def signup_get(request: web.Request, error: str = "",
     async with Session() as s:
         support = await get_support(s)
         whatsapp = await get_whatsapp(s)
-    body = head + _auth_body(csrf, nxt, mode, error, p) + _fabs_html(support, whatsapp)
+    ts_html = _turnstile_html(await _turnstile_sitekey())
+    body = head + _auth_body(csrf, nxt, mode, error, p, ts_html) \
+        + _fabs_html(support, whatsapp)
     resp = _page(("Sign in — P2P Desk" if mode == "in"
                   else "Create your account — P2P Desk"), body,
                  "Sign up free to sell USDT for INR — instant bank payouts, "
@@ -1717,6 +1762,9 @@ async def signup_post(request: web.Request):
     if not hmac.compare_digest(str(data.get("csrf", "")),
                                await _csrf(f"auth:{uid}")):
         return await signup_get(request, "That form expired — please try again.", p)
+    if not await _turnstile_ok(request, data):
+        return await signup_get(request, "Please tick the verification box "
+                                "and try again.", p)
     password = str(data.get("password", ""))
     password2 = str(data.get("password2", ""))
     email = p["email"].lower()
@@ -1813,6 +1861,9 @@ async def signin_post(request: web.Request):
         return await signup_get(request, "Too many wrong attempts for this "
                                 "email — wait a while, or reset your password "
                                 "below.", p, mode="in")
+    if not await _turnstile_ok(request, data):
+        return await signup_get(request, "Please tick the verification box "
+                                "and try again.", p, mode="in")
     async with Session() as s:
         acct = await s.scalar(select(Account).where(Account.email == email))
     password = str(data.get("password", ""))
@@ -1989,6 +2040,7 @@ async def signup_otp_check(request: web.Request):
 
 
 def _reset_body(csrf: str, nxt: str, stage: str, email: str = "",
+                ts_html: str = "",
                 error: str = "", note: str = "") -> str:
     err = f"<p class=err>{_esc(error)}</p>" if error else ""
     ok = f"<div class='banner ok'>{_esc(note)}</div>" if note else ""
@@ -2029,7 +2081,7 @@ only the real owner of the inbox can set a new password.</p>
 <input type=hidden name=act value=request>
 <label>Email</label>
 <input name=email type=email autocomplete=email required value='{_esc(email)}'>
-<div style=margin-top:14px><button class=btn>Email me a code</button></div>
+{ts_html}<div style=margin-top:14px><button class=btn>Email me a code</button></div>
 </div></form>"""
     return "<h1>Reset your <span class=g>password</span></h1>" + inner
 
@@ -2038,7 +2090,9 @@ async def reset_get(request: web.Request):
     uid, is_new = await _ensure_uid(request)
     csrf = await _csrf(f"auth:{uid}")
     nxt = _safe_next(request.query.get("next", "/sell"))
-    resp = _page("Reset password", _reset_body(csrf, nxt, "email"), noindex=True)
+    resp = _page("Reset password", _reset_body(
+        csrf, nxt, "email",
+        ts_html=_turnstile_html(await _turnstile_sitekey())), noindex=True)
     if is_new:
         _set_uid_cookie(resp, await _sign_uid(uid), _is_https(request))
     return resp
@@ -2067,6 +2121,12 @@ async def reset_post(request: web.Request):
         acct = await s.scalar(select(Account).where(Account.email == email))
 
     if act == "request":
+        if not await _turnstile_ok(request, data):
+            return _page("Reset password", _reset_body(
+                csrf, nxt, "email", email=email,
+                ts_html=_turnstile_html(await _turnstile_sitekey()),
+                error="Please tick the verification box and try again."),
+                noindex=True)
         ip = _client_ip(request)
         if _bucket_throttled(_reset_times, ip, 6, 3600):
             return _page("Reset password", _reset_body(
@@ -2583,7 +2643,8 @@ async def _sell_gate(request: web.Request, error: str = "") -> web.Response:
             "<p class='muted lead'>Create your free account — or sign in — and "
             "the sell form opens right here. Your orders, tickets and saved "
             "banks then follow your account on any device.</p>"
-            + _auth_body(csrf, "/sell", "up", error, {})
+            + _auth_body(csrf, "/sell", "up", error, {},
+                         _turnstile_html(await _turnstile_sitekey()))
             + _fabs_html(support, whatsapp))
     resp = _page("Sell USDT for INR — Live Rate & Instant Quote | P2P Desk",
                  body, "Get your USDT deposit address and a locked INR rate "
