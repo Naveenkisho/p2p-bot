@@ -254,6 +254,11 @@ _signup_times: dict[str, deque] = {}
 _SIGNUP_MAX_PER_HOUR = 8
 _login_times: dict[str, deque] = {}
 _LOGIN_MAX_PER_HOUR = 20
+# wrong-password lock: 5 wrong tries per (ip, email) per hour. Keyed on the
+# PAIR so a brute-forcer is stopped at five guesses, while an attacker can't
+# lock the real owner out of their own account from a different network.
+_pw_fail_times: dict[str, deque] = {}
+_PW_FAIL_MAX = 5
 _pwchange_times: dict[str, deque] = {}   # per-account: 1 password change / 5 min
 _PWCHANGE_WINDOW = 300
 
@@ -1803,6 +1808,11 @@ async def signin_post(request: web.Request):
         return await signup_get(request, "Too many attempts — please wait a "
                                 "while.", p, mode="in")
     _bucket_record(_login_times, ip, 3600)
+    fail_key = f"{ip}:{email}"
+    if _bucket_throttled(_pw_fail_times, fail_key, _PW_FAIL_MAX, 3600):
+        return await signup_get(request, "Too many wrong attempts for this "
+                                "email — wait a while, or reset your password "
+                                "below.", p, mode="in")
     async with Session() as s:
         acct = await s.scalar(select(Account).where(Account.email == email))
     password = str(data.get("password", ""))
@@ -1810,6 +1820,7 @@ async def signin_post(request: web.Request):
         # spend the same PBKDF2 as a real check so this branch isn't a faster,
         # tell-tale response, then point them at the right button
         await _hash_pw(password, _DUMMY_SALT)
+        _bucket_record(_pw_fail_times, fail_key, 3600)
         return await signup_get(request, "That email signed up with Google — "
                                 "use the Google button below.", p, mode="in")
     # always run one PBKDF2 (dummy salt when the email is unknown) so a wrong
@@ -1818,8 +1829,10 @@ async def signin_post(request: web.Request):
     salt = acct.pw_salt if acct else _DUMMY_SALT
     calc = await _hash_pw(password, salt)
     if acct is None or not hmac.compare_digest(acct.pw_hash, calc):
+        _bucket_record(_pw_fail_times, fail_key, 3600)
         return await signup_get(request, "Email or password is incorrect.",
                                 p, mode="in")
+    _pw_fail_times.pop(fail_key, None)     # clean login clears the counter
     resp = web.HTTPFound(f"/signup/stock?next={_uq(nxt)}"
                          if not acct.stock else nxt)
     await _login_account(request, resp, acct, uid)
