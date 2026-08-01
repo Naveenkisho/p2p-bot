@@ -1059,7 +1059,10 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
         acct_link = (f"<a class='nav me' href='/account' title='{_esc(acct)}'>"
                      f"{_esc(label)}</a>")
     else:
-        acct_link = "<a class='nav me' href='/signup'>Sign up</a>"
+        # entry chip says Sign in — the auth page opens on the Sign in
+        # tab with Create account right beside it, so both paths are
+        # one tap and returning customers (the majority) come first
+        acct_link = "<a class='nav me' href='/signup?mode=in'>Sign in</a>"
     _NAVLINKS = (
         '<a href="/">Home</a><a href="/#rates">Rates</a>'
         '<a href="/guarantee">Guarantee</a><a href="/learn">Learn</a>'
