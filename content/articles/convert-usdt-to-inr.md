@@ -65,3 +65,17 @@ That is the whole machine. The right route depends on what you value —
 convenience (exchange), maximum headline rate with real risk (P2P), or a
 locked rate with clean funds and speed (OTC). Whichever you choose, never
 convert to a promise: convert to a written quote.
+
+## Timing your conversion
+
+The USDT side of the trade is stable by design — one tether stays one
+dollar — so the number that moves your rupees is the USDT-INR rate itself,
+which tracks the dollar-rupee market plus local demand. Practical
+implications: rates drift through the day, so a quote from this morning is
+not a promise for tonight; weekends still work (the chain and IMPS never
+close, and desks that hold their own float keep quoting); and large
+conversions gain more from a locked written rate than from an hour spent
+hunting a fractionally better one. If you convert regularly, watch the live
+grid for a few days to learn its rhythm — then sell on your schedule, not
+the market's. The one timing rule that always holds: lock first, send
+second, never the reverse.

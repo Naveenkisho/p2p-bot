@@ -65,3 +65,15 @@ address carefully and sending the exact amount. Do that and end-to-end
 
 Answer all four and instant stops being a slogan. Try it with a small
 [live order](/sell) — the page itself shows you every clock as it ticks.
+
+## Three habits of sellers who never wait
+
+Fast sellers are not lucky; they prepare. First, they keep their exchange
+withdrawal whitelist ready — adding the desk's address once means every
+future sale skips the exchange's 24-hour new-address security hold that
+catches first-timers. Second, they sell in banking-friendly amounts: a
+payout under ₹5 lakh rides IMPS end to end, while larger figures may split
+across transfers or wait on RTGS hours. Third, they never open an order
+until they are actually ready to send — a quote is live for a fixed window,
+and the countdown you see on the order page is real. Open, send, watch it
+confirm: in that sequence the whole trade fits inside a tea break.

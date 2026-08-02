@@ -56,3 +56,17 @@ only to their own account, a written source-of-funds commitment from the
 buyer (that is the [clean-funds guarantee](/guarantee) here), and complete
 records for tax. None of it is complicated — it is just discipline, applied
 every single time.
+
+## A complete first-sale checklist
+
+If this is your first time, run this list top to bottom and nothing will
+surprise you: pick your route (exchange, P2P, or OTC) knowing the
+trade-offs above; verify the platform before trusting it with size — a
+small test order tells you more than any review; lock the rate in writing
+before sending anything; check the address format matches the network you
+picked on your exchange; send the exact amount your order shows, decimals
+included; save the transaction hash your wallet or exchange displays; and
+confirm the INR that lands matches the quote you locked. Seven steps,
+five minutes, zero drama. Every one of them exists because someone,
+somewhere, skipped it once — the guides linked through this page cover
+what happened next.

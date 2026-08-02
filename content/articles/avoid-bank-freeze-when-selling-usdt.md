@@ -68,3 +68,15 @@ substantially. Keep records of **every** crypto sale; on this desk your
 Safe funds are not luck — they are sourcing. Start with the
 [step-by-step selling guide](/learn/how-to-sell-usdt-for-inr) to see the
 whole process end to end.
+
+## The paper trail that unfreezes accounts
+
+If a freeze ever does touch you — even from an unrelated transaction —
+what reopens accounts is documentation. Keep, for every crypto sale: the
+order confirmation with its locked rate, the on-chain transaction hash,
+the receipt showing who paid you and from where, and the matching bank
+statement line. Sellers who can hand a bank a complete, consistent story
+in one email resolve reviews dramatically faster than those reconstructing
+months of marketplace chats. Selling through a desk that issues receipts
+with transaction IDs builds this file automatically, trade by trade — the
+protection works best when you never end up needing it.
