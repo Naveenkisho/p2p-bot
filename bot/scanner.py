@@ -313,7 +313,9 @@ def bsc_transfer_amount(tx: dict) -> float | None:
 # ERC20 Transfer(address,address,uint256) event signature
 _TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 _BSC_BLOCK_SECS = 3                 # BSC block time — used to size scan windows
-_BSC_MAX_BLOCKS = 40_000            # ~33h; public getLogs range limits
+_BSC_MAX_BLOCKS = 40_000            # ~33h total catch-up per tick
+_BSC_CHUNK = 2_000                  # blocks per eth_getLogs call — public
+                                    # nodes reject big ranges outright
 
 
 def _pad_topic_addr(addr: str) -> str:
@@ -386,22 +388,29 @@ async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
                     "TXID claim", _BSC_MAX_BLOCKS * _BSC_BLOCK_SECS // 3600)
         blocks_back = _BSC_MAX_BLOCKS
     from_block = max(1, safe_head - blocks_back)
-    logs = await _bsc_rpc(http, "eth_getLogs", [{
-        "fromBlock": hex(from_block), "toBlock": hex(safe_head),
-        "address": settings.bep20_usdt_contract,
-        "topics": [_TRANSFER_TOPIC, None, _pad_topic_addr(address)],
-    }]) or []
+    # chunked: one huge range gets rejected by every public node ("exceed
+    # maximum block range" style errors), which used to kill the whole sweep
     out: list[dict] = []
     ts_cache: dict = {}
-    for lg in logs:                                # node returns oldest-first
-        if lg.get("removed"):
-            continue
-        ts = await _bsc_block_ts(http, lg.get("blockNumber") or "0x0", ts_cache)
-        if ts <= min_ts:
-            continue
-        row = _bsc_log_row(lg, ts)
-        if row["to"].lower() == (address or "").lower():
-            out.append(row)
+    frm = from_block
+    while frm <= safe_head:
+        to_blk = min(frm + _BSC_CHUNK - 1, safe_head)
+        logs = await _bsc_rpc(http, "eth_getLogs", [{
+            "fromBlock": hex(frm), "toBlock": hex(to_blk),
+            "address": settings.bep20_usdt_contract,
+            "topics": [_TRANSFER_TOPIC, None, _pad_topic_addr(address)],
+        }]) or []
+        for lg in logs:                            # node returns oldest-first
+            if lg.get("removed"):
+                continue
+            ts = await _bsc_block_ts(http, lg.get("blockNumber") or "0x0",
+                                     ts_cache)
+            if ts <= min_ts:
+                continue
+            row = _bsc_log_row(lg, ts)
+            if row["to"].lower() == (address or "").lower():
+                out.append(row)
+        frm = to_blk + 1
     return out
 
 
@@ -457,28 +466,46 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
         if not await bep20_active(session):
             return
         address = await get_bep20_address(session)
-        watermark = await bsc_watermark(session, address)
-    try:
-        await _scan_bsc_seen(bot, http, address)
-    except Exception as e:
-        log.warning("BSC seen sweep failed: %s", type(e).__name__)
-    try:
-        transfers = await fetch_bsc_transfers(http, address, watermark)
-    except Exception as e:
-        log.warning("BSC scan fetch failed: %s", type(e).__name__)
-        return
-    newest = watermark
-    for tx in transfers:
-        await _credit_bsc(bot, tx, address)
+        awaiting_addrs = (await session.scalars(
+            select(Order.display_address).where(
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value,
+                Order.network == "BEP20"))).all()
+    # sweep every address money can still arrive on: the configured one PLUS
+    # each awaiting order's own address — rotating the panel address must
+    # never blind the scanner to orders opened on the previous one
+    addrs: dict[str, str] = {}
+    for a in [address] + list(awaiting_addrs):
+        if a and a.startswith("0x"):
+            addrs.setdefault(a.lower(), a)
+    for addr in addrs.values():
         try:
-            newest = max(newest, int(tx.get("timeStamp", 0) or 0))
-        except (TypeError, ValueError):
-            pass
-    if newest > watermark:
-        # advance the watermark (2-min look-back for same-second stragglers) so the
-        # next tick fetches a small window — page 1 then covers any burst.
+            await _scan_bsc_seen(bot, http, addr)
+        except Exception as e:
+            log.warning("BSC seen sweep failed: %s", type(e).__name__)
         async with Session() as session:
-            await set_setting(session, f"bsc_since:{address}", str(newest - 120))
+            watermark = await bsc_watermark(session, addr)
+        try:
+            transfers = await fetch_bsc_transfers(http, addr, watermark)
+        except Exception as e:
+            log.warning("BSC scan fetch failed (%s…): %s", addr[:10],
+                        type(e).__name__)
+            continue
+        newest = watermark
+        for tx in transfers:
+            await _credit_bsc(bot, tx, addr)
+            try:
+                newest = max(newest, int(tx.get("timeStamp", 0) or 0))
+            except (TypeError, ValueError):
+                pass
+        # ALWAYS advance after a successful sweep — an empty result must move
+        # the cutoff too, or the window keeps growing until public nodes
+        # refuse the range and crediting silently stops (the 304.57 incident)
+        floor_ts = (int(time.time())
+                    - settings.bsc_confirmations * _BSC_BLOCK_SECS - 120)
+        new_wm = max(newest - 120, floor_ts)
+        if new_wm > watermark:
+            async with Session() as session:
+                await set_setting(session, f"bsc_since:{addr}", str(new_wm))
 
 
 async def lookup_bsc_tx(txid: str, since_ms: int,
