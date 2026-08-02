@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 SEND_HOUR_IST = 9              # 09:00 IST every morning
 _KEYWORDS_MD = Path(__file__).resolve().parent.parent / "content" / "KEYWORDS.md"
+_BACKLINKS_DIR = Path(__file__).resolve().parent.parent / "content" / "backlinks"
 
 # One honest off-page task per day, rotating. Each is something a human does
 # by hand — the kind of link/mention Google actually rewards. No link farms,
@@ -53,6 +54,23 @@ OFFPAGE_ACTIONS = [
      "rates/examples to today's numbers and add one new internal link. "
      "Freshness on existing pages is cheap and compounding."),
 ]
+
+
+def backlink_of_day(day_of_year: int) -> dict | None:
+    """Rotate through content/backlinks/*.md — each is a ready-to-post draft
+    with its venue, target keyword and anchor in a small front matter."""
+    files = sorted(_BACKLINKS_DIR.glob("*.md"))
+    if not files:
+        return None
+    text = files[day_of_year % len(files)].read_text(encoding="utf-8")
+    head, _, body = text.partition("\n---\n")
+    meta: dict = {}
+    for line in head.splitlines():
+        k, _, v = line.partition(":")
+        if v:
+            meta[k.strip()] = v.strip()
+    meta["body"] = body.strip()
+    return meta
 
 
 def keyword_stats() -> dict:
@@ -89,6 +107,26 @@ async def build_report() -> tuple[str, str]:
     latest = "".join(
         f"<li><a href='{site}/learn/{_html.escape(a['slug'])}'>"
         f"{_html.escape(a['title'])}</a></li>" for a in arts[:3])
+    # what actually moved since yesterday's report — the honest answer to
+    # "why does this look the same": nothing changed, or exactly this did
+    async with Session() as s:
+        prev = await get_setting(s, "seo_report_prev") or ""
+    cur_state = f"{len(arts)}:{kw['done']}"
+    if prev and prev == cur_state:
+        delta = ("<p style='margin:10px 0 0;color:#8a6d1a'><b>Since "
+                 "yesterday:</b> no change — coverage moves when the next "
+                 "article ships. Today's backlink draft below is the "
+                 "day's new work.</p>")
+    elif prev:
+        try:
+            p_arts, p_done = (int(x) for x in prev.split(":"))
+        except ValueError:
+            p_arts, p_done = 0, 0
+        delta = (f"<p style='margin:10px 0 0;color:#1a6d3a'><b>Since "
+                 f"yesterday:</b> articles {p_arts} &rarr; {len(arts)}, "
+                 f"keywords covered {p_done} &rarr; {kw['done']}.</p>")
+    else:
+        delta = ""
     subject = (f"SEO daily — {len(arts)} articles live, "
                f"{kw['pending']} keywords to go")
     covered = " &middot; ".join(_html.escape(k) for k in kw["done_list"])
@@ -107,6 +145,25 @@ async def build_report() -> tuple[str, str]:
            f"&ldquo;{_html.escape(kw['next'])}&rdquo;</p>" if kw["next"] else
            "<p style='margin:12px 0 0'><b>Keyword plan complete</b> — time to "
            "add the next batch to content/KEYWORDS.md.</p>")
+    bl = backlink_of_day(today.timetuple().tm_yday)
+    bl_html = ""
+    if bl:
+        body_txt = bl.get("body", "").replace(
+            "TARGET_URL", f"{site}{bl.get('target', '')}")
+        bl_html = f"""
+<div style='background:#f4f0ff;border-radius:10px;padding:14px;margin:16px 0'>
+<b>Today's ready-to-post backlink draft</b>
+<p style='margin:6px 0 2px'><b>Where:</b> {_html.escape(bl.get('venue', ''))}<br>
+<b>Target keyword:</b> {_html.escape(bl.get('keyword', ''))} &middot;
+<b>Anchor text:</b> &ldquo;{_html.escape(bl.get('anchor', ''))}&rdquo;<br>
+<b>Link to:</b> {site}{_html.escape(bl.get('target', ''))}</p>
+<p style='margin:8px 0 4px'><b>{_html.escape(bl.get('title', ''))}</b></p>
+<div style='white-space:pre-wrap;background:#fff;border-radius:8px;
+padding:12px;font-size:.9rem;color:#333'>{_html.escape(body_txt)}</div>
+<p style='margin:8px 0 0;color:#5a6478;font-size:.85rem'>Before posting:
+reword 2&ndash;3 sentences in your own voice and adjust examples — it must
+read as you, not as a template. Post it where it says, with the anchor
+linking to the target page.</p></div>"""
     inner = f"""
 <h2 style='margin:0 0 4px'>Daily SEO report</h2>
 <p style='margin:0;color:#5a6478'>{today:%A, %d %b %Y} &middot; 09:00 IST</p>
@@ -126,9 +183,11 @@ async def build_report() -> tuple[str, str]:
 </tr></table>
 {nxt}
 {kw_lists}
+{delta}
 <div style='background:#eef4ff;border-radius:10px;padding:14px;margin:16px 0'>
 <b>Today's off-page action — {_html.escape(action_title)}</b>
 <p style='margin:6px 0 0;color:#333'>{_html.escape(action_body)}</p></div>
+{bl_html}
 <p style='margin:12px 0 4px'><b>Latest articles</b></p>
 <ul style='margin:0;padding-left:20px'>{latest or '<li>none yet</li>'}</ul>
 <p style='margin:14px 0 0;color:#5a6478;font-size:.85rem'>
@@ -155,8 +214,11 @@ async def run_report(force: bool = False) -> bool:
     ok = await sender.send_transactional(to_addr, "", subject, inner,
                                          stream="mkt")
     if ok:
+        from .website import _articles
+        cur_state = f"{len(_articles())}:{keyword_stats()['done']}"
         async with Session() as s:
             await set_setting(s, "seo_report_last", today_key)
+            await set_setting(s, "seo_report_prev", cur_state)
             await s.commit()
         log.info("daily SEO report sent to %s", to_addr)
     return ok
