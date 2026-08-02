@@ -31,13 +31,13 @@ that can share one page (Google treats them as the same intent).
 | 20 | clean inr funds | done | sell-usdt-clean-funds |
 | 21 | verified indian platform | done | verified-indian-usdt-platform |
 | 22 | verified usdt platform india | done | verified-indian-usdt-platform |
-| 23 | sell usdt instantly | pending | |
-| 24 | usdt to imps transfer | pending | |
-| 25 | convert usdt to inr | pending | |
-| 26 | usdt to inr | pending | |
-| 27 | sell usdt trc20 | pending | |
-| 28 | sell usdt bep20 | pending | |
-| 29 | tether to rupees | pending | |
+| 23 | sell usdt instantly | done | sell-usdt-instantly |
+| 24 | usdt to imps transfer | done | sell-usdt-instantly |
+| 25 | convert usdt to inr | done | convert-usdt-to-inr |
+| 26 | usdt to inr | done | convert-usdt-to-inr |
+| 27 | sell usdt trc20 | done | sell-usdt-trc20-vs-bep20 |
+| 28 | sell usdt bep20 | done | sell-usdt-trc20-vs-bep20 |
+| 29 | tether to rupees | done | convert-usdt-to-inr |
 | 30 | usdt otc desk india | pending | |
 | 31 | sell large amount usdt india | pending | |
 | 32 | usdt p2p india | pending | |
