@@ -516,6 +516,52 @@ def _tracking_active() -> bool:
     return any(v.strip() for v in _TRACKING.values())
 
 
+def _wants_html(request: web.Request) -> bool:
+    return (request.method == "GET"
+            and "text/html" in (request.headers.get("Accept") or "")
+            and not request.path.endswith(".json"))
+
+
+def _error_page(title: str, heading: str, note: str, status: int):
+    body = (f"<h1>{heading}</h1><div class=banner>{note}</div>"
+            "<a class=btn href='/'>Go to the home page</a>"
+            "<a class='btn ghost' href='/sell'>Sell USDT</a>"
+            "<p class='muted small'>Need a hand? The floating buttons reach "
+            "our support directly.</p>")
+    resp = _page(title, body + _fabs_html(_SUPPORT_CACHE.get("tg", ""),
+                                          _SUPPORT_CACHE.get("whatsapp", "")),
+                 noindex=True, boot=False)
+    resp.set_status(status)
+    return resp
+
+
+@web.middleware
+async def _error_pages(request: web.Request, handler):
+    """Friendly branded 404/500 pages for browsers — with the correct status
+    codes, so search engines still see real errors. Non-HTML clients (the
+    status polls, curl, tests) keep the plain responses."""
+    try:
+        return await handler(request)
+    except web.HTTPNotFound:
+        if not _wants_html(request):
+            raise
+        return _error_page("Page not found",
+                           "Page <span class=g>not found</span>",
+                           "That link looks old or mistyped — nothing to "
+                           "worry about. The pages below will get you back.",
+                           404)
+    except web.HTTPException:
+        raise                      # redirects, 403s etc. pass through
+    except Exception:
+        log.exception("unhandled error on %s", request.path)
+        if not _wants_html(request):
+            raise
+        return _error_page("Something went wrong",
+                           "Something went <span class=g>wrong</span>",
+                           "Our side, not yours — nothing was lost. Please "
+                           "try again in a moment.", 500)
+
+
 @web.middleware
 async def _sec_headers(request: web.Request, handler):
     """Security headers on every response (incl. redirects/404s) + HSTS on HTTPS."""
@@ -4396,7 +4442,7 @@ async def start_site(bot):
         return None
     await load_tracking()          # load marketing-pixel IDs into the cache
     await load_support_cache()     # load support email for the floating button
-    app = web.Application(middlewares=[_sec_headers])
+    app = web.Application(middlewares=[_sec_headers, _error_pages])
     app["bot"] = bot
     app.add_routes([
         web.get("/", home),
