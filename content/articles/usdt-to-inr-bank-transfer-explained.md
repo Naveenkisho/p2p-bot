@@ -64,3 +64,16 @@ being sent to you? That is covered by the
 [clean-funds guarantee](/guarantee) and in detail in the
 [bank-freeze guide](/learn/avoid-bank-freeze-when-selling-usdt) — read both
 before selling anywhere, including here.
+
+## Reading your bank statement afterwards
+
+A detail that saves confusion later: the INR credit in your statement shows
+the sender's account label and a transfer reference, not the word "USDT" —
+banks describe the rail (IMPS/UPI/NEFT), never the reason. Keep your order
+receipt with its transaction ID alongside the statement entry and the two
+together document the trade completely: crypto out on-chain, rupees in by
+bank, amounts matching. Sellers who file taxes appreciate this pairing at
+year-end, and it is exactly what support asks for if a credit ever needs
+tracing. If a payout seems missing, check the exact name of the rail first
+— an IMPS credit posts in seconds, but some banks display it minutes late
+while the money is already there.

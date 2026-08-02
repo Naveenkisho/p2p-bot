@@ -60,3 +60,16 @@ payout only to your own account.
 Both tools are legitimate. Pick based on where you want the risk to sit —
 with you, or with your counterparty. When you're ready to try the desk
 model, [the sell form is here](/sell).
+
+## Moving over without disruption
+
+Switching routes doesn't need to be an event. Keep your exchange account —
+it remains useful for buying USDT and for market data — and simply change
+where you sell: withdraw to the desk's address instead of listing a P2P ad.
+Your first desk sale should be deliberately small, treated as a test of the
+five checks covered above; scale only after the rupees land as quoted.
+Most sellers who switch report the same two differences first: nothing to
+negotiate (the quote is the quote), and nothing to babysit (no buyer chat,
+no appeal timers — the blockchain and the bank do the talking). The rate
+conversation becomes a comparison of written quotes rather than a
+marketplace gamble, which is exactly how selling should feel.

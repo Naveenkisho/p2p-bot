@@ -70,3 +70,16 @@ For the full mechanics of a safe sale from start to finish, read the
 worst already happened on another platform, our
 [bank-freeze guide](/learn/avoid-bank-freeze-when-selling-usdt) covers what
 to do next.
+
+## If something already went wrong
+
+Speed matters more than blame. If you sent to a wrong or suspicious party,
+immediately save every artifact — the transaction hash, addresses, chat
+history, the page you were shown — before anything disappears. If money
+left your bank under pressure, call your bank's fraud line the same day;
+the earlier a dispute is raised, the more options exist. And if the issue
+is simply "I paid but nothing credited" on a legitimate platform, use its
+evidence-based recovery: on this desk you paste your transaction hash and
+the chain itself is checked — no arguing, just verification. Honest
+platforms want your evidence; scam operations want your patience. How each
+side reacts to a problem tells you which one you are dealing with.

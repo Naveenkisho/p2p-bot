@@ -61,3 +61,16 @@ TRC-20 for habit** — both end the same way, with
 carrying the on-chain transaction ID. What actually matters is the address
 check above and sending the exact amount your order shows, decimals and
 all. Get those two right and either network will feel instant.
+
+## What about the other networks?
+
+USDT also exists on Ethereum (ERC-20), Polygon, Solana and more. For
+selling into INR they rarely make sense: ERC-20 withdrawal fees can eat
+several dollars for no gain in speed or safety, and the less common
+networks aren't supported by most Indian-facing buyers, this desk included.
+Stick to the two rails everyone supports and fees stay negligible. One
+more habit worth keeping regardless of network: after your exchange says
+"withdrawal completed", copy the transaction hash it shows you. You will
+almost never need it — detection is automatic — but if anything ever looks
+stuck, that one string lets the desk check the actual chain in seconds and
+settles any question with evidence instead of screenshots.

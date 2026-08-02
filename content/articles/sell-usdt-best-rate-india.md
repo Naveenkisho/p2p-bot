@@ -55,3 +55,16 @@ Run every "amazing rate" you find through those four questions and the cheap
 offers separate from the good ones very quickly. For the full selling
 process, start with the
 [step-by-step guide](/learn/how-to-sell-usdt-for-inr).
+
+## The rate that matters is the one in writing
+
+A final habit separates sellers who consistently get good value from those
+who chase numbers: they compare quotes, not advertisements. A rate on a
+banner is marketing; a rate written into an order you can screenshot is a
+commitment. When you compare desks, open a real quote at each for the same
+amount and method, note the exact INR figure each one commits to, and
+factor the things this guide covered — fees, TDS, waiting time, and whose
+money pays you. The best rate on paper that arrives late, taxed, or from a
+stranger's account is not the best rate. The honest way to win this game
+is boring: a locked quote, clean funds, and a payout that lands while
+you're still watching the page.
