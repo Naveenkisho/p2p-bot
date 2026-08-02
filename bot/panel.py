@@ -612,7 +612,9 @@ async def order_detail(request: web.Request):
         f"<b>User:</b> {_esc(user.first_name) if user else '?'} {uname} "
         f"(id <code>{order.user_id}</code>)<br>"
         f"<b>Bank:</b> {_bank_block(card.details if card else None)}"
-        f"<b>Deposit addr:</b> <code>{_esc(order.deposit_address)}</code><br>"
+        f"<b>Network:</b> {'BEP20 (BSC)' if order.network == 'BEP20' else 'TRC20 (TRON)'}<br>"
+        f"<b>Deposit addr:</b> <code>"
+        f"{_esc(order.display_address or order.deposit_address)}</code><br>"
         f"<b>TX:</b> <code>{_esc(order.txid) or '—'}</code><br>"
         + (f"<b>↩️ Refund TXID:</b> <code>{_esc(order.refund_txid)}</code><br>"
            f"<a href='https://tronscan.org/#/transaction/{_esc(order.refund_txid)}' "
@@ -673,7 +675,10 @@ async def order_print(request: web.Request):
         + kv("User", f"{_esc(user.first_name) if user else '?'} {uname} "
              f"(id <span class=mono>{order.user_id}</span>)")
         + kv("Bank", _bank_block(card.details if card else None, copy=False))
-        + kv("Deposit addr", f"<span class=mono>{_esc(order.deposit_address)}</span>")
+        + kv("Network", "BEP20 (BSC)" if order.network == "BEP20"
+             else "TRC20 (TRON)")
+        + kv("Deposit addr", f"<span class=mono>"
+             f"{_esc(order.display_address or order.deposit_address)}</span>")
         + kv("TXID", f"<span class=mono>{_esc(order.txid) or '—'}</span>")
         + (kv("Refund TXID", f"<span class=mono>{_esc(order.refund_txid)}</span>")
            if order.refund_txid else "")
@@ -728,7 +733,7 @@ async def orders_csv(request: web.Request):
     w = csv.writer(buf)
     w.writerow(["Order", "Status", "Side", "Service", "USDT", "Rate INR/$",
                 "Payout INR", "User ID", "Username", "Name", "Bank details",
-                "Deposit address", "TXID", "Created"])
+                "Network", "Deposit address", "TXID", "Created"])
     for o, user, card in rows:
         bank = " | ".join(ln.strip() for ln in (card.details.splitlines() if card else [])
                           if ln.strip())
@@ -736,7 +741,9 @@ async def orders_csv(request: web.Request):
             texts.tag(o.id), o.status, o.side, o.service, f"{o.usd_amount:g}",
             f"{o.rate_inr:g}", f"{o.inr_amount:.2f}", o.user_id,
             (user.username if user else ""), (user.first_name if user else ""),
-            bank, o.deposit_address, o.txid or "", str(o.created_at))])
+            bank, o.network or "TRC20",
+            o.display_address or o.deposit_address,
+            o.txid or "", str(o.created_at))])
     # UTF-8 BOM + charset so Excel reads names / regional-script bank text correctly
     return web.Response(
         body=("﻿" + buf.getvalue()).encode("utf-8"),
