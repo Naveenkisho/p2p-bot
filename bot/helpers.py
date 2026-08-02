@@ -205,8 +205,20 @@ def age_str(created_at) -> str:
     return f"{mins}m" if mins < 60 else f"{mins // 60}h{mins % 60:02d}m"
 
 
+def dm_link(user: User) -> str:
+    """A link that actually opens the customer's DM. tg://user?id= only
+    resolves when the admin's own client already knows the user (shared chat
+    or contact) — almost never true for bot customers, so those links did
+    nothing. A public @username link always opens; without a username,
+    tg://openmessage opens the chat on the official mobile apps (where
+    admins work), with the copyable chat id as the universal fallback."""
+    if user.username:
+        return f"https://t.me/{esc(user.username)}"
+    return f"tg://openmessage?user_id={user.id}"
+
+
 def user_line(user: User) -> str:
-    name_link = f'<a href="tg://user?id={user.id}">{esc(user.first_name) or "user"}</a>'
+    name_link = f'<a href="{dm_link(user)}">{esc(user.first_name) or "user"}</a>'
     handle = f' · <a href="https://t.me/{esc(user.username)}">@{esc(user.username)}</a>' \
         if user.username else " · no username"
     return f"{name_link}{handle}"
@@ -219,7 +231,7 @@ def order_card(order: Order, user: User, bank: BankCard | None) -> str:
     lines = [
         f"🆕 <b>Order {texts.tag(order.id)}</b> — SELL <b>{order.usd_amount:g}$</b> via {service}",
         f"👤 {user_line(user)}",
-        f'🆔 Chat ID: <code>{user.id}</code> · 💬 <a href="tg://user?id={user.id}">Open DM</a>',
+        f'🆔 Chat ID: <code>{user.id}</code> · 💬 <a href="{dm_link(user)}">Open DM</a>',
     ]
     if user.banned:
         lines.append("🚫 <b>BANNED USER — do not pay without checking!</b>")
