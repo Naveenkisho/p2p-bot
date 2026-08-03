@@ -596,14 +596,64 @@ def _gen_qr(address: str) -> bytes | None:
     return qr_png(address)
 
 
-_FAVICON = (
-    "<link rel=icon type='image/svg+xml' href='data:image/svg+xml;base64,"
-    "PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMi"
-    "AzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzBlMTMzMCcv"
-    "PjxjaXJjbGUgY3g9JzE2JyBjeT0nMTYnIHI9JzknIGZpbGw9J25vbmUnIHN0cm9rZT0nIzAwYz"
-    "I2Zicgc3Ryb2tlLXdpZHRoPScyLjQnLz48dGV4dCB4PScxNicgeT0nMjEnIGZvbnQtZmFtaWx5"
-    "PSdBcmlhbCxzYW5zLXNlcmlmJyBmb250LXNpemU9JzEzJyBmb250LXdlaWdodD0nOTAwJyBmaW"
-    "xsPScjMDBjMjZmJyB0ZXh0LWFuY2hvcj0nbWlkZGxlJz7igrk8L3RleHQ+PC9zdmc+'>")
+# Served from real URLs (below) instead of a data URI: Google's favicon
+# crawler only picks up icons it can fetch, so the data-URI version left the
+# search results showing a generic globe next to our pages.
+_FAVICON_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+    "<rect width='32' height='32' rx='7' fill='#0e1330'/>"
+    "<circle cx='16' cy='16' r='9' fill='none' stroke='#00c26f' "
+    "stroke-width='2.4'/>"
+    "<text x='16' y='21' font-family='Arial,sans-serif' font-size='13' "
+    "font-weight='900' fill='#00c26f' text-anchor='middle'>\u20b9</text></svg>")
+
+_FAVICON = ("<link rel=icon href=/favicon.svg type=image/svg+xml>"
+            "<link rel='alternate icon' href=/favicon.ico sizes=48x48>")
+
+_favicon_ico_cache: bytes | None = None
+
+
+def _favicon_ico_bytes() -> bytes | None:
+    """48px brand icon as .ico (multiples of 48 are what Google's favicon
+    crawler asks for), drawn with Pillow to match the SVG. Cached forever."""
+    global _favicon_ico_cache
+    if _favicon_ico_cache is not None:
+        return _favicon_ico_cache or None
+    try:
+        import io as _io
+
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGBA", (48, 48), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([0, 0, 47, 47], radius=10, fill=(14, 19, 48, 255))
+        d.ellipse([10, 10, 37, 37], outline=(0, 194, 111, 255), width=4)
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 19)
+            d.text((24, 23), "\u20b9", font=font, fill=(0, 194, 111, 255),
+                   anchor="mm")
+        except OSError:
+            pass                       # ring-only icon still beats a globe
+        buf = _io.BytesIO()
+        img.save(buf, format="ICO", sizes=[(48, 48), (32, 32), (16, 16)])
+        _favicon_ico_cache = buf.getvalue()
+    except Exception:
+        log.warning("favicon.ico generation failed", exc_info=True)
+        _favicon_ico_cache = b""
+    return _favicon_ico_cache or None
+
+
+async def favicon_svg(request: web.Request):
+    return web.Response(text=_FAVICON_SVG, content_type="image/svg+xml",
+                        headers={"Cache-Control": "public, max-age=604800"})
+
+
+async def favicon_ico(request: web.Request):
+    ico = _favicon_ico_bytes()
+    if not ico:
+        raise web.HTTPNotFound()
+    return web.Response(body=ico, content_type="image/x-icon",
+                        headers={"Cache-Control": "public, max-age=604800"})
 
 
 _STYLE = """
@@ -4475,6 +4525,8 @@ async def start_site(bot):
         web.get("/guarantee", guarantee_page),
         web.get("/about", about_page),
         web.get("/robots.txt", robots_txt),
+        web.get("/favicon.svg", favicon_svg),
+        web.get("/favicon.ico", favicon_ico),
         web.get("/sitemap.xml", sitemap_xml),
         web.get("/unsubscribe", unsubscribe_get),
         web.post("/unsubscribe", unsubscribe_post),
