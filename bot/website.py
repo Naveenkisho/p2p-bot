@@ -1023,6 +1023,13 @@ details summary::marker{color:var(--accent-dark)}
  .darkband .v{font-size:1.3rem}
  .marq .lg{font-size:1.15rem}
 }
+@media (max-width:520px){
+ /* the account chip + Sell button + menu must all fit a phone top bar —
+    without this the menu button clipped off the right edge */
+ .topbar{gap:3px}
+ .topbar a.nav.me{max-width:88px;padding:8px 10px}
+ .topbar a.nav.hot{padding:9px 12px}
+}
 @media (min-width:960px){
  .wrap.wide{max-width:1040px}
  .wide h1{font-size:2.7rem}
@@ -1164,6 +1171,10 @@ def _page(title: str, body: str, desc: str = "", wide: bool = False,
         '<a href="/guarantee">Guarantee</a><a href="/learn">Learn</a>'
         '<a href="/my">My orders</a><a href="/banks">My banks</a>'
         '<a href="/support">Support</a>')
+    if acct:
+        _NAVLINKS += ('<a href="/account">My account</a>'
+                      '<a href="/logout" style="color:var(--danger)">'
+                      'Log out</a>')
     doc = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name=description content="{_esc(desc)}">{_FAVICON}{head_extra}
@@ -2395,6 +2406,22 @@ async def stock_post(request: web.Request):
     if first:
         await _notify_signup(request, acct)
     raise web.HTTPFound(nxt)
+
+
+async def logout_confirm(request: web.Request):
+    uid = await _uid_from_cookie(request)
+    acct = await _account_from_request(request)
+    if acct is None or uid is None:
+        raise web.HTTPFound("/")
+    csrf = await _csrf(f"auth:{uid}")
+    body = f"""<h1>Log <span class=g>out</span>?</h1>
+<p class='muted lead'>You are signed in as <b>{_esc(acct.email)}</b>. Your
+orders and saved banks stay on your account — sign back in any time.</p>
+<form method=post action=/logout>
+<input type=hidden name=csrf value='{csrf}'>
+<button class=btn>Log out</button></form>
+<a class="btn ghost" href="/my" style="margin-top:10px">Cancel</a>"""
+    return _page("Log out", body, noindex=True, acct=acct.email)
 
 
 async def logout(request: web.Request):
@@ -4517,6 +4544,7 @@ async def start_site(bot):
         web.get("/banks", banks_get),
         web.post("/banks", banks_add),
         web.post("/banks/{id:\\d+}/delete", banks_delete),
+        web.get("/logout", logout_confirm),
         web.post("/logout", logout),
         web.get("/learn", learn_index),
         web.get("/learn/{slug}", learn_page),
