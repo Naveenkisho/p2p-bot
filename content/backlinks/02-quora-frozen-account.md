@@ -3,6 +3,7 @@ keyword: p2p bank account freeze
 anchor: how sellers get their bank accounts frozen
 target: /learn/avoid-bank-freeze-when-selling-usdt
 title: Answer draft: why accounts get frozen after selling crypto
+posted: 2026-08-04 on Quora
 ---
 Short answer: it is almost never because selling USDT is illegal — it is
 because of whose money paid you.
