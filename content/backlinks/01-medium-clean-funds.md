@@ -3,6 +3,7 @@ keyword: sell usdt get clean funds
 anchor: sell USDT and get clean funds
 target: /learn/sell-usdt-clean-funds
 title: The Question Nobody Asks Before Selling USDT in India
+posted: 2026-08-02 on Medium
 ---
 Everyone selling USDT in India compares rates. Almost nobody asks the
 question that actually decides whether the sale was worth it: whose rupees

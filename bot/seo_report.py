@@ -56,21 +56,39 @@ OFFPAGE_ACTIONS = [
 ]
 
 
-def backlink_of_day(day_of_year: int) -> dict | None:
-    """Rotate through content/backlinks/*.md — each is a ready-to-post draft
-    with its venue, target keyword and anchor in a small front matter."""
+def next_backlink() -> dict | None:
+    """The next UNPOSTED draft from content/backlinks/*.md (filename order).
+
+    Each draft is a ready-to-post text with venue, target keyword and anchor
+    in a small front matter. Once the operator confirms a post, the draft
+    gets a `posted:` line committed to its front matter and is skipped here
+    forever — the report never hands out the same draft twice. Returns None
+    when the folder is empty; when every draft is posted, returns only
+    {"all_posted": True} plus the counts so the report can ask for a refill.
+    """
     files = sorted(_BACKLINKS_DIR.glob("*.md"))
     if not files:
         return None
-    text = files[day_of_year % len(files)].read_text(encoding="utf-8")
-    head, _, body = text.partition("\n---\n")
-    meta: dict = {}
-    for line in head.splitlines():
-        k, _, v = line.partition(":")
-        if v:
-            meta[k.strip()] = v.strip()
-    meta["body"] = body.strip()
-    return meta
+    drafts: list[dict] = []
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        head, _, body = text.partition("\n---\n")
+        meta: dict = {}
+        for line in head.splitlines():
+            k, _, v = line.partition(":")
+            if v:
+                meta[k.strip()] = v.strip()
+        meta["body"] = body.strip()
+        drafts.append(meta)
+    unposted = [d for d in drafts if not d.get("posted")]
+    posted_count = len(drafts) - len(unposted)
+    if not unposted:
+        return {"all_posted": True, "posted_count": posted_count,
+                "total_count": len(drafts)}
+    nxt = unposted[0]
+    nxt["posted_count"] = posted_count
+    nxt["total_count"] = len(drafts)
+    return nxt
 
 
 def keyword_stats() -> dict:
@@ -115,7 +133,7 @@ async def build_report() -> tuple[str, str]:
     if prev and prev == cur_state:
         delta = ("<p style='margin:10px 0 0;color:#8a6d1a'><b>Since "
                  "yesterday:</b> no change — coverage moves when the next "
-                 "article ships. Today's backlink draft below is the "
+                 "article ships. Today's off-page task below is the "
                  "day's new work.</p>")
     elif prev:
         try:
@@ -145,14 +163,24 @@ async def build_report() -> tuple[str, str]:
            f"&ldquo;{_html.escape(kw['next'])}&rdquo;</p>" if kw["next"] else
            "<p style='margin:12px 0 0'><b>Keyword plan complete</b> — time to "
            "add the next batch to content/KEYWORDS.md.</p>")
-    bl = backlink_of_day(today.timetuple().tm_yday)
+    bl = next_backlink()
     bl_html = ""
-    if bl:
+    if bl and bl.get("all_posted"):
+        bl_html = f"""
+<div style='background:#f4f0ff;border-radius:10px;padding:14px;margin:16px 0'>
+<b>Backlink drafts: all {bl['total_count']} posted</b>
+<p style='margin:6px 0 0;color:#333'>Every draft in the current batch is
+done — nothing here will repeat. Ask Claude to &ldquo;refill
+backlinks&rdquo; and a fresh batch (new venues, new anchors, never
+recycled text) will appear here tomorrow.</p></div>"""
+    elif bl:
         body_txt = bl.get("body", "").replace(
             "TARGET_URL", f"{site}{bl.get('target', '')}")
         bl_html = f"""
 <div style='background:#f4f0ff;border-radius:10px;padding:14px;margin:16px 0'>
 <b>Today's ready-to-post backlink draft</b>
+<span style='color:#5a6478;font-size:.85rem'>&middot;
+{bl['posted_count']}/{bl['total_count']} posted so far</span>
 <p style='margin:6px 0 2px'><b>Where:</b> {_html.escape(bl.get('venue', ''))}<br>
 <b>Target keyword:</b> {_html.escape(bl.get('keyword', ''))} &middot;
 <b>Anchor text:</b> &ldquo;{_html.escape(bl.get('anchor', ''))}&rdquo;<br>
@@ -163,7 +191,9 @@ padding:12px;font-size:.9rem;color:#333'>{_html.escape(body_txt)}</div>
 <p style='margin:8px 0 0;color:#5a6478;font-size:.85rem'>Before posting:
 reword 2&ndash;3 sentences in your own voice and adjust examples — it must
 read as you, not as a template. Post it where it says, with the anchor
-linking to the target page.</p></div>"""
+linking to the target page. This slot always shows the next unposted
+draft — after you post it, tell Claude &ldquo;posted&rdquo; and it is
+marked off; a posted draft never appears again.</p></div>"""
     inner = f"""
 <h2 style='margin:0 0 4px'>Daily SEO report</h2>
 <p style='margin:0;color:#5a6478'>{today:%A, %d %b %Y} &middot; 09:00 IST</p>
