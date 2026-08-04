@@ -38,8 +38,8 @@ that can share one page (Google treats them as the same intent).
 | 27 | sell usdt trc20 | done | sell-usdt-trc20-vs-bep20 |
 | 28 | sell usdt bep20 | done | sell-usdt-trc20-vs-bep20 |
 | 29 | tether to rupees | done | convert-usdt-to-inr |
-| 30 | usdt otc desk india | pending | |
-| 31 | sell large amount usdt india | pending | |
+| 30 | usdt otc desk india | done | usdt-otc-desk-india |
+| 31 | sell large amount usdt india | done | usdt-otc-desk-india |
 | 32 | usdt p2p india | pending | |
 | 33 | sell crypto for cash india | pending | |
 | 34 | is it legal to sell usdt in india | pending | |
