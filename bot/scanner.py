@@ -312,10 +312,28 @@ def bsc_transfer_amount(tx: dict) -> float | None:
 
 # ERC20 Transfer(address,address,uint256) event signature
 _TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-_BSC_BLOCK_SECS = 3                 # BSC block time — used to size scan windows
-_BSC_MAX_BLOCKS = 40_000            # ~33h total catch-up per tick
-_BSC_CHUNK = 2_000                  # blocks per eth_getLogs call — public
-                                    # nodes reject big ranges outright
+_BSC_BLOCK_SECS = 3                 # NOMINAL block time — only a first guess
+                                    # for window sizing; the real window is
+                                    # verified against actual block timestamps
+                                    # (post-Maxwell BSC runs ~0.75s blocks)
+_BSC_MAX_BLOCKS = 160_000           # ~33h even at 0.75s blocks — hard cap
+_BSC_CHUNK = 2_000                  # starting blocks per eth_getLogs call
+_BSC_CHUNK_MIN = 100                # never shrink below this
+_BSC_CALLS_PER_TICK = 25            # getLogs budget per sweep — a deep
+                                    # catch-up heals across ticks, not in one
+                                    # burst that trips node rate limits
+_BSC_CHUNK_PAUSE = 0.2              # seconds between chunk calls
+_BSC_CHUNK_REGROW = 200             # successful calls before re-probing a
+                                    # bigger chunk (rate-limit blips must not
+                                    # pin the size at minimum forever)
+# public nodes disagree about eth_getLogs limits and report them all as
+# roughly this ('limit exceeded', 'exceed maximum block range', -32005 …)
+_BSC_LIMIT_HINTS = ("limit", "range", "exceed", "-32005", "too many",
+                    "response size")
+# the chunk size a node actually accepts, learned at runtime: shrunk when a
+# node rejects a range, slowly re-grown after sustained success (fresh probe
+# of the default on restart)
+_bsc_chunk_learned = {"size": _BSC_CHUNK, "ok": 0}
 
 
 def _pad_topic_addr(addr: str) -> str:
@@ -327,7 +345,7 @@ async def _bsc_rpc(http: aiohttp.ClientSession, method: str, params: list):
     """One JSON-RPC call against the public BSC node, with a fallback node.
     Raises BscApiError on failure — callers must never read that as 'no data'."""
     body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    last = "unknown"
+    errs: list[str] = []
     for url in (settings.bsc_rpc_url, settings.bsc_rpc_fallback):
         if not url:
             continue
@@ -336,12 +354,16 @@ async def _bsc_rpc(http: aiohttp.ClientSession, method: str, params: list):
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as e:
-            last = type(e).__name__
+            errs.append(type(e).__name__)
             continue
         if "error" in payload:
-            last = str(payload["error"])[:120]
+            errs.append(str(payload["error"])[:120])
             continue
         return payload.get("result")
+    # every attempt's error, not just the last — a 'limit exceeded' from the
+    # primary must stay visible to the adaptive-chunk logic even when the
+    # fallback then fails some other way
+    last = " | ".join(errs) or "unknown"
     log.warning("BSC rpc %s failed on both nodes: %s", method, last)
     raise BscApiError(f"rpc {method}: {last}")
 
@@ -352,6 +374,11 @@ async def _bsc_block_ts(http: aiohttp.ClientSession, block_hex: str,
         return cache[block_hex]
     blk = await _bsc_rpc(http, "eth_getBlockByNumber", [block_hex, False])
     ts = int(blk.get("timestamp", "0x0"), 16) if blk else 0
+    if ts <= 0:
+        # a null/short block answer means 'could not check', never ts=0 —
+        # treating it as ancient history would drop real transfers below the
+        # min_ts filter while the watermark advances past them
+        raise BscApiError(f"block {block_hex}: no timestamp")
     cache[block_hex] = ts
     return ts
 
@@ -368,7 +395,8 @@ def _bsc_log_row(lg: dict, ts: int) -> dict:
 
 
 async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
-                              min_ts: int, key: str = "") -> list[dict]:
+                              min_ts: int, key: str = "",
+                              progress=None) -> list[dict]:
     """Inbound USDT (BEP20) transfers to `address` with a block time after
     `min_ts` (unix seconds) — read straight from public BSC JSON-RPC
     (eth_getLogs on the USDT contract, filtered to our address as receiver).
@@ -376,30 +404,89 @@ async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
     desk must never depend on a paid data plan to see its own deposits.
     `key` is accepted for signature compatibility and ignored. Only blocks at
     least `bsc_confirmations` behind head are returned (settled money only).
-    Raises BscApiError on node failure — never 'no transfers'."""
+    Raises BscApiError on node failure — never 'no transfers'.
+
+    `progress` (optional async callable) receives (rows, safe_ts) after every
+    fully-processed chunk — the chunk's transfer rows plus a unix-seconds
+    watermark taken from the chunk's last REAL block timestamp (never a
+    wall-clock estimate: chain stalls and block-time changes must not let the
+    cutoff overtake blocks that were never fetched). The caller must handle
+    the rows durably BEFORE persisting the watermark. On sweep completion a
+    final ([], floor_ts) call carries the settled floor. Nodes reject ranges
+    their docs claim to allow, so the chunk size adapts downward on 'limit
+    exceeded'-style errors (and re-grows after sustained success); a
+    per-sweep call budget turns a deep catch-up into progressive healing
+    across ticks instead of a rate-limit-tripping burst."""
     head = int(await _bsc_rpc(http, "eth_blockNumber", []), 16)
     safe_head = head - settings.bsc_confirmations
     now_s = int(time.time())
-    blocks_back = (max(0, now_s - min_ts) // _BSC_BLOCK_SECS) + 400
-    if blocks_back > _BSC_MAX_BLOCKS:
-        # a very old watermark (long downtime) — scan the max window; anything
-        # older is recoverable through the claim flow, and we say so loudly
-        log.warning("BSC scan window clamped to ~%dh — older deposits need a "
-                    "TXID claim", _BSC_MAX_BLOCKS * _BSC_BLOCK_SECS // 3600)
-        blocks_back = _BSC_MAX_BLOCKS
-    from_block = max(1, safe_head - blocks_back)
-    # chunked: one huge range gets rejected by every public node ("exceed
-    # maximum block range" style errors), which used to kill the whole sweep
-    out: list[dict] = []
     ts_cache: dict = {}
+    # find the true start block for the cutoff from REAL block timestamps —
+    # never from a seconds-per-block guess. Block times change under
+    # hardforks (3s → ~0.75s) and the chain can stall outright; guessing
+    # wrong either misses deposits below the window (money loss) or wastes
+    # the call budget above it. Nominal-time first probe, then a bracketed
+    # binary search: guaranteed to land at/below the cutoff or hit the hard
+    # cap with a loud warning.
+    deepest = max(1, safe_head - _BSC_MAX_BLOCKS)
+    guess = (max(0, now_s - min_ts) // _BSC_BLOCK_SECS) + 400
+    cand = max(deepest, safe_head - guess)
+    if await _bsc_block_ts(http, hex(cand), ts_cache) <= min_ts:
+        lo, hi = cand, safe_head            # deep enough — maybe too deep
+    elif (deepest < cand
+          and await _bsc_block_ts(http, hex(deepest), ts_cache) <= min_ts):
+        lo, hi = deepest, cand              # cutoff sits below the guess
+    else:
+        # even the deepest allowed block is younger than the cutoff (long
+        # downtime) — scan the max window; older deposits need a TXID claim
+        if deepest > 1:
+            log.warning("BSC scan window clamped to ~%dh+ — older deposits "
+                        "need a TXID claim",
+                        int(_BSC_MAX_BLOCKS * 0.75) // 3600)
+        lo = hi = deepest
+    if hi - lo > _bsc_chunk_learned["size"] * 2:
+        # tighten (≤ ~18 cached lookups) — small windows just get scanned,
+        # overshooting by a chunk is cheaper than the search
+        while lo + 1 < hi:
+            mid = (lo + hi) // 2
+            if await _bsc_block_ts(http, hex(mid), ts_cache) <= min_ts:
+                lo = mid
+            else:
+                hi = mid
+    from_block = lo
+    out: list[dict] = []
     frm = from_block
+    calls = 0
     while frm <= safe_head:
-        to_blk = min(frm + _BSC_CHUNK - 1, safe_head)
-        logs = await _bsc_rpc(http, "eth_getLogs", [{
-            "fromBlock": hex(frm), "toBlock": hex(to_blk),
-            "address": settings.bep20_usdt_contract,
-            "topics": [_TRANSFER_TOPIC, None, _pad_topic_addr(address)],
-        }]) or []
+        if calls >= _BSC_CALLS_PER_TICK:
+            log.info("BSC catch-up pausing %d blocks short — resumes next "
+                     "tick from the advanced watermark", safe_head - frm + 1)
+            return out                     # partial: floor advance must NOT run
+        chunk = _bsc_chunk_learned["size"]
+        to_blk = min(frm + chunk - 1, safe_head)
+        calls += 1
+        try:
+            logs = await _bsc_rpc(http, "eth_getLogs", [{
+                "fromBlock": hex(frm), "toBlock": hex(to_blk),
+                "address": settings.bep20_usdt_contract,
+                "topics": [_TRANSFER_TOPIC, None, _pad_topic_addr(address)],
+            }]) or []
+        except BscApiError as e:
+            msg = str(e).lower()
+            if chunk > _BSC_CHUNK_MIN and any(h in msg for h in _BSC_LIMIT_HINTS):
+                _bsc_chunk_learned["size"] = max(_BSC_CHUNK_MIN, chunk // 4)
+                _bsc_chunk_learned["ok"] = 0
+                log.warning("BSC getLogs rejected a %d-block range — chunk "
+                            "shrunk to %d", chunk, _bsc_chunk_learned["size"])
+                continue                   # retry the same range, smaller
+            raise
+        _bsc_chunk_learned["ok"] += 1
+        if (_bsc_chunk_learned["ok"] >= _BSC_CHUNK_REGROW
+                and _bsc_chunk_learned["size"] < _BSC_CHUNK):
+            _bsc_chunk_learned["size"] = min(_BSC_CHUNK,
+                                             _bsc_chunk_learned["size"] * 2)
+            _bsc_chunk_learned["ok"] = 0
+        chunk_rows: list[dict] = []
         for lg in logs:                            # node returns oldest-first
             if lg.get("removed"):
                 continue
@@ -409,8 +496,19 @@ async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
                 continue
             row = _bsc_log_row(lg, ts)
             if row["to"].lower() == (address or "").lower():
-                out.append(row)
+                chunk_rows.append(row)
+        out.extend(chunk_rows)
+        if progress is not None:
+            ts_done = await _bsc_block_ts(http, hex(to_blk), ts_cache)
+            await progress(chunk_rows, ts_done - 120)
         frm = to_blk + 1
+        if frm <= safe_head:
+            await asyncio.sleep(_BSC_CHUNK_PAUSE)
+    if progress is not None:
+        # completed sweep: everything up to the confirmation floor is now
+        # checked — the window must never grow again (the 304.57 incident)
+        ts_head = await _bsc_block_ts(http, hex(max(1, safe_head)), ts_cache)
+        await progress([], ts_head - 120)
     return out
 
 
@@ -484,28 +582,35 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
             log.warning("BSC seen sweep failed: %s", type(e).__name__)
         async with Session() as session:
             watermark = await bsc_watermark(session, addr)
+        # the watermark advances after EVERY completed chunk — but only once
+        # that chunk's transfers are durably handled: credit FIRST, persist
+        # the cutoff second. Money must never sit behind a watermark that
+        # already claims its range as scanned. A failure or budget pause
+        # mid-sweep keeps the progress made so far instead of re-growing the
+        # window until nodes refuse it (the 304.57 incident, second act).
+        wm = {"cur": watermark}
+
+        async def _on_chunk(rows, safe_ts, _addr=addr, _wm=wm) -> None:
+            for tx in rows:
+                await _credit_bsc(bot, tx, _addr)
+            ts = int(safe_ts)
+            if ts <= _wm["cur"]:
+                return
+            async with Session() as s2:
+                # cross-instance guard: an on-demand check can run alongside
+                # the scan loop — never write the persisted cutoff backward
+                raw = await get_setting(s2, f"bsc_since:{_addr}")
+                cur_db = int(raw) if raw and raw.isdigit() else 0
+                if ts > cur_db:
+                    await set_setting(s2, f"bsc_since:{_addr}", str(ts))
+            _wm["cur"] = max(_wm["cur"], ts, cur_db)
         try:
-            transfers = await fetch_bsc_transfers(http, addr, watermark)
+            await fetch_bsc_transfers(http, addr, watermark,
+                                      progress=_on_chunk)
         except Exception as e:
             log.warning("BSC scan fetch failed (%s…): %s", addr[:10],
                         type(e).__name__)
             continue
-        newest = watermark
-        for tx in transfers:
-            await _credit_bsc(bot, tx, addr)
-            try:
-                newest = max(newest, int(tx.get("timeStamp", 0) or 0))
-            except (TypeError, ValueError):
-                pass
-        # ALWAYS advance after a successful sweep — an empty result must move
-        # the cutoff too, or the window keeps growing until public nodes
-        # refuse the range and crediting silently stops (the 304.57 incident)
-        floor_ts = (int(time.time())
-                    - settings.bsc_confirmations * _BSC_BLOCK_SECS - 120)
-        new_wm = max(newest - 120, floor_ts)
-        if new_wm > watermark:
-            async with Session() as session:
-                await set_setting(session, f"bsc_since:{addr}", str(new_wm))
 
 
 async def lookup_bsc_tx(txid: str, since_ms: int,
