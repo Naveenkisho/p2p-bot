@@ -43,7 +43,7 @@ that can share one page (Google treats them as the same intent).
 | 32 | usdt p2p india | done | usdt-p2p-india |
 | 33 | sell crypto for cash india | done | sell-crypto-for-cash-india |
 | 34 | is it legal to sell usdt in india | done | is-it-legal-to-sell-usdt-in-india |
-| 35 | usdt inr rate today | pending | |
+| 35 | usdt inr rate today | done | usdt-inr-rate-today |
 | 36 | sell usdt from trust wallet | pending | |
 
 Priority note: the owner's core conversion terms — "sell usdt", "clean
