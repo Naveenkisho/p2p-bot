@@ -326,12 +326,17 @@ _BSC_CHUNK_PAUSE = 0.2              # seconds between chunk calls
 _BSC_CHUNK_REGROW = 200             # successful calls before re-probing a
                                     # bigger chunk (rate-limit blips must not
                                     # pin the size at minimum forever)
-# extra well-known public JSON-RPC endpoints, tried after the configured
-# pair — free nodes throttle per IP, so load must spread across several
+# extra public JSON-RPC endpoints, tried after the configured pair — free
+# nodes throttle per IP, so load must spread across several. Deliberately
+# DIFFERENT providers: the bnbchain/defibit/ninicoin "dataseed" family
+# shares one backend and one rate limiter, so listing three of them buys
+# nothing (learned in production on 2026-08-08)
 _BSC_EXTRA_RPCS = (
-    "https://bsc-dataseed1.bnbchain.org",
-    "https://bsc-dataseed1.defibit.io",
-    "https://bsc-dataseed1.ninicoin.io",
+    "https://bsc.drpc.org",
+    "https://bsc-mainnet.public.blastapi.io",
+    "https://binance.llamarpc.com",
+    "https://bsc.meowrpc.com",
+    "https://endpoints.omniatech.io/v1/bsc/mainnet/public",
     "https://1rpc.io/bnb",
 )
 _BSC_SETTLED_EVERY = 30             # seconds between settled sweeps — the
@@ -342,6 +347,9 @@ _BSC_SETTLED_EVERY = 30             # seconds between settled sweeps — the
 # of the default on restart)
 _bsc_chunk_learned = {"size": _BSC_CHUNK, "ok": 0}
 _bsc_rpc_rr = {"i": 0}              # round-robin start index over endpoints
+_bsc_node_bad: dict[str, float] = {}   # url → monotonic ts to skip until —
+                                    # a quota-dead node shouldn't eat an
+                                    # attempt on every call for hours
 _bsc_backoff = {"until": 0.0, "delay": 30.0}   # rate-limit backoff state
 _bsc_last_settled = {"t": 0.0}
 
@@ -374,23 +382,29 @@ async def _bsc_rpc(http: aiohttp.ClientSession, method: str, params: list):
               *_BSC_EXTRA_RPCS):
         if u and u not in urls:
             urls.append(u)
-    # rotate the starting endpoint per call so sustained load spreads across
-    # every node instead of hammering the first until it throttles us
-    start = _bsc_rpc_rr["i"] % len(urls)
+    # skip endpoints in their failure cool-down (unless that empties the
+    # list), and rotate the starting endpoint per call so sustained load
+    # spreads across every node instead of hammering the first
+    now_m = time.monotonic()
+    live = [u for u in urls if _bsc_node_bad.get(u, 0.0) <= now_m] or urls
+    start = _bsc_rpc_rr["i"] % len(live)
     _bsc_rpc_rr["i"] += 1
     errs: list[str] = []
-    for k in range(len(urls)):
-        url = urls[(start + k) % len(urls)]
+    for k in range(len(live)):
+        url = live[(start + k) % len(live)]
         try:
             async with http.post(url, json=body) as resp:
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as e:
             errs.append(f"{type(e).__name__}({getattr(e, 'status', '')})")
+            _bsc_node_bad[url] = time.monotonic() + 120
             continue
         if "error" in payload:
             errs.append(str(payload["error"])[:120])
+            _bsc_node_bad[url] = time.monotonic() + 120
             continue
+        _bsc_node_bad.pop(url, None)
         return payload.get("result")
     # every attempt's error, not just the last — a 'limit exceeded' from the
     # primary must stay visible to the adaptive logic even when another
