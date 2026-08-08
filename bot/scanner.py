@@ -326,14 +326,38 @@ _BSC_CHUNK_PAUSE = 0.2              # seconds between chunk calls
 _BSC_CHUNK_REGROW = 200             # successful calls before re-probing a
                                     # bigger chunk (rate-limit blips must not
                                     # pin the size at minimum forever)
-# public nodes disagree about eth_getLogs limits and report them all as
-# roughly this ('limit exceeded', 'exceed maximum block range', -32005 …)
-_BSC_LIMIT_HINTS = ("limit", "range", "exceed", "-32005", "too many",
-                    "response size")
+# extra well-known public JSON-RPC endpoints, tried after the configured
+# pair — free nodes throttle per IP, so load must spread across several
+_BSC_EXTRA_RPCS = (
+    "https://bsc-dataseed1.bnbchain.org",
+    "https://bsc-dataseed1.defibit.io",
+    "https://bsc-dataseed1.ninicoin.io",
+    "https://1rpc.io/bnb",
+)
+_BSC_SETTLED_EVERY = 30             # seconds between settled sweeps — the
+                                    # sighting pass covers instant detection,
+                                    # settled crediting can afford 30s
 # the chunk size a node actually accepts, learned at runtime: shrunk when a
-# node rejects a range, slowly re-grown after sustained success (fresh probe
+# node rejects a RANGE, slowly re-grown after sustained success (fresh probe
 # of the default on restart)
 _bsc_chunk_learned = {"size": _BSC_CHUNK, "ok": 0}
+_bsc_rpc_rr = {"i": 0}              # round-robin start index over endpoints
+_bsc_backoff = {"until": 0.0, "delay": 30.0}   # rate-limit backoff state
+_bsc_last_settled = {"t": 0.0}
+
+
+def _bsc_err_kind(msg: str) -> str:
+    """Classify a node error: 'range' → the block span is too big (shrink the
+    chunk), 'rate' → the node is throttling this IP (back off — shrinking
+    would ADD calls and make it worse), 'other' → a real failure. Checked in
+    this order because range messages often also contain 'limit'."""
+    m = (msg or "").lower()
+    if "range" in m or "span" in m or "block limit" in m or "10000" in m:
+        return "range"
+    if ("limit" in m or "429" in m or "too many" in m or "rate" in m
+            or "capacity" in m or "-32005" in m):
+        return "rate"
+    return "other"
 
 
 def _pad_topic_addr(addr: str) -> str:
@@ -345,26 +369,35 @@ async def _bsc_rpc(http: aiohttp.ClientSession, method: str, params: list):
     """One JSON-RPC call against the public BSC node, with a fallback node.
     Raises BscApiError on failure — callers must never read that as 'no data'."""
     body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    urls: list[str] = []
+    for u in (settings.bsc_rpc_url, settings.bsc_rpc_fallback,
+              *_BSC_EXTRA_RPCS):
+        if u and u not in urls:
+            urls.append(u)
+    # rotate the starting endpoint per call so sustained load spreads across
+    # every node instead of hammering the first until it throttles us
+    start = _bsc_rpc_rr["i"] % len(urls)
+    _bsc_rpc_rr["i"] += 1
     errs: list[str] = []
-    for url in (settings.bsc_rpc_url, settings.bsc_rpc_fallback):
-        if not url:
-            continue
+    for k in range(len(urls)):
+        url = urls[(start + k) % len(urls)]
         try:
             async with http.post(url, json=body) as resp:
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as e:
-            errs.append(type(e).__name__)
+            errs.append(f"{type(e).__name__}({getattr(e, 'status', '')})")
             continue
         if "error" in payload:
             errs.append(str(payload["error"])[:120])
             continue
         return payload.get("result")
     # every attempt's error, not just the last — a 'limit exceeded' from the
-    # primary must stay visible to the adaptive-chunk logic even when the
-    # fallback then fails some other way
+    # primary must stay visible to the adaptive logic even when another
+    # node then fails some other way
     last = " | ".join(errs) or "unknown"
-    log.warning("BSC rpc %s failed on both nodes: %s", method, last)
+    log.warning("BSC rpc %s failed on all %d nodes: %s", method, len(urls),
+                last)
     raise BscApiError(f"rpc {method}: {last}")
 
 
@@ -472,14 +505,14 @@ async def fetch_bsc_transfers(http: aiohttp.ClientSession, address: str,
                 "topics": [_TRANSFER_TOPIC, None, _pad_topic_addr(address)],
             }]) or []
         except BscApiError as e:
-            msg = str(e).lower()
-            if chunk > _BSC_CHUNK_MIN and any(h in msg for h in _BSC_LIMIT_HINTS):
+            if (chunk > _BSC_CHUNK_MIN
+                    and _bsc_err_kind(str(e)) == "range"):
                 _bsc_chunk_learned["size"] = max(_BSC_CHUNK_MIN, chunk // 4)
                 _bsc_chunk_learned["ok"] = 0
                 log.warning("BSC getLogs rejected a %d-block range — chunk "
                             "shrunk to %d", chunk, _bsc_chunk_learned["size"])
                 continue                   # retry the same range, smaller
-            raise
+            raise                          # rate limits back off in the caller
         _bsc_chunk_learned["ok"] += 1
         if (_bsc_chunk_learned["ok"] >= _BSC_CHUNK_REGROW
                 and _bsc_chunk_learned["size"] < _BSC_CHUNK):
@@ -538,9 +571,10 @@ async def _scan_bsc_seen(bot: Bot, http: aiohttp.ClientSession,
     async with Session() as session:
         awaiting = await session.scalar(
             select(Order.id).where(
-                Order.status == OrderStatus.AWAITING_DEPOSIT.value).limit(1))
+                Order.status == OrderStatus.AWAITING_DEPOSIT.value,
+                Order.network == "BEP20").limit(1))
     if awaiting is None:
-        return                          # nobody waiting — skip the extra call
+        return              # no BEP20 order waiting — skip the extra calls
     head = int(await _bsc_rpc(http, "eth_blockNumber", []), 16)
     logs = await _bsc_rpc(http, "eth_getLogs", [{
         "fromBlock": hex(max(1, head - settings.bsc_confirmations)),
@@ -558,8 +592,23 @@ async def _scan_bsc_seen(bot: Bot, http: aiohttp.ClientSession,
                              address, "BEP20")
 
 
+def _bsc_rate_backoff(e: Exception) -> bool:
+    """If `e` is a node rate-limit, arm the exponential backoff and return
+    True — the caller must stop calling BSC entirely for the cool-down.
+    Shrinking or retrying against a throttling node only digs the hole."""
+    if not (isinstance(e, BscApiError) and _bsc_err_kind(str(e)) == "rate"):
+        return False
+    _bsc_backoff["until"] = time.monotonic() + _bsc_backoff["delay"]
+    log.warning("BSC nodes rate-limiting this IP — backing off %ds",
+                int(_bsc_backoff["delay"]))
+    _bsc_backoff["delay"] = min(_bsc_backoff["delay"] * 2, 600.0)
+    return True
+
+
 async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
     from .db import bep20_active, get_bep20_address
+    if time.monotonic() < _bsc_backoff["until"]:
+        return                          # nodes throttling us — stay quiet
     async with Session() as session:
         if not await bep20_active(session):
             return
@@ -575,11 +624,21 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
     for a in [address] + list(awaiting_addrs):
         if a and a.startswith("0x"):
             addrs.setdefault(a.lower(), a)
+    # settled sweeps run on their own slower cadence: the sighting pass gives
+    # instant detection, so crediting can wait ~30s — that alone cuts the
+    # call rate enough to stay under free-node per-IP throttles
+    do_settled = (time.monotonic() - _bsc_last_settled["t"]
+                  >= _BSC_SETTLED_EVERY)
+    clean = True
     for addr in addrs.values():
         try:
             await _scan_bsc_seen(bot, http, addr)
         except Exception as e:
+            if _bsc_rate_backoff(e):
+                return
             log.warning("BSC seen sweep failed: %s", type(e).__name__)
+        if not do_settled:
+            continue
         async with Session() as session:
             watermark = await bsc_watermark(session, addr)
         # the watermark advances after EVERY completed chunk — but only once
@@ -608,9 +667,16 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
             await fetch_bsc_transfers(http, addr, watermark,
                                       progress=_on_chunk)
         except Exception as e:
+            if _bsc_rate_backoff(e):
+                return
+            clean = False
             log.warning("BSC scan fetch failed (%s…): %s", addr[:10],
                         type(e).__name__)
             continue
+    if do_settled:
+        _bsc_last_settled["t"] = time.monotonic()
+        if clean:
+            _bsc_backoff["delay"] = 30.0    # healthy again — reset the ramp
 
 
 async def lookup_bsc_tx(txid: str, since_ms: int,
