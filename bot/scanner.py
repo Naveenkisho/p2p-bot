@@ -339,9 +339,13 @@ _BSC_EXTRA_RPCS = (
     "https://endpoints.omniatech.io/v1/bsc/mainnet/public",
     "https://1rpc.io/bnb",
 )
-_BSC_SETTLED_EVERY = 30             # seconds between settled sweeps — the
-                                    # sighting pass covers instant detection,
-                                    # settled crediting can afford 30s
+_BSC_SETTLED_EVERY = 30             # seconds between settled sweeps while a
+                                    # BEP20 order is awaiting — the sighting
+                                    # pass covers instant detection
+_BSC_SETTLED_IDLE = 300             # idle cadence (no BEP20 order open):
+                                    # keeps the watermark fresh and catches
+                                    # late payments while spending almost
+                                    # nothing of a keyed node's daily quota
 # the chunk size a node actually accepts, learned at runtime: shrunk when a
 # node rejects a RANGE, slowly re-grown after sustained success (fresh probe
 # of the default on restart)
@@ -639,10 +643,11 @@ async def scan_bsc_once(bot: Bot, http: aiohttp.ClientSession) -> None:
         if a and a.startswith("0x"):
             addrs.setdefault(a.lower(), a)
     # settled sweeps run on their own slower cadence: the sighting pass gives
-    # instant detection, so crediting can wait ~30s — that alone cuts the
-    # call rate enough to stay under free-node per-IP throttles
-    do_settled = (time.monotonic() - _bsc_last_settled["t"]
-                  >= _BSC_SETTLED_EVERY)
+    # instant detection, so crediting can wait ~30s — and with no BEP20
+    # order open at all, a 5-minute idle cadence is plenty (watermark stays
+    # fresh, late payments still credit, daily quota barely touched)
+    every = _BSC_SETTLED_EVERY if awaiting_addrs else _BSC_SETTLED_IDLE
+    do_settled = time.monotonic() - _bsc_last_settled["t"] >= every
     clean = True
     for addr in addrs.values():
         try:
